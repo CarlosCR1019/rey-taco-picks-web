@@ -1,5 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { subscriptionPatch } from "./subscription.ts";
+import { shouldPersistSubscription, subscriptionPatch } from "./subscription.ts";
 
 
 Deno.test("paid invoice activates access", () => {
@@ -19,6 +19,12 @@ Deno.test("failed invoice removes active access", () => {
   );
 });
 
+Deno.test("a delayed failed invoice cannot override Stripe's current active status", () => {
+  assertEquals(subscriptionPatch("invoice.payment_failed", {
+    customer: "cus_1", subscription: "sub_1", status: "active",
+  }).status, "active");
+});
+
 Deno.test("deleted subscription is cancelled", () => {
   assertEquals(
     subscriptionPatch("customer.subscription.deleted", { customer: "cus_1", id: "sub_1" }).status,
@@ -31,4 +37,5 @@ Deno.test("checkout alone does not grant permanent access", () => {
     subscriptionPatch("checkout.session.completed", { customer: "cus_1", subscription: "sub_1" }).status,
     "incomplete",
   );
+  assertEquals(shouldPersistSubscription("checkout.session.completed"), false);
 });

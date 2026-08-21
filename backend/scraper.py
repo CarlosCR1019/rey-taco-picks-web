@@ -4,6 +4,7 @@ import time
 import sys
 import re
 from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
 from selenium.webdriver.common.by import By
 import undetected_chromedriver as uc
 import urllib.request
@@ -11,9 +12,9 @@ from groq import Groq
 from dotenv import load_dotenv
 from supabase import create_client, Client
 try:
-    from backend.publishing_policy import assign_visibility, public_payload
+    from backend.publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
 except ImportError:  # So `python backend/scraper.py` also resolves the helper.
-    from publishing_policy import assign_visibility, public_payload
+    from publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
 
 # Forzar codificación UTF-8
 sys.stdout.reconfigure(encoding='utf-8')
@@ -22,18 +23,31 @@ sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 
 if not GROQ_API_KEY:
     print("⚠️ ADVERTENCIA: No se encontró GROQ_API_KEY en el archivo .env")
 
 # Configurar Supabase
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 else:
     supabase = None
-    print("⚠️ ADVERTENCIA: No se encontraron credenciales de Supabase.")
+    print("⚠️ ADVERTENCIA: No se encontraron SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY.")
+
+def retire_previous_public_pending_pick():
+    """Fail closed: retire the old free pick before publishing today's batch."""
+    if supabase:
+        supabase.table("picks").update({"visibility": "premium"}).eq(
+            "estado", "pendiente"
+        ).eq("visibility", "public").execute()
+
+def require_publish_backend():
+    if supabase is None:
+        raise RuntimeError(
+            "Publicación cancelada: faltan SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY."
+        )
 
 def normalizar_cuota_decimal(val, default="1.85"):
     try:
@@ -1236,23 +1250,28 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             # Si es parlay, validar que TODAS las partes existan
             if p.get('es_parlay'):
                 partes = re.split(r'[+&/]|(?:\s+y\s+)', p_partido, flags=re.IGNORECASE)
-                todas_partes_validas = True
+                parlay_matches = []
                 for parte in partes:
                     parte = parte.strip()
                     if len(parte) < 3: continue
-                    parte_existe = any(
-                        (dp.get('local', '') and len(dp.get('local', '')) > 3 and dp.get('local', '').lower() in parte.lower()) or
-                        (dp.get('visitante', '') and len(dp.get('visitante', '')) > 3 and dp.get('visitante', '').lower() in parte.lower()) or
-                        (dp.get('partido', '').lower() in parte.lower()) or
-                        (parte.lower() in dp.get('partido', '').lower())
-                        for dp in (datos_profundos + partidos_data)
+                    leg_match = next(
+                        (dp for dp in (datos_profundos + partidos_data) if
+                         (dp.get('local', '') and len(dp.get('local', '')) > 3 and dp.get('local', '').lower() in parte.lower()) or
+                         (dp.get('visitante', '') and len(dp.get('visitante', '')) > 3 and dp.get('visitante', '').lower() in parte.lower()) or
+                         (dp.get('partido', '').lower() in parte.lower()) or
+                         (parte.lower() in dp.get('partido', '').lower())),
+                        None,
                     )
-                    if not parte_existe:
-                        todas_partes_validas = False
+                    if not leg_match:
+                        parlay_matches = []
                         break
+                    parlay_matches.append(leg_match)
                 
-                if todas_partes_validas and len(partes) >= 2:
-                    match_encontrado = datos_profundos[0] if datos_profundos else (partidos_data[0] if partidos_data else {})
+                parlay_horarios = [leg.get('horario', 'Hoy') for leg in parlay_matches]
+                fecha_base = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
+                if len(parlay_matches) >= 2 and event_labels_share_date(parlay_horarios, fecha_base):
+                    match_encontrado = parlay_matches[0]
+                    p['horario'] = " / ".join(parlay_horarios)
                 else:
                     match_encontrado = None
             
@@ -1271,7 +1290,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                 )
 
             # 3. Corregir y forzar Horario Real y verificar que sea futuro en CDMX
-            if match_encontrado and match_encontrado.get('horario'):
+            if not p.get('es_parlay') and match_encontrado and match_encontrado.get('horario'):
                 p['horario'] = match_encontrado.get('horario')
             
             es_valido_tiempo, horario_limpio = es_partido_futuro_valido(p.get('horario', 'Hoy'))
@@ -1414,10 +1433,19 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                         "odds_mercado": f"{max(1.25, c_val - 0.05):.2f}"
                     })
 
-        # C) Construir Parlay Combinado Dinámico de HOY
-        if len(parlay_candidatos) >= 2:
-            p1 = parlay_candidatos[0]
-            p2 = parlay_candidatos[1]
+        # C) Construir Parlay Combinado Dinámico con piernas del mismo día CDMX.
+        parlay_pair = None
+        fecha_base = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
+        for index, p1 in enumerate(parlay_candidatos):
+            for p2 in parlay_candidatos[index + 1:]:
+                if event_labels_share_date([p1.get('horario'), p2.get('horario')], fecha_base):
+                    parlay_pair = (p1, p2)
+                    break
+            if parlay_pair:
+                break
+
+        if parlay_pair:
+            p1, p2 = parlay_pair
             cuota_parlay = float(p1['cuota']) * float(p2['cuota'])
             loc1 = p1.get('local') or p1['partido'].split(' vs ')[0]
             loc2 = p2.get('local') or p2['partido'].split(' vs ')[0]
@@ -1447,6 +1475,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
 #  FASE 7: GUARDADO Y NOTIFICACIONES
 # ============================================================
 def fase7_guardar_y_notificar(picks):
+    require_publish_backend()
     print("\n" + "="*60)
     print("💾  FASE 7: GUARDANDO Y NOTIFICANDO")
     print("="*60)
@@ -1455,14 +1484,15 @@ def fase7_guardar_y_notificar(picks):
         print("   ❌ No hay picks para guardar.")
         return
     
-    hoy = date.today().isoformat()
+    hoy = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
     
     # Agregar metadatos
     base_id = int(time.time())
     columnas_validas = {
         'id', 'categoria', 'partido', 'pick', 'cuota', 'confianza', 'razonamiento',
         'marcador', 'estado', 'es_parlay', 'liga', 'mercado', 'riesgo',
-        'resultado_apuesta', 'ganancia_simulada', 'fecha_generacion', 'odds_mercado', 'tiene_valor'
+        'resultado_apuesta', 'ganancia_simulada', 'fecha_generacion', 'fecha_evento',
+        'horario', 'odds_mercado', 'tiene_valor'
     }
     
     picks = assign_visibility(picks)
@@ -1471,6 +1501,7 @@ def fase7_guardar_y_notificar(picks):
     for idx, pick in enumerate(picks):
         pick['id'] = base_id + idx
         pick['fecha_generacion'] = hoy
+        pick['fecha_evento'] = scheduled_event_date(pick.get('horario'), hoy)
         pick['estado'] = 'pendiente'
         pick['liga'] = pick.get('categoria', 'Fútbol Internacional')
         if 'ganancia_simulada' not in pick:
@@ -1481,6 +1512,7 @@ def fase7_guardar_y_notificar(picks):
     if supabase:
         try:
             print(f"   💾 Subiendo {len(clean_picks)} picks frescos a Supabase...")
+            retire_previous_public_pending_pick()
             # Limpiar pendientes anteriores
             try:
                 supabase.table("picks").delete().eq("estado", "pendiente").execute()
@@ -1489,7 +1521,7 @@ def fase7_guardar_y_notificar(picks):
             supabase.table("picks").insert(clean_picks).execute()
             print("   ✅ Picks subidos exitosamente a Supabase.")
         except Exception as e:
-            print(f"   ⚠️ Error subiendo a Supabase: {e}")
+            raise RuntimeError(f"Publicación cancelada; Supabase rechazó los picks: {e}") from e
     else:
         print("   ⚠️ No hay conexión a Supabase, guardando solo en local.")
         
@@ -1553,7 +1585,8 @@ def _enviar_telegram(picks):
 
         # 3. Enviar al Canal FREE (Picks Directos)
         if free_channel_id:
-            for i, p in enumerate(picks[:2]):
+            free_picks = public_payload(picks)
+            for i, p in enumerate(free_picks):
                 msg_free = f"📢 *PICK GRATUITO #{i+1} DEL DÍA* 🌮👑\n\n"
                 msg_free += f"🏟️ *Partido:* {p.get('partido')}\n"
                 if p.get('horario'): msg_free += f"🕒 *Horario:* `{p.get('horario')}`\n"
@@ -1648,6 +1681,7 @@ def _enviar_reporte_estado():
 #  FASE 7: GUARDADO Y NOTIFICACIONES
 # ============================================================
 def fase7_guardar_y_notificar(picks):
+    require_publish_backend()
     print("\n" + "="*60)
     print("💾  FASE 7: GUARDANDO Y NOTIFICANDO")
     print("="*60)
@@ -1657,13 +1691,14 @@ def fase7_guardar_y_notificar(picks):
         _enviar_reporte_estado()
         return
     
-    hoy = date.today().isoformat()
+    hoy = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
     
     # Agregar metadatos
     base_id = int(time.time())
     for idx, pick in enumerate(picks):
         pick['id'] = base_id + idx
         pick['fecha_generacion'] = hoy
+        pick['fecha_evento'] = scheduled_event_date(pick.get('horario'), hoy)
         pick['estado'] = 'pendiente'
         if 'ganancia_simulada' not in pick:
             pick['ganancia_simulada'] = 0
@@ -1671,7 +1706,7 @@ def fase7_guardar_y_notificar(picks):
     ALLOWED_COLUMNS = {
         'id', 'categoria', 'partido', 'pick', 'cuota', 'confianza', 
         'razonamiento', 'es_parlay', 'tiene_valor', 'estado', 
-        'fecha_generacion', 'odds_mercado', 'ganancia_simulada'
+        'fecha_generacion', 'fecha_evento', 'horario', 'odds_mercado', 'ganancia_simulada'
     }
     picks = assign_visibility(picks)
     ALLOWED_COLUMNS.add('visibility')
@@ -1680,10 +1715,11 @@ def fase7_guardar_y_notificar(picks):
     if supabase:
         try:
             print(f"   💾 Subiendo {len(clean_picks)} picks frescos a Supabase...")
+            retire_previous_public_pending_pick()
             supabase.table("picks").insert(clean_picks).execute()
             print("   ✅ Picks subidos exitosamente.")
         except Exception as e:
-            print(f"   ⚠️ Error en Supabase insert: {e}")
+            raise RuntimeError(f"Publicación cancelada; Supabase rechazó los picks: {e}") from e
         _guardar_local(picks)
     else:
         _guardar_local(picks)
@@ -1801,36 +1837,22 @@ def _enviar_telegram(picks):
                     print("   👑 ✅ Telegram (Canal VIP) enviado con botones interactivos.")
 
         # 3. Envío al CANAL FREE (Pick Estrella Inmediato + Cola Espaciada)
-        if free_channel_id and picks:
+        free_picks = public_payload(picks)
+        if free_channel_id and free_picks:
             # A) Pick #1 Gratuito
-            pick_1_msg = formatear_pick_canal(picks[0], numero=1, total=len(picks))
+            free_pick = free_picks[0]
+            pick_1_msg = formatear_pick_canal(free_pick, numero=1, total=1)
             data_free = json.dumps({"chat_id": free_channel_id, "text": pick_1_msg, "reply_markup": keyboard_free}).encode('utf-8')
             req_free = urllib.request.Request(url, data=data_free, headers={'Content-Type': 'application/json'})
             with urllib.request.urlopen(req_free) as resp_free:
                 if resp_free.getcode() == 200:
-                    print(f"   📢 ✅ Telegram (Canal FREE - Pick #1) enviado con botones: {picks[0].get('partido')}")
+                    print(f"   📢 ✅ Telegram (Canal FREE - Pick #1) enviado con botones: {free_pick.get('partido')}")
 
-            # B) Programar los picks restantes espaciados cada 75 min para el Canal Free
+            # B) Clear any legacy queue so no premium pick is sent later.
             queue_file = os.path.join(os.path.dirname(__file__), "channel_queue.json")
-            queue = []
-            now = time.time()
-            intervalo_segundos = 75 * 60
-            
-            for i, p in enumerate(picks[1:], 2):
-                prog_time = now + ((i - 1) * intervalo_segundos)
-                queue.append({
-                    "pick_id": p.get('id'),
-                    "partido": p.get('partido'),
-                    "timestamp_programado": prog_time,
-                    "fecha_legible": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(prog_time)),
-                    "mensaje": formatear_pick_canal(p, numero=i, total=len(picks)),
-                    "reply_markup": keyboard_free,
-                    "enviado": False
-                })
-                
             with open(queue_file, "w", encoding="utf-8") as f:
-                json.dump(queue, f, indent=2, ensure_ascii=False)
-            print(f"   ⏳ {len(queue)} picks programados en cola para publicarse espaciados en Canal FREE.")
+                json.dump([], f, indent=2, ensure_ascii=False)
+            print("   🔒 Cola gratuita limpia; los picks premium permanecen en VIP.")
 
     except Exception as e:
         print(f"   📱 ❌ Error Telegram: {e}")
@@ -1844,6 +1866,7 @@ def main():
     print("   Arquitectura: Escáner → Mercado → Filtro → Inmersión → Memoria → IA → Picks")
     print("="*60)
     
+    require_publish_backend()
     driver = None
     try:
         driver = get_chrome_driver()

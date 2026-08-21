@@ -48,7 +48,7 @@ export function applicationTemplate(): string {
 
         <section class="content-section" id="picks" aria-labelledby="picks-title">
           <div class="section-heading">
-            <div><span class="section-kicker">Actualizado hoy</span><h2 id="picks-title">Cartera del día</h2></div>
+            <div><span class="section-kicker">Selección pública</span><h2 id="picks-title">Cartera del día</h2></div>
             <span id="picks-updated" class="updated-label">Consultando datos…</span>
           </div>
           <div class="filter-row" id="filter-row" aria-label="Filtrar picks">
@@ -134,6 +134,16 @@ export function applicationTemplate(): string {
         <label for="auth-password">Contraseña</label><input id="auth-password" type="password" autocomplete="current-password" minlength="6" required />
         <button class="primary-button" id="auth-submit" type="submit">Iniciar sesión</button>
       </form>
+      <div class="account-tools hidden" id="account-tools">
+        <strong>Tu cuenta</strong>
+        <span>Vincula Telegram para que el bot reconozca tu membresía.</span>
+        <button class="secondary-button" id="telegram-link-button" type="button">Vincular Telegram</button>
+        <form id="promo-form">
+          <label for="promo-code">Código promocional</label>
+          <div><input id="promo-code" type="text" autocomplete="off" maxlength="64" placeholder="Tu código" /><button type="submit">Canjear</button></div>
+        </form>
+        <button class="text-button" id="signout-button" type="button">Cerrar sesión</button>
+      </div>
       <p id="auth-message" class="form-message" aria-live="polite"></p>
       <div class="spei-note"><strong>¿Prefieres SPEI?</strong><span>Escríbenos por WhatsApp. Todo comprobante se revisa manualmente.</span><a href="https://wa.me/525639331102" target="_blank" rel="noopener noreferrer">Abrir WhatsApp</a></div>
     </dialog>

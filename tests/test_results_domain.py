@@ -56,6 +56,16 @@ class ResultDomainTests(unittest.TestCase):
     def test_unknown_market_never_defaults_to_loss_or_win(self):
         self.assertEqual(grade_pick("Jugador tendrá dos remates", self.final), "revision_pendiente")
 
+    def test_handicap_and_run_line_use_the_selected_team_margin(self):
+        self.assertEqual(grade_pick("America hándicap +1.5", self.final), "ganado")
+        self.assertEqual(grade_pick("Tigres run line -1.5", self.final), "perdido")
+
+    def test_partial_period_market_requires_period_stats(self):
+        self.assertEqual(
+            grade_pick("Más de 0.5 Carreras 1er Inning", self.final),
+            "revision_pendiente",
+        )
+
     def test_unit_result_uses_decimal_odds(self):
         self.assertEqual(unit_result("ganado", 1.80), 0.8)
         self.assertEqual(unit_result("perdido", 1.80), -1.0)

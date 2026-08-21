@@ -15,6 +15,7 @@ backend/.env
 .telegram_offset
 backend/.telegram_offset
 backend/private_receipts/
+backend/channel_queue.json
 
 # OS & Logs
 .DS_Store

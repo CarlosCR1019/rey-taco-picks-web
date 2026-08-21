@@ -11,3 +11,7 @@ export function isMembershipActive(value: Membership | null): boolean {
     && Date.parse(value.current_period_end) > Date.now()
   );
 }
+
+export function isSubscriberRpcActive(value: unknown): boolean {
+  return value === true;
+}

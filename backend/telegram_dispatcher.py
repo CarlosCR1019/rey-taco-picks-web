@@ -9,7 +9,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+CHANNEL_ID = os.getenv("TELEGRAM_FREE_CHANNEL_ID")
 
 def despachar_cola():
     queue_file = os.path.join(os.path.dirname(__file__), "channel_queue.json")
@@ -23,6 +23,15 @@ def despachar_cola():
     try:
         with open(queue_file, "r", encoding="utf-8") as f:
             queue = json.load(f)
+
+        # Legacy queue rows did not carry a visibility marker and may contain
+        # premium selections. Purge them instead of guessing what is public.
+        public_queue = [item for item in queue if item.get("visibility") == "public"]
+        if len(public_queue) != len(queue):
+            queue = public_queue
+            with open(queue_file, "w", encoding="utf-8") as f:
+                json.dump(queue, f, indent=2, ensure_ascii=False)
+            print("🔒 Cola heredada purgada; solo se permiten filas marcadas como públicas.")
 
         now = time.time()
         modificado = False

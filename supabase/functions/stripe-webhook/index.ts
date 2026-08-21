@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.7.1";
 import Stripe from "https://esm.sh/stripe@11.1.0?target=deno";
-import { subscriptionPatch } from "./subscription.ts";
+import { shouldPersistSubscription, subscriptionPatch } from "./subscription.ts";
 
 
 const stripe = new Stripe(Deno.env.get("STRIPE_SECRET_KEY") ?? "", {
@@ -38,6 +38,9 @@ serve(async (req) => {
     }
 
     const object = event.data.object as unknown as Record<string, unknown>;
+    if (!shouldPersistSubscription(event.type)) {
+      return Response.json({ received: true, pending_payment: true });
+    }
     let subscriptionObject = object;
     const subscriptionId = String(object.subscription ?? (
       event.type.startsWith("customer.subscription.") ? object.id : ""
@@ -69,13 +72,18 @@ serve(async (req) => {
       throw new Error("Stripe event is missing a subscription id");
     }
 
-    const { error } = await supabase.from("subscriptions").upsert(
-      { ...patch, user_id: userId, updated_at: new Date().toISOString() },
-      { onConflict: "provider,provider_subscription_id" },
-    );
+    const { data: applied, error } = await supabase.rpc("apply_stripe_subscription_event", {
+      p_event_id: event.id,
+      p_event_created: event.created,
+      p_user_id: userId,
+      p_customer_id: patch.provider_customer_id,
+      p_subscription_id: patch.provider_subscription_id,
+      p_status: patch.status,
+      p_current_period_end: patch.current_period_end,
+    });
     if (error) throw error;
 
-    return Response.json({ received: true });
+    return Response.json({ received: true, applied: applied === true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Webhook error";
     console.error("Stripe webhook error:", message);

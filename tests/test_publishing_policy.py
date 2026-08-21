@@ -1,6 +1,12 @@
+from pathlib import Path
 import unittest
 
-from backend.publishing_policy import assign_visibility, public_payload
+from backend.publishing_policy import (
+    assign_visibility,
+    event_labels_share_date,
+    public_payload,
+    scheduled_event_date,
+)
 
 
 class PublishingPolicyTests(unittest.TestCase):
@@ -19,6 +25,33 @@ class PublishingPolicyTests(unittest.TestCase):
             {"id": 2, "es_parlay": False, "pick": "VIP"},
         ])
         self.assertEqual([row["pick"] for row in public_payload(rows)], ["Gratis"])
+
+    def test_free_telegram_channel_never_queues_the_premium_batch(self):
+        scraper = (Path(__file__).resolve().parents[1] / "backend" / "scraper.py").read_text(encoding="utf-8")
+        self.assertNotIn("enumerate(picks[1:]", scraper)
+        self.assertIn("free_picks = public_payload(picks)", scraper)
+
+    def test_publisher_retires_previous_public_pending_pick_before_insert(self):
+        scraper = (Path(__file__).resolve().parents[1] / "backend" / "scraper.py").read_text(encoding="utf-8")
+        self.assertIn('eq("visibility", "public")', scraper)
+        self.assertIn('{"visibility": "premium"}', scraper)
+
+    def test_tomorrow_label_persists_the_actual_event_date(self):
+        self.assertEqual(scheduled_event_date("Mañana 20:00", "2026-08-20"), "2026-08-21")
+        self.assertEqual(scheduled_event_date("Hoy 18:00", "2026-08-20"), "2026-08-20")
+
+    def test_playdoit_day_month_label_persists_the_actual_event_date(self):
+        self.assertEqual(scheduled_event_date("21/08 • 19:00", "2026-08-20"), "2026-08-21")
+        self.assertEqual(scheduled_event_date("01/01 • 12:00", "2026-12-31"), "2027-01-01")
+
+    def test_parlay_legs_must_share_the_same_mexico_calendar_date(self):
+        self.assertTrue(event_labels_share_date(["21/08 • 19:00", "21/08 • 21:00"], "2026-08-20"))
+        self.assertFalse(event_labels_share_date(["Hoy 19:00", "Mañana 21:00"], "2026-08-20"))
+
+    def test_scraper_applies_the_same_day_rule_to_generated_parlays(self):
+        scraper = (Path(__file__).resolve().parents[1] / "backend" / "scraper.py").read_text(encoding="utf-8")
+        self.assertIn("event_labels_share_date(parlay_horarios", scraper)
+        self.assertIn("event_labels_share_date([p1.get('horario'), p2.get('horario')]", scraper)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,12 @@ export type SubscriptionRecord = {
   current_period_end: string | null;
 };
 
+export function shouldPersistSubscription(type: string): boolean {
+  // Access begins from a paid invoice or an authoritative subscription event.
+  // Persisting checkout.completed could arrive after invoice.paid and downgrade access.
+  return type !== "checkout.session.completed";
+}
+
 
 function unixPeriodEnd(object: Record<string, unknown>): number | null {
   if (typeof object.current_period_end === "number") return object.current_period_end;
@@ -15,6 +21,16 @@ function unixPeriodEnd(object: Record<string, unknown>): number | null {
 
 
 function normalizedStatus(type: string, object: Record<string, unknown>): SubscriptionRecord["status"] {
+  // The webhook handler retrieves the subscription again from Stripe. When
+  // that authoritative object has a status, it wins over the delivery order
+  // of invoice events.
+  const stripeStatus = String(object.status ?? "");
+  if (["trialing", "active", "past_due", "canceled", "incomplete"].includes(stripeStatus)) {
+    return stripeStatus as SubscriptionRecord["status"];
+  }
+  if (["unpaid", "paused"].includes(stripeStatus)) return "past_due";
+  if (stripeStatus === "incomplete_expired") return "expired";
+
   const eventStatus: Record<string, SubscriptionRecord["status"]> = {
     "checkout.session.completed": "incomplete",
     "invoice.paid": "active",
@@ -23,12 +39,6 @@ function normalizedStatus(type: string, object: Record<string, unknown>): Subscr
   };
   if (eventStatus[type]) return eventStatus[type];
 
-  const stripeStatus = String(object.status ?? "incomplete");
-  if (["trialing", "active", "past_due", "canceled", "incomplete"].includes(stripeStatus)) {
-    return stripeStatus as SubscriptionRecord["status"];
-  }
-  if (["unpaid", "paused"].includes(stripeStatus)) return "past_due";
-  if (stripeStatus === "incomplete_expired") return "expired";
   return "incomplete";
 }
 

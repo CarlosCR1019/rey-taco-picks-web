@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { chooseFreePick, escapeHtml, loadHistory, normalizePick } from './data';
+import { chooseFreePick, escapeHtml, loadHistory, loadPublicPicks, normalizePick } from './data';
 
 const rows = [
   { id: 1, categoria: 'MLB', partido: 'A vs B', pick: 'Más de 8.5', cuota: '1.90', estado: 'pendiente', es_parlay: true },
@@ -9,6 +9,8 @@ const rows = [
 ];
 
 describe('public pick data', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it('chooses exactly one pending, non-parlay selection', () => {
     expect(chooseFreePick(rows)).toEqual([expect.objectContaining({ id: 2 })]);
   });
@@ -48,5 +50,21 @@ describe('public pick data', () => {
     const history = await loadHistory(client);
     expect(queries).toBe(2);
     expect(history).toEqual([expect.objectContaining({ id: 7, estado: 'ganado' })]);
+  });
+
+  it('does not revive a stale local pick when the public view is simply empty', async () => {
+    const response = { data: [], error: null };
+    const builder = {
+      eq: () => builder,
+      order: () => builder,
+      limit: () => builder,
+      then: (resolve: (value: typeof response) => void) => Promise.resolve(response).then(resolve),
+    };
+    const client = { from: () => ({ select: () => builder }) } as unknown as SupabaseClient;
+    const fallback = vi.fn();
+    vi.stubGlobal('fetch', fallback);
+
+    expect(await loadPublicPicks(client)).toEqual([]);
+    expect(fallback).not.toHaveBeenCalled();
   });
 });

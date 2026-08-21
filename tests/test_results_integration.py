@@ -1,6 +1,6 @@
 import unittest
 
-from backend.verificar_resultados import grade_pending_pick
+from backend.verificar_resultados import event_date_cdmx, espn_scoreboard_url, grade_pending_pick, grade_pending_pick_from_results
 
 
 class ResultsIntegrationTests(unittest.TestCase):
@@ -42,6 +42,52 @@ class ResultsIntegrationTests(unittest.TestCase):
         self.assertEqual(decision["estado"], "ganado")
         self.assertEqual(decision["resultado_unidades"], 0.8)
         self.assertEqual(decision["resultado_marcador"], "2-1")
+        self.assertEqual(decision["visibility"], "public")
+
+    def test_duplicate_team_events_are_not_graded_without_a_unique_date(self):
+        duplicate = {**self.result, "source_id": "event-2"}
+        decision = grade_pending_pick_from_results(
+            {"partido": "Tigres vs America", "pick": "Más de 2.5 goles", "cuota": 1.8},
+            [self.result, duplicate],
+        )
+        self.assertIsNone(decision)
+
+    def test_pick_date_selects_the_matching_rematch(self):
+        old = {**self.result, "source_id": "old", "event_date": "2026-08-19"}
+        current = {**self.result, "source_id": "current", "event_date": "2026-08-20"}
+        decision = grade_pending_pick_from_results(
+            {"partido": "Tigres vs America", "pick": "Más de 2.5 goles", "cuota": 1.8, "fecha_generacion": "2026-08-20"},
+            [old, current],
+        )
+        self.assertEqual(decision["resultado_evento_id"], "current")
+
+    def test_scoreboard_request_includes_the_pick_date(self):
+        self.assertEqual(
+            espn_scoreboard_url("https://example.test/scoreboard", "2026-08-19"),
+            "https://example.test/scoreboard?dates=20260819",
+        )
+
+    def test_utc_event_date_is_compared_in_mexico_city_time(self):
+        self.assertEqual(event_date_cdmx("2026-08-21T01:30:00Z"), "2026-08-20")
+
+    def test_parlay_waits_for_every_leg_then_grades_the_combination(self):
+        second = {
+            **self.result,
+            "home_team": "Monterrey",
+            "away_team": "Pumas UNAM",
+            "source_id": "event-2",
+            "scores": [{"score": 1}, {"score": 1}],
+        }
+        pick = {
+            "partido": "Tigres vs America + Monterrey vs Pumas",
+            "pick": "America hándicap +1.5 & Menos de 2.5 goles",
+            "cuota": 2.4,
+            "es_parlay": True,
+        }
+        self.assertIsNone(grade_pending_pick_from_results(pick, [self.result]))
+        decision = grade_pending_pick_from_results(pick, [self.result, second])
+        self.assertEqual(decision["estado"], "ganado")
+        self.assertEqual(decision["resultado_evento_id"], "event-1,event-2")
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ class EventResult:
     away_corners: float | None = None
     source: str = ""
     source_id: str = ""
+    event_date: str = ""
 
 
 def _plain(value: str) -> str:
@@ -89,9 +90,35 @@ def match_event(label: str, event: EventResult) -> bool:
     return same_order or reverse_order
 
 
-def find_matching_event(label: str, events: Iterable[EventResult]) -> EventResult | None:
-    matches = [event for event in events if event.completed and match_event(label, event)]
+def find_matching_event(
+    label: str,
+    events: Iterable[EventResult],
+    expected_date: str = "",
+) -> EventResult | None:
+    matches = [
+        event for event in events
+        if event.completed
+        and match_event(label, event)
+        and (not expected_date or event.event_date[:10] == expected_date[:10])
+    ]
     return matches[0] if len(matches) == 1 else None
+
+
+def find_matching_parlay_events(
+    label: str,
+    events: Iterable[EventResult],
+    expected_date: str = "",
+) -> list[EventResult] | None:
+    legs = [part.strip() for part in re.split(r"\s+\+\s+", str(label)) if part.strip()]
+    if len(legs) < 2:
+        return None
+    event_list = list(events)
+    matches = [find_matching_event(leg, event_list, expected_date) for leg in legs]
+    if any(event is None for event in matches):
+        return None
+    resolved = [event for event in matches if event is not None]
+    unique_ids = {(event.source, event.source_id) for event in resolved}
+    return resolved if len(unique_ids) == len(resolved) else None
 
 
 def _comparison(selection: str, total: float) -> str | None:
@@ -113,6 +140,27 @@ def grade_pick(selection: str, event: EventResult) -> str:
         return PENDING
 
     text = _plain(selection)
+
+    if any(term in text for term in (
+        "1er inning", "primer inning", "primera entrada", "first inning",
+        "primera mitad", "primer tiempo", "1er tiempo", "first half",
+        "primer cuarto", "first quarter", "team total", "total del equipo",
+    )):
+        return REVIEW
+
+    line_match = re.search(r"(?<!\d)([+-]\d+(?:[.,]\d+)?)", text)
+    names_home = _selection_names_team(selection, event.home)
+    names_away = _selection_names_team(selection, event.away)
+    if line_match and (names_home or names_away) and any(
+        term in text for term in ("handicap", "spread", "run line")
+    ):
+        line = float(line_match.group(1).replace(",", "."))
+        selected_score = event.home_score if names_home else event.away_score
+        opponent_score = event.away_score if names_home else event.home_score
+        adjusted_margin = selected_score + line - opponent_score
+        if adjusted_margin == 0:
+            return VOID
+        return WON if adjusted_margin > 0 else LOST
 
     if any(term in text for term in ("corner", "esquina")):
         if event.home_corners is None or event.away_corners is None:

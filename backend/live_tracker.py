@@ -9,9 +9,11 @@ from supabase import create_client, Client
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 def get_chrome_driver():
@@ -26,8 +28,8 @@ def get_chrome_driver():
     return driver
 
 def get_pending_picks():
-    # Obtener picks que no tengan estado "finalizado"
-    response = supabase.table('picks').select('*').neq('estado', 'finalizado').execute()
+    # The tracker only needs event labels; selections remain private.
+    response = supabase.table('picks').select('id,partido').eq('estado', 'pendiente').execute()
     return response.data
 
 def extract_live_text(driver):
@@ -79,18 +81,11 @@ def update_scores_with_ai(raw_text, pending_picks):
     [
       {{
         "id": <id_del_pick>,
-        "marcador": "América 2 - 1 Chivas (Min 75')",
-        "estado": "live",
-        "resultado_apuesta": "pendiente",
-        "ganancia_simulada": 0
+        "marcador": "América 2 - 1 Chivas (Min 75')"
       }}
     ]
-    
-    CRÍTICO: Si el evento ya terminó, cambia "estado" a "finalizado". Luego, EVALÚA matemáticamente si el "pick" que dimos resultó GANADOR o PERDEDOR basado en el marcador final.
-    - Si fue GANADOR: "resultado_apuesta": "ganada", "ganancia_simulada": (10 * cuota_del_pick) - 10
-    - Si fue PERDEDOR: "resultado_apuesta": "perdida", "ganancia_simulada": -10
-    - Si fue EMPATE (Push): "resultado_apuesta": "reembolso", "ganancia_simulada": 0
-    - Muestra el marcador final en "marcador".
+
+    No evalúes apuestas ni cambies estados. La calificación final pertenece al verificador auditado.
     """
 
     try:
@@ -120,18 +115,17 @@ def update_scores_with_ai(raw_text, pending_picks):
         else:
             updates = json.loads(response_text)
         
-        # Subir actualizaciones a Supabase
+        allowed_ids = {str(pick.get('id')) for pick in pending_picks}
+        # Store display-only scores for the pending rows supplied to the model.
         for update in updates:
-            update_data = {
-                'marcador': update.get('marcador'),
-                'estado': update.get('estado')
-            }
-            if update.get('estado') == 'finalizado':
-                update_data['resultado_apuesta'] = update.get('resultado_apuesta', 'pendiente')
-                update_data['ganancia_simulada'] = update.get('ganancia_simulada', 0)
-                
-            supabase.table('picks').update(update_data).eq('id', update['id']).execute()
-            print(f"Actualizado Pick ID {update['id']} -> {update.get('marcador')} | Resultado: {update_data.get('resultado_apuesta', 'live')}")
+            update_id = str(update.get('id', ''))
+            score = str(update.get('marcador', '')).strip()[:160]
+            if update_id not in allowed_ids or not score:
+                continue
+            supabase.table('picks').update({'marcador': score}).eq(
+                'id', update_id
+            ).eq('estado', 'pendiente').execute()
+            print(f"Marcador en vivo actualizado para Pick ID {update_id}: {score}")
             
     except Exception as e:
         print(f"Error en el análisis de Groq para Live Tracker: {e}")

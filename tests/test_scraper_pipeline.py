@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
+import json
+import pickle
 from types import SimpleNamespace
 
 import pytest
 
+from backend.pick_publisher import (
+    AuditedBatchPublisher,
+    PERSISTED_PICK_COLUMNS,
+    SupabaseBatchRepository,
+)
 from backend.pick_selection import build_candidates
 from backend.scraper import PipelineResult, run_structured_pipeline
 
@@ -24,7 +31,12 @@ class FakePublisher:
         if self.mutate:
             rows[0]["source"] = "fabricated"
             rows[0]["cuota"] = 49.0
-        return SimpleNamespace(created=self.created, dry_run=dry_run)
+        return SimpleNamespace(
+            run_id=None if dry_run else "run-1",
+            batch_id=None if dry_run else "batch-1",
+            created=False if dry_run else self.created,
+            dry_run=dry_run,
+        )
 
 
 def _rank_first(candidates):
@@ -211,6 +223,23 @@ def test_structured_pipeline_rejects_an_observation_from_the_future(event_fixtur
     assert publisher.calls == []
 
 
+def test_structured_pipeline_rejects_an_event_that_has_already_started(event_fixture):
+    publisher = FakePublisher()
+    rank_calls = []
+
+    result = run_structured_pipeline(
+        [event_fixture],
+        lambda candidates: rank_calls.append(candidates),
+        publisher,
+        dry_run=False,
+        reference_at=event_fixture.starts_at,
+    )
+
+    assert result == PipelineResult(1, 0, False, ())
+    assert rank_calls == []
+    assert publisher.calls == []
+
+
 def test_structured_pipeline_rejects_oversized_source_audit_before_publish(
     event_fixture,
 ):
@@ -276,3 +305,147 @@ def test_structured_pipeline_hostile_reference_truthiness_fails_closed(
 
     assert result == PipelineResult(1, 0, False, ())
     assert publisher.calls == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        SimpleNamespace(
+            run_id="run-1", batch_id=None, created=True, dry_run=False
+        ),
+        SimpleNamespace(
+            run_id=None, batch_id="batch-1", created=True, dry_run=False
+        ),
+        SimpleNamespace(
+            run_id="run-1", batch_id="batch-1", created="true", dry_run=False
+        ),
+        SimpleNamespace(
+            run_id="run-1", batch_id="batch-1", created=True, dry_run="false"
+        ),
+        SimpleNamespace(
+            run_id="run-1", batch_id="batch-1", created=True, dry_run=True
+        ),
+    ],
+)
+def test_structured_pipeline_malformed_publication_never_claims_persistence(
+    event_fixture,
+    response,
+):
+    class ResponsePublisher(FakePublisher):
+        def publish(self, rows, *, dry_run):
+            self.calls.append((rows, dry_run))
+            return response
+
+    publisher = ResponsePublisher()
+
+    result = run_structured_pipeline(
+        [event_fixture],
+        _rank_first,
+        publisher,
+        dry_run=False,
+        reference_at=REFERENCE_AT,
+    )
+
+    assert result.pick_count == 1
+    assert result.persisted is False
+
+
+def test_structured_pipeline_accepts_an_idempotent_replay_with_both_ids(
+    event_fixture,
+):
+    publisher = FakePublisher(created=False)
+
+    result = run_structured_pipeline(
+        [event_fixture],
+        _rank_first,
+        publisher,
+        dry_run=False,
+        reference_at=REFERENCE_AT,
+    )
+
+    assert result.persisted is True
+
+
+def test_structured_pipeline_result_is_immutable_pickleable_and_asdict_safe(
+    event_fixture,
+):
+    result = run_structured_pipeline(
+        [event_fixture],
+        _rank_first,
+        FakePublisher(),
+        dry_run=False,
+        reference_at=REFERENCE_AT,
+    )
+
+    restored = pickle.loads(pickle.dumps(result))
+    assert restored == result
+    json.dumps(asdict(result))
+    with pytest.raises(TypeError):
+        result.picks[0]["source"] = "changed"
+
+
+def test_pipeline_result_rejects_an_explicit_pick_count_mismatch():
+    with pytest.raises(ValueError, match="invalid pipeline result"):
+        PipelineResult(1, 1, False, (), ())
+
+
+class _RpcRequest:
+    def __init__(self, data):
+        self.data = data
+
+    def execute(self):
+        return SimpleNamespace(data=self.data)
+
+
+class _FakeSupabaseClient:
+    def __init__(self):
+        self.calls = []
+
+    def rpc(self, function_name, arguments):
+        self.calls.append((function_name, arguments))
+        return _RpcRequest(
+            {
+                "run_id": "run-real",
+                "batch_id": "batch-real",
+                "created": True,
+                "delivery_status": {},
+            }
+        )
+
+
+def test_structured_pipeline_real_adapter_reaches_rpc_with_only_db_columns(
+    event_fixture,
+    tmp_path,
+):
+    client = _FakeSupabaseClient()
+    adapter = AuditedBatchPublisher(
+        SupabaseBatchRepository(client),
+        run_key="run-key-1",
+        public_path=tmp_path / "picks.json",
+    )
+
+    result = run_structured_pipeline(
+        [event_fixture],
+        _rank_first,
+        adapter,
+        dry_run=False,
+        reference_at=REFERENCE_AT,
+    )
+
+    assert result.persisted is True
+    assert len(client.calls) == 1
+    function_name, arguments = client.calls[0]
+    assert function_name == "publish_pick_batch"
+    requested = arguments["requested_picks"]
+    assert len(requested) == 1
+    assert set(requested[0]) <= PERSISTED_PICK_COLUMNS
+    assert {
+        "starts_at",
+        "observed_at",
+        "market_key",
+        "selection_key",
+        "line",
+        "bookmaker_key",
+        "home_team",
+        "away_team",
+    }.isdisjoint(requested[0])

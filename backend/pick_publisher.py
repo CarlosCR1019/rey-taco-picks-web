@@ -13,6 +13,37 @@ from typing import Mapping, Protocol, Sequence, TypedDict
 from backend.publishing_policy import public_payload
 
 
+PERSISTED_PICK_COLUMNS = frozenset(
+    {
+        "categoria",
+        "partido",
+        "pick",
+        "cuota",
+        "confianza",
+        "razonamiento",
+        "marcador",
+        "estado",
+        "es_parlay",
+        "liga",
+        "mercado",
+        "riesgo",
+        "resultado_apuesta",
+        "ganancia_simulada",
+        "fecha_generacion",
+        "fecha_evento",
+        "horario",
+        "odds_mercado",
+        "tiene_valor",
+        "visibility",
+        "source",
+        "source_event_id",
+        "source_market_key",
+        "source_selection_key",
+        "source_observed_at",
+    }
+)
+
+
 class PublishResponse(TypedDict):
     run_id: str
     batch_id: str
@@ -51,6 +82,30 @@ class PublicationResult:
     created: bool
     delivery_status: dict[str, object]
     dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class AuditedBatchPublisher:
+    """Typed application adapter for the atomic audited batch publisher."""
+
+    repository: BatchRepository
+    run_key: str
+    public_path: str | Path
+
+    def publish(
+        self,
+        rows: Sequence[Mapping[str, object]],
+        *,
+        dry_run: bool,
+    ) -> PublicationResult:
+        projected = _project_persisted_rows(rows)
+        return publish_batch(
+            self.repository,
+            projected,
+            self.run_key,
+            self.public_path,
+            dry_run=dry_run,
+        )
 
 
 class SupabaseBatchRepository:
@@ -94,6 +149,21 @@ def source_hash_for(picks: Sequence[Mapping[str, object]]) -> str:
     return sha256(encoded).hexdigest()
 
 
+def _project_persisted_rows(
+    rows: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        raise ValueError("picks must be a sequence")
+    projected = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("each pick must be a mapping")
+        projected.append(
+            {key: value for key, value in row.items() if key in PERSISTED_PICK_COLUMNS}
+        )
+    return tuple(projected)
+
+
 def publish_batch(
     repository: BatchRepository,
     picks: Sequence[Mapping[str, object]],
@@ -103,6 +173,8 @@ def publish_batch(
     dry_run: bool = False,
 ) -> PublicationResult:
     """Publish a database batch before atomically exposing its public selection."""
+    if type(dry_run) is not bool:
+        raise ValueError("dry_run must be a boolean")
     if not picks:
         raise ValueError("picks must not be empty")
     if not isinstance(run_key, str) or not run_key.strip():

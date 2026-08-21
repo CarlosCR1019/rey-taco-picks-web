@@ -46,7 +46,7 @@ def test_phase7_delegates_persistence_and_delivery_without_legacy_side_effects()
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
 
-    assert "publish_batch" in called_names
+    assert "AuditedBatchPublisher" in called_names
     assert "deliver_batch" in called_names
     assert not {"open", "urlopen", "_guardar_local", "_enviar_telegram"} & called_names
 

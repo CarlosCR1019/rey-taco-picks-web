@@ -72,6 +72,23 @@ def test_dry_run_never_calls_repository_or_writes_file(tmp_path):
     assert result.dry_run is True
 
 
+def test_publish_rejects_a_non_boolean_dry_run_without_side_effects(tmp_path):
+    destination = tmp_path / "picks.json"
+    repository = FakeRepository()
+
+    with pytest.raises(ValueError, match="dry_run"):
+        publish_batch(
+            repository,
+            picks(),
+            "run-1",
+            destination,
+            dry_run="false",  # type: ignore[arg-type]
+        )
+
+    assert repository.calls == []
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize("invalid_picks, invalid_run_key", [([], "run-1"), (picks(), "  ")])
 def test_dry_run_rejects_invalid_inputs_without_side_effects(
     invalid_picks, invalid_run_key, tmp_path

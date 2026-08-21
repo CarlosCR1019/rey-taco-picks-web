@@ -12,7 +12,6 @@ import sys
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -37,7 +36,11 @@ from backend.playdoit_source import (
     extract_playdoit_raw_events,
     normalize_playdoit_events,
 )
-from backend.pick_publisher import SupabaseBatchRepository, publish_batch
+from backend.pick_publisher import (
+    AuditedBatchPublisher,
+    PERSISTED_PICK_COLUMNS,
+    SupabaseBatchRepository,
+)
 from backend.pick_selection import (
     CandidatePick,
     EvidenceScore,
@@ -1530,15 +1533,6 @@ def fase7_guardar_y_notificar(
         repository = SupabaseBatchRepository(supabase)
 
     hoy = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
-    allowed_columns = {
-        'categoria', 'partido', 'pick', 'cuota', 'confianza',
-        'razonamiento', 'marcador', 'estado', 'es_parlay', 'liga', 'mercado',
-        'riesgo', 'resultado_apuesta', 'ganancia_simulada', 'fecha_generacion',
-        'fecha_evento', 'horario', 'odds_mercado', 'tiene_valor', 'visibility',
-        'source', 'source_event_id', 'source_market_key',
-        'source_selection_key', 'source_observed_at',
-    }
-
     visible_picks = assign_visibility(picks)
     clean_picks = []
     for pick in visible_picks:
@@ -1551,7 +1545,11 @@ def fase7_guardar_y_notificar(
         )
         prepared.setdefault('ganancia_simulada', 0)
         clean_picks.append(
-            {key: value for key, value in prepared.items() if key in allowed_columns}
+            {
+                key: value
+                for key, value in prepared.items()
+                if key in PERSISTED_PICK_COLUMNS
+            }
         )
 
     # Public storage never receives premium rows or the public pick's rationale.
@@ -1574,11 +1572,13 @@ def fase7_guardar_y_notificar(
         )
 
     try:
-        publication = publish_batch(
-            repository,
+        publication = AuditedBatchPublisher(
+            repository=repository,
+            run_key=active_run_key,
+            public_path=active_settings.public_picks_path,
+        ).publish(
             picks,
-            active_run_key,
-            active_settings.public_picks_path,
+            dry_run=False,
         )
     except Exception:
         raise PersistenceFailure("scraper batch persistence failed") from None
@@ -1671,25 +1671,59 @@ class ExitCode(IntEnum):
     UNEXPECTED = 10
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class FrozenPick(Mapping[str, object]):
+    """Immutable scalar mapping that remains pickle/asdict serializable."""
+
+    _items: tuple[tuple[str, object], ...]
+
+    def __getitem__(self, key: str) -> object:
+        for item_key, value in self._items:
+            if item_key == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (key for key, _value in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+_UNSET_PIPELINE_PICKS = object()
+
+
+@dataclass(frozen=True, init=False)
 class PipelineResult:
     event_count: int
     pick_count: int
     persisted: bool
     failed_deliveries: tuple[str, ...]
-    picks: tuple[Mapping[str, object], ...] = ()
+    picks: tuple[FrozenPick, ...]
 
-    def __post_init__(self):
+    def __init__(
+        self,
+        event_count: int,
+        pick_count: int,
+        persisted: bool,
+        failed_deliveries: Sequence[str],
+        picks: object = _UNSET_PIPELINE_PICKS,
+    ) -> None:
+        provided_picks = picks is not _UNSET_PIPELINE_PICKS
+        frozen_picks = () if not provided_picks else _freeze_pipeline_picks(picks)
         _check_pipeline_result_fields(
-            self.event_count,
-            self.pick_count,
-            self.persisted,
-            self.failed_deliveries,
+            event_count,
+            pick_count,
+            persisted,
+            failed_deliveries,
         )
-        object.__setattr__(
-            self, "failed_deliveries", tuple(self.failed_deliveries)
-        )
-        object.__setattr__(self, "picks", _freeze_pipeline_picks(self.picks))
+        if provided_picks and pick_count != len(frozen_picks):
+            raise ValueError("invalid pipeline result")
+        object.__setattr__(self, "event_count", event_count)
+        object.__setattr__(self, "pick_count", pick_count)
+        object.__setattr__(self, "persisted", persisted)
+        object.__setattr__(self, "failed_deliveries", tuple(failed_deliveries))
+        object.__setattr__(self, "picks", frozen_picks)
 
 
 def run_structured_pipeline(
@@ -1718,6 +1752,26 @@ def run_structured_pipeline(
         return PipelineResult(event_count, 0, False, ())
 
     try:
+        reference = (
+            datetime.now(timezone.utc)
+            if reference_at is None
+            else reference_at
+        )
+        if (
+            not isinstance(reference, datetime)
+            or reference.tzinfo is None
+            or reference.utcoffset() is None
+            or any(
+                candidate.starts_at.astimezone(timezone.utc)
+                <= reference.astimezone(timezone.utc)
+                for candidate in candidates
+            )
+        ):
+            return PipelineResult(event_count, 0, False, ())
+    except Exception:
+        return PipelineResult(event_count, 0, False, ())
+
+    try:
         raw_ranking = ranker(tuple(candidates))
     except Exception:
         return PipelineResult(event_count, 0, False, ())
@@ -1726,11 +1780,6 @@ def run_structured_pipeline(
         return PipelineResult(event_count, 0, False, ())
 
     try:
-        reference = (
-            datetime.now(timezone.utc)
-            if reference_at is None
-            else reference_at
-        )
         source_backed_rows = []
         for ranked_pick in ranked:
             evidence = evidence_for_candidate(
@@ -1749,6 +1798,14 @@ def run_structured_pipeline(
         for visible_row in visible_rows:
             if visible_row.get("visibility") == "public":
                 visible_row.pop("razonamiento", None)
+        visible_rows = [
+            {
+                key: value
+                for key, value in visible_row.items()
+                if key in PERSISTED_PICK_COLUMNS
+            }
+            for visible_row in visible_rows
+        ]
     except Exception:
         return PipelineResult(event_count, 0, False, ())
 
@@ -1769,7 +1826,7 @@ def run_structured_pipeline(
         )
 
     try:
-        persisted = False if dry_run else _publication_was_persisted(publication)
+        persisted = _publication_was_persisted(publication, dry_run=dry_run)
     except Exception:
         persisted = False
     return PipelineResult(
@@ -1843,6 +1900,8 @@ def _valid_source_audit_row(row: object) -> bool:
         ):
             return False
     observed_at = row.get("source_observed_at")
+    if not isinstance(observed_at, str):
+        return False
     try:
         parsed_observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
     except (AttributeError, TypeError, ValueError):
@@ -1874,7 +1933,7 @@ def _valid_visible_source_rows(rows: object) -> bool:
     )
 
 
-def _freeze_pipeline_picks(picks: object) -> tuple[Mapping[str, object], ...]:
+def _freeze_pipeline_picks(picks: object) -> tuple[FrozenPick, ...]:
     if isinstance(picks, (str, bytes)) or not isinstance(picks, Sequence):
         raise ValueError("invalid pipeline picks")
     frozen = []
@@ -1891,20 +1950,32 @@ def _freeze_pipeline_picks(picks: object) -> tuple[Mapping[str, object], ...]:
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError("invalid pipeline picks")
             copied[key] = value
-        frozen.append(MappingProxyType(copied))
+        frozen.append(FrozenPick(tuple(copied.items())))
     return tuple(frozen)
 
 
-def _publication_was_persisted(publication: object) -> bool:
-    if getattr(publication, "dry_run", False) is True:
+def _publication_was_persisted(publication: object, *, dry_run: bool) -> bool:
+    if type(dry_run) is not bool:
         return False
-    if getattr(publication, "created", False) is True:
-        return True
-    for field in ("run_id", "batch_id"):
-        value = getattr(publication, field, None)
-        if isinstance(value, str) and value.strip():
-            return True
-    return False
+    try:
+        response_dry_run = getattr(publication, "dry_run")
+        created = getattr(publication, "created")
+        run_id = getattr(publication, "run_id")
+        batch_id = getattr(publication, "batch_id")
+    except Exception:
+        return False
+    if type(response_dry_run) is not bool or response_dry_run is not dry_run:
+        return False
+    if type(created) is not bool:
+        return False
+    if dry_run:
+        return False
+    return (
+        isinstance(run_id, str)
+        and bool(run_id.strip())
+        and isinstance(batch_id, str)
+        and bool(batch_id.strip())
+    )
 
 
 def _check_pipeline_result_fields(

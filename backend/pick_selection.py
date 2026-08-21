@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 import math
@@ -28,6 +28,7 @@ SUPPORTED_SELECTIONS = {
     "spreads": frozenset({"home", "away"}),
 }
 MEXICO = ZoneInfo("America/Mexico_City")
+PHYSICAL_EVENT_KICKOFF_TOLERANCE = timedelta(minutes=5)
 
 
 def _required_text(value: object, field: str) -> str:
@@ -145,6 +146,10 @@ class CandidatePick:
             raise ValueError("candidate market and period are not supported")
         if self.selection_key not in SUPPORTED_SELECTIONS[self.market_key]:
             raise ValueError("candidate selection is not supported for its market")
+        if self.market_key == "h2h" and self.line is not None:
+            raise ValueError("h2h line must be absent")
+        if self.market_key in {"totals", "spreads"} and self.line is None:
+            raise ValueError(f"{self.market_key} line is required")
 
         if self.line is not None:
             object.__setattr__(self, "line", _finite_float(self.line, "line"))
@@ -212,6 +217,8 @@ def build_candidates(events: Iterable[Event]) -> list[CandidatePick]:
             if (
                 (market.key, market.period) not in SUPPORTED_MARKETS
                 or market.bookmaker_key is None
+                or (market.key == "h2h" and market.line is not None)
+                or (market.key in {"totals", "spreads"} and market.line is None)
             ):
                 continue
             for outcome_index, _outcome in enumerate(market.outcomes):
@@ -253,12 +260,26 @@ def _normalized_competitor(value: str) -> str:
     return " ".join(normalized.split())
 
 
-def _physical_event_identity(candidate: CandidatePick) -> tuple[str, str, datetime]:
-    return (
-        _normalized_competitor(candidate.home_team),
-        _normalized_competitor(candidate.away_team),
-        candidate.starts_at.astimezone(timezone.utc),
+def _physical_competitor_pair(candidate: CandidatePick) -> tuple[str, str]:
+    competitors = sorted(
+        (
+            _normalized_competitor(candidate.home_team),
+            _normalized_competitor(candidate.away_team),
+        )
     )
+    return competitors[0], competitors[1]
+
+
+def _same_physical_event(first: CandidatePick, second: CandidatePick) -> bool:
+    """Fail closed on cross-source kickoff drift of five minutes or less."""
+
+    if _physical_competitor_pair(first) != _physical_competitor_pair(second):
+        return False
+    kickoff_delta = abs(
+        first.starts_at.astimezone(timezone.utc)
+        - second.starts_at.astimezone(timezone.utc)
+    )
+    return kickoff_delta <= PHYSICAL_EVENT_KICKOFF_TOLERANCE
 
 
 def build_same_day_parlay(
@@ -293,7 +314,7 @@ def build_same_day_parlay(
                 second.source_event_id,
             ):
                 continue
-            if _physical_event_identity(first) == _physical_event_identity(second):
+            if _same_physical_event(first, second):
                 continue
             if second.starts_at.astimezone(MEXICO).date() != first_date:
                 continue

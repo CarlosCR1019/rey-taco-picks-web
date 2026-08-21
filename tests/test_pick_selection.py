@@ -6,6 +6,7 @@ import pytest
 
 from backend.pick_selection import (
     CandidatePick,
+    _candidate_id,
     build_candidates,
     build_same_day_parlay,
 )
@@ -112,6 +113,18 @@ def test_market_without_bookmaker_identity_is_not_a_candidate():
     )
 
     assert build_candidates([event_with(markets=(market,))]) == []
+
+
+def test_build_candidates_skips_h2h_market_with_a_line():
+    lined_h2h = Market(
+        "h2h",
+        "full_game",
+        0.5,
+        (Outcome("home", "Dodgers", 1.82), Outcome("away", "Padres", 2.04)),
+        bookmaker_key="playdoit",
+    )
+
+    assert build_candidates([event_with(markets=(lined_h2h,))]) == []
 
 
 def test_candidate_ids_do_not_collide_across_bookmakers_lines_or_selections():
@@ -343,7 +356,7 @@ def test_parlay_rejects_same_physical_event_observed_by_different_sources():
     assert build_same_day_parlay([playdoit, odds_api]) is None
 
 
-def test_physical_event_identity_preserves_exact_home_away_orientation():
+def test_parlay_rejects_same_physical_event_with_reversed_orientation():
     starts_at = OBSERVED + timedelta(hours=8)
     first = build_candidates(
         [
@@ -368,10 +381,63 @@ def test_physical_event_identity_preserves_exact_home_away_orientation():
         ]
     )[0]
 
-    assert build_same_day_parlay([first, reversed_orientation]) == (
-        first,
-        reversed_orientation,
-    )
+    assert build_same_day_parlay([first, reversed_orientation]) is None
+
+
+def test_parlay_rejects_same_physical_event_with_one_minute_clock_drift():
+    starts_at = OBSERVED + timedelta(hours=8)
+    first = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="playdoit-123",
+                starts_at=starts_at,
+                home_team="Club América",
+                away_team="Tigres UANL",
+            )
+        ]
+    )[0]
+    delayed = build_candidates(
+        [
+            event_with(
+                source="the_odds_api",
+                source_event_id="odds-987",
+                starts_at=starts_at + timedelta(minutes=1),
+                home_team="Club América",
+                away_team="Tigres UANL",
+            )
+        ]
+    )[0]
+
+    assert build_same_day_parlay([first, delayed]) is None
+
+
+def test_parlay_allows_same_competitors_beyond_five_minute_tolerance():
+    starts_at = OBSERVED + timedelta(hours=8)
+    first = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="playdoit-123",
+                starts_at=starts_at,
+                home_team="Club América",
+                away_team="Tigres UANL",
+            )
+        ]
+    )[0]
+    later_match = build_candidates(
+        [
+            event_with(
+                source="the_odds_api",
+                source_event_id="odds-987",
+                starts_at=starts_at + timedelta(minutes=6),
+                home_team="Tigres UANL",
+                away_team="Club América",
+            )
+        ]
+    )[0]
+
+    assert build_same_day_parlay([first, later_match]) == (first, later_match)
 
 
 def test_parlay_is_only_an_explicit_leg_bundle_without_synthesized_quote():
@@ -403,3 +469,90 @@ def test_candidate_type_rejects_an_id_that_does_not_match_its_evidence(event_fix
 
     with pytest.raises(ValueError, match="candidate_id"):
         CandidatePick(**values)
+
+
+def test_candidate_type_rejects_h2h_line_even_with_matching_id(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+    values = {
+        field: getattr(candidate, field)
+        for field in CandidatePick.__dataclass_fields__
+    }
+    values["line"] = 0.5
+    values["candidate_id"] = _candidate_id(
+        candidate.source,
+        candidate.source_event_id,
+        candidate.bookmaker_key,
+        candidate.market_key,
+        candidate.period,
+        0.5,
+        candidate.selection_key,
+    )
+
+    with pytest.raises(ValueError, match="h2h line must be absent"):
+        CandidatePick(**values)
+
+
+@pytest.mark.parametrize(
+    ("market_key", "selection_key", "selection_name"),
+    [
+        ("totals", "over", "Más de 0"),
+        ("spreads", "home", "América 0"),
+    ],
+)
+def test_candidate_type_requires_totals_and_spreads_line(
+    event_fixture,
+    market_key,
+    selection_key,
+    selection_name,
+):
+    candidate = build_candidates([event_fixture])[0]
+    values = {
+        field: getattr(candidate, field)
+        for field in CandidatePick.__dataclass_fields__
+    }
+    values.update(
+        market_key=market_key,
+        selection_key=selection_key,
+        selection_name=selection_name,
+        line=None,
+        candidate_id=_candidate_id(
+            candidate.source,
+            candidate.source_event_id,
+            candidate.bookmaker_key,
+            market_key,
+            candidate.period,
+            None,
+            selection_key,
+        ),
+    )
+
+    with pytest.raises(ValueError, match=f"{market_key} line is required"):
+        CandidatePick(**values)
+
+
+def test_zero_line_remains_valid_for_totals_and_spreads():
+    event = event_with(
+        markets=(
+            Market(
+                "totals",
+                "full_game",
+                0,
+                (Outcome("over", "Más de 0", 1.90), Outcome("under", "Menos de 0", 1.92)),
+                bookmaker_key="playdoit",
+            ),
+            Market(
+                "spreads",
+                "full_game",
+                0,
+                (Outcome("home", "Dodgers 0", 1.91), Outcome("away", "Padres 0", 1.91)),
+                bookmaker_key="playdoit",
+            ),
+        )
+    )
+
+    assert [(row.market_key, row.line) for row in build_candidates([event])] == [
+        ("totals", 0.0),
+        ("totals", 0.0),
+        ("spreads", 0.0),
+        ("spreads", 0.0),
+    ]

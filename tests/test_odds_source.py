@@ -853,4 +853,7 @@ def test_legacy_source_has_no_executable_price_defaults_or_derived_market_odds()
     )
     assert not [pattern for pattern in forbidden if pattern in text]
     assert '"cuotas_por_resultado": {}' in text
-    assert text.count("_surface_event_record(e, cat_real, horario_limpio)") == 2
+    # Playdoit now reaches legacy phases only through the normalized Event
+    # projection; the positional surface adapter remains non-executable.
+    assert "_surface_event_record(e, cat_real, horario_limpio)" not in text
+    assert "normalize_playdoit_events(enriched, observed)" in text

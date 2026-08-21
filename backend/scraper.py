@@ -32,6 +32,10 @@ from backend.odds_source import (
     fetch_odds_events,
     normalize_odds_event,
 )
+from backend.playdoit_source import (
+    extract_playdoit_raw_events,
+    normalize_playdoit_events,
+)
 from backend.pick_publisher import SupabaseBatchRepository, publish_batch
 from backend.scraper_config import ConfigError, ScraperSettings, load_settings
 from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
@@ -270,9 +274,13 @@ def _event_record_identity(event):
 
 def _event_record_evidence(event):
     return (
+        _normalized_event_identity(event.get('source')),
+        _normalized_event_identity(event.get('source_event_id')),
         _normalized_event_identity(event.get('local')),
         _normalized_event_identity(event.get('visitante')),
         _normalized_event_identity(event.get('horario')),
+        _normalized_event_identity(event.get('starts_at')),
+        _normalized_event_identity(event.get('observed_at')),
         _normalized_event_identity(event.get('bookmaker_key')),
         _normalized_quote_mapping(event.get('cuotas_por_resultado')),
         tuple(str(value).strip() for value in event.get('cuotas_superficie', ())),
@@ -610,7 +618,7 @@ def es_partido_futuro_valido(horario_str):
             if fecha_partido <= (ahora + timedelta(minutes=5)):
                 return False, f"Ya inició/terminó ({dia:02d}/{mes:02d} {hora:02d}:{minuto:02d})"
                 
-            # Si es de una fecha lejana (> 30 horas, ej. 19/08, 21/08, 22/08)
+            # Si es de una fecha lejana (> 30 horas), se descarta.
             if fecha_partido > limite_maximo:
                 return False, f"Descartado fecha lejana ({dia:02d}/{mes:02d} no es de hoy)"
                 
@@ -649,91 +657,41 @@ def es_partido_futuro_valido(horario_str):
     except Exception as e:
         return False, f"Error validación; failure={type(e).__name__}"
 
-def extract_events_from_page(driver):
-    """Extrae ÚNICAMENTE eventos PRE-MATCH directamente de Playdoit y convierte momios a Decimal."""
-    script = get_shadow_script() + """
-    var shadow = getShadow();
-    if(!shadow) return [];
-    
-    var containers = Array.from(shadow.querySelectorAll('div[class*="EventBoxContainer"]'));
-    var result = [];
+def _sport_for_category(category):
+    normalized = str(category or '').casefold()
+    if any(token in normalized for token in ('mlb', 'kbo', 'béisbol', 'beisbol')):
+        return 'baseball'
+    if 'nfl' in normalized or 'fútbol americano' in normalized:
+        return 'americanfootball'
+    return 'soccer'
 
-    containers.forEach(function(c) {
-        try {
-            var rawText = c.innerText.trim();
-            // Descartar solo si realmente tiene marcador en juego terminado o esports/virtuales
-            if (/e-fútbol|esports|virtual|cyber|2x4\\s*min|2x5\\s*min|gt\\s*sports/i.test(rawText)) return;
 
-            var lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+def extract_events_from_page(
+    driver, *, observed_at=None, fallback_league=None, fallback_sport=None
+):
+    """Extract and normalize Playdoit records before legacy phase projection."""
 
-            // 1. Extraer Fecha y Hora
-            var timeLine = lines.find(l => /^(?:0?[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$/.test(l)) || "Hoy";
-            var dateLine = lines.find(l => /\\d{1,2}[\\/\\-]\\d{1,2}/.test(l)) || "18/08";
-            var horario = dateLine + " " + timeLine + " hrs";
-
-            // 2. Extraer Nombres de Equipos
-            var compEls = Array.from(c.querySelectorAll('[class*="CompetitorName"], [class*="Competitors"], [class*="NameContainer"], [class*="EventName"]'));
-            var teamNames = compEls.map(el => el.innerText.trim()).filter(t => t.length >= 3);
-            
-            var local = teamNames[0] || "";
-            var visitante = teamNames[1] || "";
-            
-            if (!local || !visitante) {
-                var candidates = lines.filter(l => {
-                    if (l.length < 3 || l.length > 35) return false;
-                    if (/^(sgp|en vivo|live|hoy|mañana|resultado final|tiempo regular|hándicap|totales|ganador)$/i.test(l)) return false;
-                    if (/^[\\+\\-]?\\d+(\\.\\d+)?$/.test(l)) return false;
-                    if (/^\\d{1,2}[\\/\\:]\\d{1,2}/.test(l)) return false;
-                    if (/champions|league|copa|mlb|premier|laliga|liga/i.test(l) && !/pumas|américa|chivas|santos|tigres|monterrey|cruz azul/i.test(l)) return false;
-                    return true;
-                });
-                if (candidates.length >= 2) {
-                    local = candidates[0];
-                    visitante = candidates[1];
-                }
-            }
-
-            // 3. Extraer y Normalizar Cuotas a Formato Decimal
-            var oddsElements = c.querySelectorAll('button[class*="OddBoxButton-"], div[class*="OddBox-"], span[class*="OddValue-"], [class*="Price"], [class*="OddButton"]');
-            var cuotas = [];
-            oddsElements.forEach(function(o) {
-                var val = o.innerText.trim();
-                if (val) {
-                    // Convertir formato americano a decimal ej: -143 -> 1.70, +100 -> 2.00, +260 -> 3.60
-                    if (/^[+-]\\d+$/.test(val)) {
-                        var n = parseFloat(val);
-                        if (n > 0) {
-                            val = ((n / 100) + 1).toFixed(2);
-                        } else if (n < 0) {
-                            val = ((100 / Math.abs(n)) + 1).toFixed(2);
-                        }
-                    }
-                    cuotas.push(val);
-                }
-            });
-
-            if (local && visitante) {
-                // Limpiar nombres con abridores de MLB
-                local = local.split('\\n')[0].trim();
-                visitante = visitante.split('\\n')[0].trim();
-
-                if (/^\\d+$/.test(local) || /^\\d+$/.test(visitante) || local.length < 3 || visitante.length < 3) return;
-                if (local.toLowerCase() === visitante.toLowerCase()) return;
-
-                result.push({
-                    local: local,
-                    visitante: visitante,
-                    partido: local + " vs " + visitante,
-                    horario: horario,
-                    cuotas: cuotas,
-                    texto_completo: rawText.replace(/\\n+/g, ' | ')
-                });
-            }
-        } catch(e) {}
-    });
-    return result;
-    """
-    return driver.execute_script(script) or []
+    observed = observed_at or datetime.now(ZoneInfo("America/Mexico_City"))
+    raw_records = extract_playdoit_raw_events(driver)
+    enriched = []
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            continue
+        record = dict(raw)
+        inferred_league = fallback_league or inferir_categoria_deporte(
+            record.get('home', ''), record.get('away', '')
+        )
+        record['league'] = record.get('league') or inferred_league
+        record['sport'] = (
+            record.get('sport')
+            or fallback_sport
+            or _sport_for_category(record['league'])
+        )
+        enriched.append(record)
+    return [
+        _legacy_odds_projection(event)
+        for event in normalize_playdoit_events(enriched, observed)
+    ]
 
 def _legacy_odds_projection(event):
     """Project a normalized event for legacy phases during the migration."""
@@ -741,7 +699,9 @@ def _legacy_odds_projection(event):
     h2h = next((market for market in event.markets if market.key == "h2h"), None)
     named_h2h = {}
     surface_odds = []
-    bookmaker_key = None
+    bookmaker_key = (
+        event.markets[0].bookmaker_key if event.markets else None
+    )
     if h2h is not None:
         bookmaker_key = h2h.bookmaker_key
         for key in ("home", "draw", "away"):
@@ -774,7 +734,11 @@ def _legacy_odds_projection(event):
 
     match_name = f"{event.home_team} vs {event.away_team}"
     return {
+        "source": event.source,
         "source_event_id": event.source_event_id,
+        "sport": event.sport,
+        "starts_at": event.starts_at.isoformat(),
+        "observed_at": event.observed_at.isoformat(),
         "bookmaker_key": bookmaker_key,
         "categoria": event.league,
         "partido": match_name,
@@ -844,6 +808,7 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
     print("="*60)
     
     partidos_data = []
+    observed_playdoit = datetime.now(ZoneInfo("America/Mexico_City"))
     try:
         driver.get("https://www.playdoit.mx/es/")
         time.sleep(8)
@@ -855,20 +820,22 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
         # Esperar hasta que Altenar termine de renderizar los eventos en pantalla
         eventos_iniciales = []
         for intento_carga in range(5):
-            eventos_iniciales = extract_events_from_page(driver)
+            eventos_iniciales = extract_events_from_page(
+                driver, observed_at=observed_playdoit
+            )
             if eventos_iniciales:
                 break
             time.sleep(2)
             
         print(f"   📡 Cartelera detectada con {len(eventos_iniciales)} eventos principales.")
         for e in eventos_iniciales:
-            es_valido_tiempo, horario_limpio = es_partido_futuro_valido(e.get('horario', 'Hoy'))
+            es_valido_tiempo, horario_limpio = es_partido_futuro_valido(
+                e.get('horario') or ''
+            )
             if not es_valido_tiempo:
                 continue
-            cat_real = inferir_categoria_deporte(e['local'], e['visitante'])
-            partidos_data.append(
-                _surface_event_record(e, cat_real, horario_limpio)
-            )
+            e['horario'] = horario_limpio
+            partidos_data.append(e)
         
         # 2. Exploración de categorías específicas adicionales (Champions, Liga MX, Premier, MLB, KBO, etc.)
         categorias = [
@@ -883,19 +850,24 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
                 time.sleep(3.5)
                 eventos = []
                 for _ in range(4):
-                    eventos = extract_events_from_page(driver)
+                    eventos = extract_events_from_page(
+                        driver,
+                        observed_at=observed_playdoit,
+                        fallback_league=cat,
+                        fallback_sport=_sport_for_category(cat),
+                    )
                     if eventos: break
                     time.sleep(2.0)
                 nuevos = 0
                 for e in eventos:
-                    es_valido_tiempo, horario_limpio = es_partido_futuro_valido(e.get('horario', 'Hoy'))
+                    es_valido_tiempo, horario_limpio = es_partido_futuro_valido(
+                        e.get('horario') or ''
+                    )
                     if not es_valido_tiempo:
                         continue
-                    
-                    cat_real = inferir_categoria_deporte(e['local'], e['visitante'], fallback=cat)
-                    partidos_data.append(
-                        _surface_event_record(e, cat_real, horario_limpio)
-                    )
+
+                    e['horario'] = horario_limpio
+                    partidos_data.append(e)
                     nuevos += 1
                 print(f"✅ {nuevos} nuevos futuros" if nuevos else "⏭️ sin nuevos")
             else:
@@ -1044,7 +1016,7 @@ def fase3_filtro_inteligente(partidos_data, *, groq_api_key=None):
     # Filtrar solo eventos con horario futuro y priorizar deportes principales
     eventos_filtrados = []
     for p in partidos_data:
-        es_val, h_limpio = es_partido_futuro_valido(p.get('horario', 'Hoy'))
+        es_val, h_limpio = es_partido_futuro_valido(p.get('horario') or '')
         if es_val:
             eventos_filtrados.append({
                 "cat": p['categoria'],
@@ -1132,44 +1104,57 @@ def fase4_inmersion(driver, objetivos, partidos_data):
     datos_profundos = []
     
     for i, obj in enumerate(objetivos, 1):
-        base = next((p for p in partidos_data if p['partido'].lower() == obj.lower() or obj.lower() in p['partido'].lower()), None)
+        objective_identity = _normalized_event_identity(obj)
+        base = next(
+            (
+                p for p in partidos_data
+                if _normalized_event_identity(p.get('partido'))
+                == objective_identity
+            ),
+            None,
+        )
         if not base:
-            base = next((p for p in partidos_data if (p.get('local') and p.get('local').lower() in obj.lower()) or (p.get('visitante') and p.get('visitante').lower() in obj.lower())), None)
-        if not base:
-            base = partidos_data[min(i-1, len(partidos_data)-1)]
+            print(f"\n   [{i}/{len(objetivos)}] Omitido sin identidad exacta: {obj}")
+            continue
         
         print(f"\n   [{i}/{len(objetivos)}] Infiltrando: {obj}")
         
         # Clic confiable con mouse dispatch en el partido dentro del Shadow DOM
-        script_click = f"""
-        try {{
+        script_click = """
+        try {
+            var local = arguments[0].toLocaleLowerCase();
+            var visitante = arguments[1].toLocaleLowerCase();
             var host = document.querySelector('div#altenar > div') || document.querySelector('asb-sports-app, asb-app, altenar-app');
             if (!host || !host.shadowRoot) return false;
             var shadow = host.shadowRoot;
             
             var containers = Array.from(shadow.querySelectorAll('div[class*="EventBoxContainer"]'));
-            var targetContainer = containers.find(function(c) {{
+            var targetContainer = containers.find(function(c) {
                 var t = c.innerText.toLowerCase();
-                return t.includes("{base['local'].lower()}") || t.includes("{base['visitante'].lower()}");
-            }});
+                return t.includes(local) && t.includes(visitante);
+            });
             
-            if(targetContainer) {{ 
+            if(targetContainer) {
                 var clickEl = targetContainer.querySelector('div[class*="Competitors"], div[class*="NameContainer"], div[class*="EventName"], [class*="CompetitorName"]') || targetContainer;
-                ['mousedown', 'click', 'mouseup'].forEach(function(evtType) {{
-                    clickEl.dispatchEvent(new MouseEvent(evtType, {{ bubbles: true, cancelable: true, view: window }}));
-                }});
+                ['mousedown', 'click', 'mouseup'].forEach(function(evtType) {
+                    clickEl.dispatchEvent(new MouseEvent(evtType, { bubbles: true, cancelable: true, view: window }));
+                });
                 return true; 
-            }}
+            }
             return false;
-        }} catch(e) {{ return false; }}
+        } catch(e) { return false; }
         """
         
-        clicked = driver.execute_script(script_click)
+        clicked = driver.execute_script(
+            script_click, base.get('local', ''), base.get('visitante', '')
+        )
         if not clicked:
             # Reintentar navegando si estaba en otra vista
             click_category(driver, base.get('categoria', 'Liga MX'))
             time.sleep(2)
-            clicked = driver.execute_script(script_click)
+            clicked = driver.execute_script(
+                script_click, base.get('local', ''), base.get('visitante', '')
+            )
             
         if clicked:
             time.sleep(3)
@@ -1237,13 +1222,8 @@ def fase4_inmersion(driver, objetivos, partidos_data):
             time.sleep(1)
             
             datos_profundos.append({
-                "categoria": base['categoria'],
-                "partido": obj,
-                "local": base.get('local', ''),
-                "visitante": base.get('visitante', ''),
-                "horario": base.get('horario', 'Hoy'),
-                "cuotas_superficie": base.get('cuotas_superficie', []),
-                "mercados_profundos": mercados_texto[:1200]
+                **base,
+                "mercados_profundos": mercados_texto[:1200],
             })
         else:
             if base.get('mercados_reales'):
@@ -1438,7 +1418,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
     {{
         "categoria": "UEFA Champions League",
         "partido": "Nombre Real Local vs Nombre Real Visitante",
-        "horario": "19/08 • 13:00",
+        "horario": "Mañana • 13:00",
         "pick": "Nombre Equipo Gana Directo",
         "cuota": "1.85",
         "confianza": "90%",
@@ -1511,7 +1491,9 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             if not p.get('es_parlay') and match_encontrado and match_encontrado.get('horario'):
                 p['horario'] = match_encontrado.get('horario')
             
-            es_valido_tiempo, horario_limpio = es_partido_futuro_valido(p.get('horario', 'Hoy'))
+            es_valido_tiempo, horario_limpio = es_partido_futuro_valido(
+                p.get('horario') or ''
+            )
             if not es_valido_tiempo:
                 print(f"   🛑 DESCARTADO (El partido ya inició): {p_partido} [{p.get('horario')}]")
                 continue
@@ -1577,7 +1559,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             if precio_local is None:
                 continue
             es_valido, horario_limpio = es_partido_futuro_valido(
-                event.get('horario', 'Hoy')
+                event.get('horario') or ''
             )
             if not es_valido:
                 continue

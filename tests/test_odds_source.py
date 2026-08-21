@@ -470,6 +470,7 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     assert response_format["type"] == "json_schema"
     assert schema["strict"] is True
     assert schema["schema"]["type"] == "array"
+    assert schema["schema"]["maxItems"] == scraper.MAX_AI_RANKED_PICKS
     item_schema = schema["schema"]["items"]
     assert item_schema["required"] == ["candidate_id", "rationale"]
     assert item_schema["additionalProperties"] is False
@@ -528,6 +529,94 @@ def test_groq_fallback_preserves_response_schema_on_every_retry(monkeypatch):
     assert result == ""
     assert len(calls) == 8
     assert all(call["response_format"] is response_format for call in calls)
+
+
+def test_groq_fallback_does_not_call_api_when_no_truncation_bound_is_exceeded():
+    from backend import scraper
+
+    calls = []
+
+    class Completions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            raise AssertionError("API must not be called")
+
+    class FakeClient:
+        class Chat:
+            completions = Completions()
+
+        chat = Chat()
+
+    result = scraper.ejecutar_groq_con_fallback(
+        FakeClient(),
+        [{"role": "user", "content": "x" * 11}],
+        message_char_limit=10,
+        truncate_messages=False,
+    )
+
+    assert result == ""
+    assert calls == []
+
+
+def test_phase6_bounds_large_catalog_as_valid_deterministic_json(monkeypatch):
+    from backend import scraper
+    from backend.pick_selection import build_candidates
+
+    candidates = []
+    for index in range(500):
+        raw = fixture_event()
+        raw["id"] = f"event-{index:03d}"
+        raw["home_team"] = f"Home {index:03d}"
+        raw["away_team"] = f"Away {index:03d}"
+        raw["bookmakers"][0]["markets"][0]["outcomes"][0]["name"] = raw["away_team"]
+        raw["bookmakers"][0]["markets"][0]["outcomes"][2]["name"] = raw["home_team"]
+        raw["bookmakers"][0]["markets"][2]["outcomes"][0]["name"] = raw["away_team"]
+        raw["bookmakers"][0]["markets"][2]["outcomes"][1]["name"] = raw["home_team"]
+        candidates.append(build_candidates([normalize_odds_event(raw, OBSERVED_AT)])[0])
+
+    calls = []
+    omitted_id = candidates[-1].candidate_id
+    response = json.dumps([{
+        "candidate_id": omitted_id,
+        "rationale": "Este candidato no fue presentado en el catálogo acotado.",
+    }])
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+
+    def fake_groq(_client, messages, **kwargs):
+        calls.append((messages, kwargs))
+        return response
+
+    monkeypatch.setattr(scraper, "ejecutar_groq_con_fallback", fake_groq)
+    forward = {"_verified_candidates": tuple(candidates)}
+    reverse = {"_verified_candidates": tuple(reversed(candidates))}
+
+    assert scraper.fase6_analisis_final(
+        [forward], "", {}, [], groq_api_key="fake"
+    ) == []
+    assert scraper.fase6_analisis_final(
+        [reverse], "", {}, [], groq_api_key="fake"
+    ) == []
+
+    catalogs = []
+    for messages, kwargs in calls:
+        assert kwargs["truncate_messages"] is False
+        assert kwargs["message_char_limit"] == scraper.MAX_AI_PROMPT_CHARS
+        assert sum(len(message["content"]) for message in messages) <= scraper.MAX_AI_PROMPT_CHARS
+        prompt = messages[1]["content"]
+        assert "[...datos sintetizados...]" not in prompt
+        catalog_json = prompt.split("CATÁLOGO VERIFICADO:\n", 1)[1].split(
+            "\n\nDevuelve ÚNICAMENTE", 1
+        )[0]
+        catalogs.append(json.loads(catalog_json))
+
+    assert len(catalogs) == 2
+    assert catalogs[0] == catalogs[1]
+    assert 0 < len(catalogs[0]) <= scraper.MAX_AI_CATALOG_CANDIDATES
+    expected = sorted(candidates, key=lambda row: (row.starts_at, row.candidate_id))
+    assert [row["candidate_id"] for row in catalogs[0]] == [
+        row.candidate_id for row in expected[:len(catalogs[0])]
+    ]
+    assert omitted_id not in {row["candidate_id"] for row in catalogs[0]}
 
 
 @pytest.mark.parametrize(

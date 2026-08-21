@@ -290,6 +290,18 @@ def _same_physical_event(first: CandidatePick, second: CandidatePick) -> bool:
     )
 
 
+def _candidate_exclusivity_group(candidate: CandidatePick) -> tuple[object, ...]:
+    """Return the conservative cross-provider portfolio identity."""
+
+    return (
+        _physical_competitor_pair(candidate),
+        candidate.starts_at.astimezone(MEXICO).date(),
+        candidate.market_key,
+        candidate.period,
+        _canonical_line(candidate.line),
+    )
+
+
 def build_same_day_parlay(
     candidates: Iterable[CandidatePick],
 ) -> tuple[CandidatePick, ...] | None:
@@ -363,6 +375,10 @@ def validate_ai_ranking(
         return []
     if not isinstance(candidates, Iterable):
         return []
+    try:
+        response_items = list(response)
+    except Exception:
+        return []
 
     catalog: dict[str, CandidatePick] = {}
     ambiguous_ids: set[str] = set()
@@ -383,39 +399,39 @@ def validate_ai_ranking(
 
     valid_rows: list[RankedPick] = []
     seen: set[str] = set()
-    for item in response:
-        if not isinstance(item, Mapping):
-            continue
-        response_candidate_id = item.get("candidate_id")
-        rationale = item.get("rationale")
-        if (
-            not isinstance(response_candidate_id, str)
-            or not response_candidate_id
-            or response_candidate_id in seen
-            or response_candidate_id not in catalog
-            or not isinstance(rationale, str)
-        ):
-            continue
-        trimmed_rationale = rationale.strip()
-        if len(trimmed_rationale) < 10:
-            continue
-        seen.add(response_candidate_id)
-        valid_rows.append(
-            RankedPick(catalog[response_candidate_id], trimmed_rationale[:500])
-        )
+    try:
+        for item in response_items:
+            if not isinstance(item, Mapping):
+                continue
+            response_candidate_id = item.get("candidate_id")
+            rationale = item.get("rationale")
+            if (
+                not isinstance(response_candidate_id, str)
+                or not response_candidate_id
+                or response_candidate_id in seen
+                or response_candidate_id not in catalog
+                or not isinstance(rationale, str)
+            ):
+                continue
+            trimmed_rationale = rationale.strip()
+            if len(trimmed_rationale) < 10:
+                continue
+            seen.add(response_candidate_id)
+            valid_rows.append(
+                RankedPick(
+                    catalog[response_candidate_id],
+                    trimmed_rationale[:500],
+                )
+            )
+    except Exception:
+        return []
 
     first_by_group: dict[tuple[object, ...], RankedPick] = {}
     group_order: list[tuple[object, ...]] = []
     conflicted_groups: set[tuple[object, ...]] = set()
     for row in valid_rows:
         candidate = row.candidate
-        group = (
-            _physical_competitor_pair(candidate),
-            candidate.starts_at.astimezone(MEXICO).date(),
-            candidate.market_key,
-            candidate.period,
-            _canonical_line(candidate.line),
-        )
+        group = _candidate_exclusivity_group(candidate)
         if group in conflicted_groups:
             continue
         existing = first_by_group.get(group)

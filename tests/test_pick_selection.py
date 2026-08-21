@@ -728,6 +728,41 @@ def test_ai_ranking_does_not_swallow_process_interrupts(interrupt):
         validate_ai_ranking([], InterruptingCatalog())
 
 
+def test_ai_ranking_fails_closed_for_hostile_list_subclass(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+
+    class HostileResponse(list):
+        def __iter__(self):
+            raise RuntimeError("untrusted response iterator failed")
+
+    response = HostileResponse([{
+        "candidate_id": candidate.candidate_id,
+        "rationale": "Explicación suficientemente larga.",
+    }])
+
+    assert validate_ai_ranking(response, [candidate]) == []
+
+
+def test_ai_ranking_fails_closed_when_mapping_access_raises(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+
+    class HostileMapping(dict):
+        def get(self, _key, _default=None):
+            raise RuntimeError("untrusted mapping access failed")
+
+    assert validate_ai_ranking([HostileMapping()], [candidate]) == []
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_ai_ranking_does_not_swallow_response_interrupts(interrupt):
+    class InterruptingResponse(list):
+        def __iter__(self):
+            raise interrupt()
+
+    with pytest.raises(interrupt):
+        validate_ai_ranking(InterruptingResponse(), [])
+
+
 def test_ai_ranking_rejects_duplicate_or_ambiguous_ids(event_fixture):
     candidate = build_candidates([event_fixture])[0]
     item = {

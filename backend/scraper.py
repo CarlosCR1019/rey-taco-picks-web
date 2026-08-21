@@ -39,7 +39,9 @@ from backend.playdoit_source import (
 from backend.pick_publisher import SupabaseBatchRepository, publish_batch
 from backend.pick_selection import (
     CandidatePick,
+    MAX_AI_RANKED_PICKS,
     RankedPick,
+    _candidate_exclusivity_group,
     _is_individually_valid,
     build_candidates,
     validate_ai_ranking,
@@ -59,6 +61,14 @@ ODDS_API_KEY = ""
 SUPABASE_SERVICE_ROLE_KEY = ""
 supabase = None
 _VERIFIED_CANDIDATES_FIELD = "_verified_candidates"
+# Keep the ranking request comfortably below Groq context/request limits while
+# bounding model-controlled fan-out and preserving complete market groups.
+MAX_AI_CATALOG_CANDIDATES = 32
+MAX_AI_PROMPT_CHARS = 24_000
+_AI_RANKING_SYSTEM_MESSAGE = (
+    "Respondes solo con un JSON array de candidate_id y rationale. "
+    "No produces hechos de apuestas."
+)
 
 
 class PersistenceFailure(RuntimeError):
@@ -942,6 +952,8 @@ def ejecutar_groq_con_fallback(
     temperature=0.2,
     *,
     response_format=None,
+    message_char_limit=4000,
+    truncate_messages=True,
 ):
     """Ejecuta la llamada a Groq rotando inteligentemente con reintentos y pausa backoff."""
     modelos = [
@@ -951,12 +963,24 @@ def ejecutar_groq_con_fallback(
         "qwen/qwen3.6-27b"
     ]
     import re
-    # Truncar mensajes excesivamente largos para evitar error 413
+    if (
+        isinstance(message_char_limit, bool)
+        or not isinstance(message_char_limit, int)
+        or message_char_limit <= 0
+    ):
+        return ""
+
+    # Truncar mensajes excesivamente largos para evitar error 413. Callers
+    # carrying structured JSON can disable truncation and fail closed instead.
     mensajes_limpios = []
+    truncation_marker = "\n[...datos sintetizados...]"
     for m in messages:
         c = m.get("content", "")
-        if len(c) > 4000:
-            c = c[:4000] + "\n[...datos sintetizados...]"
+        if len(c) > message_char_limit:
+            if not truncate_messages:
+                return ""
+            prefix_length = max(0, message_char_limit - len(truncation_marker))
+            c = c[:prefix_length] + truncation_marker
         mensajes_limpios.append({"role": m["role"], "content": c})
 
     for intento in range(2):
@@ -1241,6 +1265,56 @@ def _candidate_prompt_row(candidate: CandidatePick) -> dict[str, object]:
     }
 
 
+def _render_candidate_ranking_prompt(candidates) -> str:
+    prompt_catalog = [_candidate_prompt_row(candidate) for candidate in candidates]
+    catalog_json = json.dumps(
+        prompt_catalog,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"""
+Ordena los candidatos verificados de mayor a menor utilidad editorial.
+Los hechos del catálogo son de SOLO LECTURA: no cambies partido, mercado,
+selección, horario, fuente, casa de apuestas ni cuota.
+
+CATÁLOGO VERIFICADO:
+{catalog_json}
+
+Devuelve ÚNICAMENTE un JSON array. Cada objeto debe tener exactamente:
+{{"candidate_id": "ID exacto del catálogo", "rationale": "Explicación de 10 a 500 caracteres"}}
+No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
+"""
+
+
+def _bounded_prompt_candidates(candidates):
+    """Choose complete deterministic groups that fit both request bounds."""
+
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (candidate.starts_at, candidate.candidate_id),
+    )
+    grouped = {}
+    for candidate in ordered:
+        grouped.setdefault(
+            _candidate_exclusivity_group(candidate),
+            [],
+        ).append(candidate)
+
+    selected = []
+    prompt = _render_candidate_ranking_prompt(selected)
+    for group in grouped.values():
+        if len(selected) + len(group) > MAX_AI_CATALOG_CANDIDATES:
+            continue
+        trial = [*selected, *group]
+        trial_prompt = _render_candidate_ranking_prompt(trial)
+        total_chars = len(_AI_RANKING_SYSTEM_MESSAGE) + len(trial_prompt)
+        if total_chars > MAX_AI_PROMPT_CHARS:
+            continue
+        selected = trial
+        prompt = trial_prompt
+    return selected, prompt
+
+
 def _parse_strict_json_array(raw_response):
     """Parse one JSON array, optionally inside a complete Markdown fence."""
 
@@ -1321,19 +1395,15 @@ def _fase6_candidate_ranking(
     if not groq_api_key or not candidates:
         return []
 
-    prompt_catalog = [_candidate_prompt_row(candidate) for candidate in candidates]
-    prompt = f"""
-Ordena los candidatos verificados de mayor a menor utilidad editorial.
-Los hechos del catálogo son de SOLO LECTURA: no cambies partido, mercado,
-selección, horario, fuente, casa de apuestas ni cuota.
-
-CATÁLOGO VERIFICADO:
-{json.dumps(prompt_catalog, ensure_ascii=False, indent=2)}
-
-Devuelve ÚNICAMENTE un JSON array. Cada objeto debe tener exactamente:
-{{"candidate_id": "ID exacto del catálogo", "rationale": "Explicación de 10 a 500 caracteres"}}
-No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
-"""
+    prompt_candidates, prompt = _bounded_prompt_candidates(candidates)
+    if not prompt_candidates:
+        return []
+    messages = [
+        {"role": "system", "content": _AI_RANKING_SYSTEM_MESSAGE},
+        {"role": "user", "content": prompt},
+    ]
+    if sum(len(message["content"]) for message in messages) > MAX_AI_PROMPT_CHARS:
+        return []
     response_format = {
         "type": "json_schema",
         "json_schema": {
@@ -1341,6 +1411,7 @@ No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
             "strict": True,
             "schema": {
                 "type": "array",
+                "maxItems": MAX_AI_RANKED_PICKS,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -1365,25 +1436,18 @@ No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
         client = Groq(api_key=groq_api_key)
         raw_response = ejecutar_groq_con_fallback(
             client,
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Respondes solo con un JSON array de candidate_id y "
-                        "rationale. No produces hechos de apuestas."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
+            messages,
             temperature=0.1,
             response_format=response_format,
+            message_char_limit=MAX_AI_PROMPT_CHARS,
+            truncate_messages=False,
         )
     except Exception as exc:
         print(f"   ⚠️ Ranking IA no disponible; failure={type(exc).__name__}")
         return []
 
     raw_ranking = _parse_strict_json_array(raw_response)
-    ranked = validate_ai_ranking(raw_ranking, candidates)
+    ranked = validate_ai_ranking(raw_ranking, prompt_candidates)
     picks = [_legacy_ranked_pick_projection(row) for row in ranked]
     print(f"   🏆 Ranking verificado: {len(picks)} selecciones de catálogo.")
     for pick in picks:

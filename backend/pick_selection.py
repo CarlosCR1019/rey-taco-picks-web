@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 import json
 import math
 from numbers import Real
-from typing import Iterable
 import unicodedata
 from zoneinfo import ZoneInfo
 
@@ -351,28 +350,38 @@ class RankedPick:
 
 def validate_ai_ranking(
     response: object,
-    candidates: Iterable[CandidatePick],
+    candidates: object,
 ) -> list[RankedPick]:
-    """Allow-list untrusted model rankings against an unambiguous catalog."""
+    """Allow-list an untrusted ranking and fail closed on portfolio conflicts.
+
+    Exclusivity deliberately ignores source and bookmaker: opposing selections
+    for the same normalized competitors, Mexico date, market, period, and line
+    are contradictory even when quoted by different providers.
+    """
 
     if not isinstance(response, list):
+        return []
+    if not isinstance(candidates, Iterable):
         return []
 
     catalog: dict[str, CandidatePick] = {}
     ambiguous_ids: set[str] = set()
-    for candidate in candidates:
-        if not _is_individually_valid(candidate):
-            continue
-        candidate_id = candidate.candidate_id
-        if candidate_id in ambiguous_ids:
-            continue
-        if candidate_id in catalog:
-            catalog.pop(candidate_id, None)
-            ambiguous_ids.add(candidate_id)
-        else:
-            catalog[candidate_id] = candidate
+    try:
+        for candidate in candidates:
+            if not _is_individually_valid(candidate):
+                continue
+            candidate_id = candidate.candidate_id
+            if candidate_id in ambiguous_ids:
+                continue
+            if candidate_id in catalog:
+                catalog.pop(candidate_id, None)
+                ambiguous_ids.add(candidate_id)
+            else:
+                catalog[candidate_id] = candidate
+    except Exception:
+        return []
 
-    ranked: list[RankedPick] = []
+    valid_rows: list[RankedPick] = []
     seen: set[str] = set()
     for item in response:
         if not isinstance(item, Mapping):
@@ -391,9 +400,35 @@ def validate_ai_ranking(
         if len(trimmed_rationale) < 10:
             continue
         seen.add(response_candidate_id)
-        ranked.append(
+        valid_rows.append(
             RankedPick(catalog[response_candidate_id], trimmed_rationale[:500])
         )
-        if len(ranked) >= MAX_AI_RANKED_PICKS:
-            break
-    return ranked
+
+    first_by_group: dict[tuple[object, ...], RankedPick] = {}
+    group_order: list[tuple[object, ...]] = []
+    conflicted_groups: set[tuple[object, ...]] = set()
+    for row in valid_rows:
+        candidate = row.candidate
+        group = (
+            _physical_competitor_pair(candidate),
+            candidate.starts_at.astimezone(MEXICO).date(),
+            candidate.market_key,
+            candidate.period,
+            _canonical_line(candidate.line),
+        )
+        if group in conflicted_groups:
+            continue
+        existing = first_by_group.get(group)
+        if existing is None:
+            first_by_group[group] = row
+            group_order.append(group)
+        elif existing.candidate.selection_key != candidate.selection_key:
+            first_by_group.pop(group, None)
+            conflicted_groups.add(group)
+
+    resolved = [
+        first_by_group[group]
+        for group in group_order
+        if group in first_by_group
+    ]
+    return resolved[:MAX_AI_RANKED_PICKS]

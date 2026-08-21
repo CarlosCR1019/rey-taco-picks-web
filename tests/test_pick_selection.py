@@ -698,6 +698,36 @@ def test_ai_ranking_rejects_wrong_container_and_field_types(response, event_fixt
     assert validate_ai_ranking(response, [candidate]) == []
 
 
+@pytest.mark.parametrize("catalog", [None, 7, 3.14])
+def test_ai_ranking_rejects_non_iterable_untrusted_catalog(catalog):
+    assert validate_ai_ranking([], catalog) == []
+
+
+def test_ai_ranking_fails_closed_when_catalog_iteration_raises(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+
+    def broken_catalog():
+        yield candidate
+        raise RuntimeError("untrusted iterator failed")
+
+    response = [{
+        "candidate_id": candidate.candidate_id,
+        "rationale": "Explicación suficientemente larga.",
+    }]
+
+    assert validate_ai_ranking(response, broken_catalog()) == []
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_ai_ranking_does_not_swallow_process_interrupts(interrupt):
+    class InterruptingCatalog:
+        def __iter__(self):
+            raise interrupt()
+
+    with pytest.raises(interrupt):
+        validate_ai_ranking([], InterruptingCatalog())
+
+
 def test_ai_ranking_rejects_duplicate_or_ambiguous_ids(event_fixture):
     candidate = build_candidates([event_fixture])[0]
     item = {
@@ -709,6 +739,153 @@ def test_ai_ranking_rejects_duplicate_or_ambiguous_ids(event_fixture):
     assert validate_ai_ranking([item, item], [candidate]) == [
         RankedPick(candidate, item["rationale"])
     ]
+
+
+def test_ai_ranking_omits_h2h_group_with_opposite_selections():
+    event = event_with(
+        home_team="América",
+        away_team="Tigres",
+        markets=(
+            Market(
+                "h2h",
+                "full_game",
+                None,
+                (
+                    Outcome("home", "América", 1.80),
+                    Outcome("draw", "Empate", 3.20),
+                    Outcome("away", "Tigres", 2.40),
+                ),
+                bookmaker_key="book-a",
+            ),
+        ),
+    )
+    candidates = build_candidates([event])
+    response = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "rationale": f"Argumento válido para {candidate.selection_key}.",
+        }
+        for candidate in candidates
+    ]
+
+    assert validate_ai_ranking(response, candidates) == []
+
+
+def test_ai_ranking_omits_totals_group_with_over_and_under_same_line():
+    event = event_with(
+        markets=(
+            Market(
+                "totals",
+                "full_game",
+                8.5,
+                (
+                    Outcome("over", "Más de 8.5", 1.90),
+                    Outcome("under", "Menos de 8.5", 1.92),
+                ),
+                bookmaker_key="book-a",
+            ),
+        ),
+    )
+    candidates = build_candidates([event])
+    response = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "rationale": f"Argumento válido para {candidate.selection_key}.",
+        }
+        for candidate in candidates
+    ]
+
+    assert validate_ai_ranking(response, candidates) == []
+
+
+def test_ai_ranking_keeps_first_same_selection_across_books():
+    event = event_with(
+        markets=(
+            Market(
+                "totals",
+                "full_game",
+                8.5,
+                (
+                    Outcome("over", "Más de 8.5", 1.90),
+                    Outcome("under", "Menos de 8.5", 1.92),
+                ),
+                bookmaker_key="book-a",
+            ),
+            Market(
+                "totals",
+                "full_game",
+                8.5,
+                (
+                    Outcome("over", "Más de 8.5", 1.95),
+                    Outcome("under", "Menos de 8.5", 1.87),
+                ),
+                bookmaker_key="book-b",
+            ),
+        ),
+    )
+    candidates = build_candidates([event])
+    preferred = next(
+        row
+        for row in candidates
+        if row.bookmaker_key == "book-b" and row.selection_key == "over"
+    )
+    other = next(
+        row
+        for row in candidates
+        if row.bookmaker_key == "book-a" and row.selection_key == "over"
+    )
+    response = [
+        {
+            "candidate_id": preferred.candidate_id,
+            "rationale": "La IA ubicó primero esta observación válida.",
+        },
+        {
+            "candidate_id": other.candidate_id,
+            "rationale": "La misma selección aparece en otra casa.",
+        },
+    ]
+
+    assert validate_ai_ranking(response, candidates) == [
+        RankedPick(preferred, response[0]["rationale"])
+    ]
+
+
+def test_ai_ranking_resolves_late_conflicts_before_applying_output_cap():
+    conflict_candidates = build_candidates([event_with(source_event_id="conflict")])
+    home = next(row for row in conflict_candidates if row.selection_key == "home")
+    away = next(row for row in conflict_candidates if row.selection_key == "away")
+    unrelated = [
+        build_candidates([
+            event_with(
+                source_event_id=f"other-{index}",
+                home_team=f"Home {index}",
+                away_team=f"Away {index}",
+            )
+        ])[0]
+        for index in range(MAX_AI_RANKED_PICKS)
+    ]
+    candidates = [home, away, *unrelated]
+    response = [
+        {
+            "candidate_id": home.candidate_id,
+            "rationale": "Selección inicial luego contradicha al final.",
+        },
+        *[
+            {
+                "candidate_id": candidate.candidate_id,
+                "rationale": f"Selección independiente número {index}.",
+            }
+            for index, candidate in enumerate(unrelated)
+        ],
+        {
+            "candidate_id": away.candidate_id,
+            "rationale": "Contradicción ubicada después del límite nominal.",
+        },
+    ]
+
+    ranked = validate_ai_ranking(response, candidates)
+
+    assert [row.candidate for row in ranked] == unrelated
 
 
 def test_ai_ranking_rejects_freeform_legacy_schema(event_fixture):
@@ -729,7 +906,13 @@ def test_ai_ranking_rejects_freeform_legacy_schema(event_fixture):
 
 def test_ai_ranking_trims_rationale_preserves_order_and_caps_output():
     candidates = [
-        build_candidates([event_with(source_event_id=f"rank-{index}")])[0]
+        build_candidates([
+            event_with(
+                source_event_id=f"rank-{index}",
+                home_team=f"Home {index}",
+                away_team=f"Away {index}",
+            )
+        ])[0]
         for index in range(MAX_AI_RANKED_PICKS + 3)
     ]
     response = [

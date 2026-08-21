@@ -452,8 +452,8 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     calls = []
     monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
 
-    def fake_groq(_client, messages, **_kwargs):
-        calls.append(messages)
+    def fake_groq(_client, messages, **kwargs):
+        calls.append((messages, kwargs))
         return f"```json\n{response}\n```"
 
     monkeypatch.setattr(scraper, "ejecutar_groq_con_fallback", fake_groq)
@@ -465,6 +465,17 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     assert len(calls) == 1
     prompt_text = json.dumps(calls, ensure_ascii=False)
     assert "_verified_candidates" not in prompt_text
+    response_format = calls[0][1]["response_format"]
+    schema = response_format["json_schema"]
+    assert response_format["type"] == "json_schema"
+    assert schema["strict"] is True
+    assert schema["schema"]["type"] == "array"
+    item_schema = schema["schema"]["items"]
+    assert item_schema["required"] == ["candidate_id", "rationale"]
+    assert item_schema["additionalProperties"] is False
+    assert item_schema["properties"]["candidate_id"]["minLength"] == 1
+    assert item_schema["properties"]["rationale"]["minLength"] == 10
+    assert item_schema["properties"]["rationale"]["maxLength"] == 500
     assert len(picks) == 1
     pick = picks[0]
     assert pick["source"] == candidate.source
@@ -486,6 +497,54 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     assert pick["es_parlay"] is False
     assert "confianza" not in pick and "tiene_valor" not in pick
     assert "_verified_candidates" not in pick
+
+
+def test_groq_fallback_preserves_response_schema_on_every_retry(monkeypatch):
+    from backend import scraper
+
+    calls = []
+
+    class FailingCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("model unavailable")
+
+    class FakeClient:
+        class Chat:
+            completions = FailingCompletions()
+
+        chat = Chat()
+
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "verified_ranking"},
+    }
+    result = scraper.ejecutar_groq_con_fallback(
+        FakeClient(),
+        [{"role": "user", "content": "rank"}],
+        response_format=response_format,
+    )
+
+    assert result == ""
+    assert len(calls) == 8
+    assert all(call["response_format"] is response_format for call in calls)
+
+
+@pytest.mark.parametrize(
+    "raw_response",
+    ["[NaN]", "[Infinity]", "[-Infinity]", "```json\n[NaN]\n```"],
+)
+def test_strict_json_array_rejects_non_finite_constants(raw_response):
+    from backend import scraper
+
+    assert scraper._parse_strict_json_array(raw_response) == []
+
+
+@pytest.mark.parametrize("raw_response", ["{}", '"text"', "1", "null"])
+def test_strict_json_array_rejects_valid_json_that_is_not_an_array(raw_response):
+    from backend import scraper
+
+    assert scraper._parse_strict_json_array(raw_response) == []
 
 
 @pytest.mark.parametrize(

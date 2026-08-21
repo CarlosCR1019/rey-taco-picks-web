@@ -936,7 +936,13 @@ def fase2_comparacion_mercado(
         print(f"   ❌ Error general en comparación de mercado; failure={type(e).__name__}")
         return {}
 
-def ejecutar_groq_con_fallback(client, messages, temperature=0.2):
+def ejecutar_groq_con_fallback(
+    client,
+    messages,
+    temperature=0.2,
+    *,
+    response_format=None,
+):
     """Ejecuta la llamada a Groq rotando inteligentemente con reintentos y pausa backoff."""
     modelos = [
         "openai/gpt-oss-120b",
@@ -956,10 +962,15 @@ def ejecutar_groq_con_fallback(client, messages, temperature=0.2):
     for intento in range(2):
         for modelo in modelos:
             try:
-                resp = client.chat.completions.create(
+                request = dict(
                     messages=mensajes_limpios,
                     model=modelo,
-                    temperature=temperature
+                    temperature=temperature,
+                )
+                if response_format is not None:
+                    request["response_format"] = response_format
+                resp = client.chat.completions.create(
+                    **request,
                 ).choices[0].message.content.strip()
                 if resp:
                     resp = re.sub(r'<think>.*?</think>', '', resp, flags=re.DOTALL).strip()
@@ -1243,10 +1254,18 @@ def _parse_strict_json_array(raw_response):
     )
     if fenced is not None:
         clean_response = fenced.group(1).strip()
+
+    def reject_non_finite_constant(_value):
+        raise ValueError("non-finite JSON constants are not allowed")
+
     try:
-        return json.loads(clean_response)
-    except (json.JSONDecodeError, TypeError):
+        parsed = json.loads(
+            clean_response,
+            parse_constant=reject_non_finite_constant,
+        )
+    except (json.JSONDecodeError, TypeError, ValueError):
         return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _candidate_schedule(candidate: CandidatePick) -> str:
@@ -1315,6 +1334,33 @@ Devuelve ÚNICAMENTE un JSON array. Cada objeto debe tener exactamente:
 {{"candidate_id": "ID exacto del catálogo", "rationale": "Explicación de 10 a 500 caracteres"}}
 No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
 """
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "verified_candidate_ranking",
+            "strict": True,
+            "schema": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000,
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "minLength": 10,
+                            "maxLength": 500,
+                        },
+                    },
+                    "required": ["candidate_id", "rationale"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    }
     try:
         client = Groq(api_key=groq_api_key)
         raw_response = ejecutar_groq_con_fallback(
@@ -1330,6 +1376,7 @@ No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
+            response_format=response_format,
         )
     except Exception as exc:
         print(f"   ⚠️ Ranking IA no disponible; failure={type(exc).__name__}")

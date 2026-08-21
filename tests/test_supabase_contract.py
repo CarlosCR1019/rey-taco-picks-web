@@ -8,6 +8,7 @@ SQL = (
     / "migrations"
     / "20260820220000_secure_membership.sql"
 )
+RUN_LEDGER_SQL = SQL.parent / "20260820233000_scraper_run_ledger.sql"
 
 
 class SupabaseContractTests(unittest.TestCase):
@@ -64,6 +65,72 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("provider_event_created", text)
         self.assertIn("apply_stripe_subscription_event", text)
         self.assertIn('rpc("apply_stripe_subscription_event"', webhook)
+
+    def test_scraper_run_ledger_has_batch_and_pick_invariants(self):
+        text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
+        self.assertIn("create table if not exists public.scraper_runs", text)
+        self.assertIn("run_key text not null unique", text)
+        self.assertIn("status in ('running', 'published', 'partial', 'failed')", text)
+        self.assertIn("create table if not exists public.pick_batches", text)
+        self.assertIn("run_id uuid not null unique references public.scraper_runs(id)", text)
+        self.assertIn("create unique index if not exists pick_batches_one_active_idx", text)
+        self.assertIn("where active", text)
+        self.assertIn("add column if not exists batch_id uuid references public.pick_batches(id)", text)
+        self.assertIn("add column if not exists active boolean not null default false", text)
+        self.assertIn("create index if not exists picks_active_batch_idx", text)
+
+    def test_publishing_rpc_is_atomic_idempotent_and_validates_visibility(self):
+        text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
+        self.assertIn("create or replace function public.publish_pick_batch", text)
+        self.assertIn("security definer", text)
+        self.assertIn("jsonb_typeof(requested_picks) <> 'array'", text)
+        self.assertIn("jsonb_array_length(requested_picks) = 0", text)
+        self.assertIn("count(*) filter (where value->>'visibility' = 'public')", text)
+        self.assertIn("public_pick_count <> 1", text)
+        self.assertIn("value->>'visibility' = 'public'", text)
+        self.assertIn("coalesce((value->>'es_parlay')::boolean, false)", text)
+        self.assertIn("on conflict (run_key) do nothing", text)
+        self.assertIn("for update", text)
+        self.assertIn("claimed_run.status in ('published', 'partial')", text)
+        self.assertIn("'delivery_status', claimed_run.delivery_status", text)
+        self.assertIn("'created', false", text)
+
+    def test_publishing_rpc_replaces_the_active_pending_lifecycle(self):
+        text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
+        self.assertIn("update public.picks set visibility = 'premium'", text)
+        self.assertIn("where estado = 'pendiente' and visibility = 'public'", text)
+        self.assertIn("update public.pick_batches set active = false where active", text)
+        self.assertIn("update public.picks set active = false where active", text)
+        self.assertIn("jsonb_populate_record(null::public.picks", text)
+        self.assertIn("set status = 'published', finished_at = now()", text)
+        self.assertIn("'created', true", text)
+
+    def test_visible_picks_only_exposes_active_pending_or_settled_public_rows(self):
+        text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
+        self.assertIn("create or replace function public.get_visible_picks()", text)
+        self.assertIn("p.estado = 'pendiente' and p.active", text)
+        self.assertIn("p.visibility = 'public' or public.is_active_subscriber(auth.uid())", text)
+        self.assertIn("p.estado <> 'pendiente' and p.visibility = 'public'", text)
+        self.assertIn("grant execute on function public.get_visible_picks() to anon, authenticated", text)
+
+    def test_delivery_rpc_and_ledger_tables_are_server_only(self):
+        text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
+        self.assertIn("create or replace function public.record_scraper_delivery", text)
+        self.assertIn("jsonb_set", text)
+        self.assertIn("status = case when requested_success then status else 'partial' end", text)
+        self.assertIn("alter table public.scraper_runs enable row level security", text)
+        self.assertIn("alter table public.pick_batches enable row level security", text)
+        for table in ("scraper_runs", "pick_batches"):
+            self.assertIn(f"revoke all on table public.{table} from public, anon, authenticated", text)
+            self.assertIn(f"grant all on table public.{table} to service_role", text)
+        for signature in (
+            "public.publish_pick_batch(text, text, jsonb)",
+            "public.record_scraper_delivery(uuid, text, boolean, text)",
+        ):
+            self.assertIn(f"revoke all on function {signature} from public, anon, authenticated", text)
+            self.assertIn(f"grant execute on function {signature} to service_role", text)
+        self.assertNotIn("grant select on table public.scraper_runs to anon", text)
+        self.assertNotIn("grant select on table public.pick_batches to authenticated", text)
 
 
 if __name__ == "__main__":

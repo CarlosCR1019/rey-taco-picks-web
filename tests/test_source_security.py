@@ -14,6 +14,22 @@ FORBIDDEN = (
 
 
 class SourceSecurityTests(unittest.TestCase):
+    def test_tracked_public_fallback_is_empty_and_cannot_leak_pick_details(self):
+        for relative in ("frontend/public/picks.json", "dist/picks.json"):
+            with self.subTest(relative=relative):
+                rows = json.loads((ROOT / relative).read_text(encoding="utf-8"))
+
+                self.assertIsInstance(rows, list)
+                for row in rows:
+                    self.assertNotIn("razonamiento", row)
+                    self.assertEqual(row.get("visibility"), "public")
+                    self.assertIs(row.get("es_parlay"), False)
+                self.assertEqual(
+                    rows,
+                    [],
+                    f"{relative} must never ship a stale pending pick",
+                )
+
     def test_tracked_source_has_no_known_live_secrets(self):
         files = subprocess.check_output(
             ["git", "ls-files"], cwd=ROOT, text=True

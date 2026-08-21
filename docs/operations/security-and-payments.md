@@ -33,6 +33,245 @@ The Supabase anonymous key is public by design. VIP secrecy depends on deploying
 - The raw code is returned only to the admin. The database stores its SHA-256 hash, expiry, access days, usage limit, and usage count.
 - Customers redeem it from **Mi cuenta**. Redemption is transactional and the same account cannot use the same code twice.
 
+## Controlled scraper rollout
+
+### Current state and hard stops
+
+This documentation task did **not** apply any migration to a remote Supabase
+project and did **not** dispatch the production workflow. Do not publish until
+the project reference and backup are confirmed, the production service-role key
+is configured, and all verification commands below pass.
+
+Stop the rollout immediately if a secret is printed, the schema probe fails, a
+test/build command returns non-zero, more than one batch is active, the active
+batch does not have exactly one public non-parlay pick, premium text appears in a
+public surface, or any required Telegram delivery is missing or failed.
+
+The backend must use `SUPABASE_SERVICE_ROLE_KEY`. Never substitute
+`VITE_SUPABASE_ANON_KEY`, `SUPABASE_ANON_KEY`, or another anonymous key: the
+publish and delivery RPCs are intentionally unavailable to anonymous clients.
+
+The legacy `backend/channel_queue.json` is not part of this release. There is no
+delivery queue: each Telegram destination is attempted synchronously with a
+bounded timeout, recorded independently, and skipped on a same-run retry after a
+recorded success.
+
+### 1. Configure secrets before production work
+
+Store real values in the local process/provider secret store, never in a command
+committed to Git. Production publication requires these backend names:
+
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- `GROQ_API_KEY`, `ODDS_API_KEY`
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`,
+  `TELEGRAM_VIP_CHANNEL_ID`, `TELEGRAM_FREE_CHANNEL_ID`
+- `SCRAPER_RUN_KEY` for a direct local production run, or the automatic
+  `GITHUB_RUN_ID` inside GitHub Actions
+
+The backend accepts `TELEGRAM_CHAT_ID` as the compatibility fallback for
+`TELEGRAM_ADMIN_ID` and `TELEGRAM_CHANNEL_ID` as the fallback for
+`TELEGRAM_VIP_CHANNEL_ID`. Prefer the canonical names for new configuration.
+The current GitHub workflow reads these repository-secret names exactly:
+`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GROQ_API_KEY`, `ODDS_API_KEY`,
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_CHANNEL_ID`,
+`TELEGRAM_VIP_CHANNEL_ID`, `TELEGRAM_FREE_CHANNEL_ID`, `FB_PAGE_ACCESS_TOKEN`,
+`FB_PAGE_ID`, and `IG_USER_ID`. `TELEGRAM_CHAT_ID` supplies the admin fallback;
+keep it aligned with canonical `TELEGRAM_ADMIN_ID` until the workflow itself is
+changed to pass the canonical name. `GITHUB_RUN_ID` is built in and is not a
+secret.
+
+Verify only presence; do not print the service-role value:
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($env:SUPABASE_SERVICE_ROLE_KEY)) {
+  throw "SUPABASE_SERVICE_ROLE_KEY is not configured"
+}
+"SUPABASE_SERVICE_ROLE_KEY is present (value hidden)"
+gh secret list
+```
+
+`SCRAPER_RUN_KEY` must be stable for retries of one logical local run and unique
+for a new batch. In GitHub Actions, the loader derives
+`github-run:<GITHUB_RUN_ID>` automatically. Use **Re-run failed jobs** for a
+partial workflow so the same run ID is retained; a new manual dispatch is a new
+run.
+
+### 2. Confirm the target, backup, and migrations
+
+From the repository root, confirm the linked project is the intended production
+project and that a current database backup exists. Review pending migrations
+before changing the remote database:
+
+```powershell
+supabase projects list
+supabase migration list
+supabase db push --dry-run
+```
+
+The pending set must include
+`supabase/migrations/20260820233000_scraper_run_ledger.sql`; it creates the run
+ledger, atomic publisher, delivery recorder, and read-only schema preflight. The
+earlier secure-membership migration that creates/protects `public_picks` must
+also be applied in order. `supabase db push` applies every pending migration, not
+just the named file. Only after reviewing that set, confirming the linked project
+and backup, and verifying the production service-role key, apply it:
+
+```powershell
+supabase db push
+supabase migration list
+```
+
+Do not roll back by disabling RLS or granting write access to `anon`. If a
+migration check is unexpected, stop before dispatching the scraper and restore
+from the confirmed backup only through the normal database incident procedure.
+
+### 3. Run non-mutating and automated checks
+
+The dry run is intentionally allowed without Supabase write credentials. It
+executes collection and candidate selection, reports `dry_run=true`, and skips
+the schema probe, Supabase publication, `frontend/public/picks.json` write, and
+all Telegram requests:
+
+```powershell
+python backend/scraper.py --dry-run
+```
+
+Exit `0` means that at least one event and one verified candidate were found. A
+non-zero result is a stop condition; interpret it using the exit-code table
+below. Because sources are live, no events/candidates is an honest failed smoke
+test, not permission to publish old picks.
+
+Run the complete local gate from the repository root:
+
+```powershell
+python -m pyflakes backend/scraper.py backend/scraper_config.py backend/pick_publisher.py backend/telegram_publisher.py
+python -m pytest tests -q
+npm --prefix frontend test
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
+deno test --allow-env supabase/functions
+git diff --check
+```
+
+If Deno is not installed globally, replace only the Deno line with this
+cross-platform fallback:
+
+```powershell
+npx --yes deno test --allow-env supabase/functions
+```
+
+Do not use the old `supabase/functions/*/index.test.ts` glob: PowerShell does not
+expand that path consistently. Passing the directory lets Deno discover the
+tests.
+
+### 4. Understand the production preflight and exit codes
+
+Before opening Chrome in production mode, the scraper calls the read-only
+`scraper_schema_status` RPC with the service-role client. A missing/404 RPC,
+missing `public_picks`, missing atomic publisher, or wrong schema version fails
+closed with exit `2`; it does not claim a run or create a batch. Dry-run skips
+this production-only preflight.
+
+| Code | Meaning | Operator action |
+| ---: | --- | --- |
+| `0` | Success | Continue only if the post-run invariants also pass. |
+| `2` | Configuration or secure-schema preflight failure | Fix secrets/link/migrations; do not start Chrome manually to bypass it. |
+| `3` | No source events | Do not publish stale picks; inspect source availability. |
+| `4` | No verified candidates | Do not relax validation or reuse an old batch. |
+| `5` | Supabase persistence/public-file failure | Stop downstream publication and inspect the run/batch transaction. |
+| `6` | Required Telegram delivery/bookkeeping failure | Keep the schedule disabled; retry the same run after repair. |
+| `10` | Unexpected failure | Treat as failed and inspect sanitized logs. |
+
+### 5. One controlled manual publication
+
+After secrets and migrations are ready and all checks pass, dispatch the
+**Rey Taco Picks Bot (Cloud AI)** workflow exactly once with `workflow_dispatch`.
+Do not start a second dispatch while it is active. Confirm the verifier succeeds
+first; the scraper depends on it, and social posting must run only after scraper
+success.
+
+Use the Supabase SQL editor with an administrator session for these read-only
+checks. They reveal counts and delivery metadata, not premium pick text:
+
+```sql
+select
+  count(*) filter (where active) as active_batches
+from public.pick_batches;
+
+select
+  count(*) filter (
+    where active and estado = 'pendiente'
+  ) as active_pending,
+  count(*) filter (
+    where active and estado = 'pendiente'
+      and visibility = 'public' and not es_parlay
+  ) as active_public_non_parlay,
+  count(*) filter (
+    where active and estado = 'pendiente'
+      and visibility = 'public'
+  ) as active_public_total
+from public.picks;
+
+select
+  run_key,
+  status,
+  delivery_status -> 'admin' ->> 'success' as admin_success,
+  delivery_status -> 'vip' ->> 'success' as vip_success,
+  delivery_status -> 'free' ->> 'success' as free_success,
+  created_at,
+  finished_at
+from public.scraper_runs
+order by created_at desc
+limit 1;
+```
+
+The required results are `active_batches = 1`,
+`active_public_non_parlay = 1`, `active_public_total = 1`, and success `true` for
+each configured destination. `active_pending` may be greater than one because it
+includes the private active picks in the same batch.
+
+Before deploying the generated public artifact, verify it contains exactly one
+public, non-parlay row and no rationale field:
+
+```powershell
+$publicPicks = @(Get-Content frontend/public/picks.json -Raw | ConvertFrom-Json)
+if ($publicPicks.Count -ne 1) { throw "Expected exactly one public pick" }
+if ($publicPicks[0].visibility -ne "public" -or $publicPicks[0].es_parlay) {
+  throw "Public pick invariant failed"
+}
+if ($publicPicks[0].PSObject.Properties.Name -contains "razonamiento") {
+  throw "Public artifact contains premium rationale"
+}
+```
+
+Inspect the actual received messages: free Telegram must contain only that public
+pick and no rationale/premium selection; administrator and VIP must receive the
+full active-batch payload. Do not infer delivery from an HTTP exit alone—match
+the messages to the latest run and confirm the recorded statuses above.
+
+### 6. Observation and rollback
+
+Keep public launch/ads disabled until two subsequent scheduled runs have
+completed successfully. The observation must include the 11 p.m. Mexico City
+run: its scraper job must wait for result verification, and a verifier failure
+must prevent scraper/social publication. Repeat the invariant and delivery
+checks after each run.
+
+On any invariant, privacy, persistence, verifier, or delivery failure:
+
+1. Disable the GitHub Actions workflow/schedules in the GitHub UI (or with
+   `gh workflow disable scraper.yml`) and do not issue a fresh dispatch.
+2. If the failure is partial delivery, repair the cause and re-run the failed
+   job from the same GitHub workflow run so `GITHUB_RUN_ID` and the batch remain
+   idempotent.
+3. Do not deploy the newly generated public artifact. Restore the previous
+   known-good static build if an unsafe artifact was already deployed.
+4. Preserve the run ledger and inactive picks for diagnosis/grading. Do not
+   delete history, disable RLS, create a queue, or switch the backend to an
+   anonymous key.
+5. Rotate any exposed credential and repeat the full gate before re-enabling the
+   workflow.
+
 ## Incident and rollback
 
 1. Disable checkout by undeploying `create-checkout` or removing `STRIPE_PRICE_ID`. Existing VIP reads remain governed by RLS.
@@ -44,8 +283,11 @@ The Supabase anonymous key is public by design. VIP secrecy depends on deploying
 ## Local verification
 
 ```powershell
-python -m unittest discover -s tests -p 'test_*.py'
-npm --prefix frontend test -- --run
-npm run build
-npx -y deno test supabase/functions/stripe-webhook/subscription.test.ts supabase/functions/create-checkout/checkout.test.ts supabase/functions/create-portal/portal.test.ts
+python -m pyflakes backend/scraper.py backend/scraper_config.py backend/pick_publisher.py backend/telegram_publisher.py
+python -m pytest tests -q
+npm --prefix frontend test
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
+npx --yes deno test --allow-env supabase/functions
+git diff --check
 ```

@@ -8,6 +8,8 @@ __pycache__/
 .env.local
 .env.*
 backend/.env
+!.env.example
+!backend/.env.example
 
 # Chrome data & offsets
 .telegram_offset
@@ -42,6 +44,8 @@ meta_*.py
 upload_*.py
 get_*.py
 render_story_hd.py
+!tests/
+!tests/**/*.py
 *.jpg
 *.png
 !frontend/public/logo.jpg

@@ -16,16 +16,31 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from backend.scraper_domain import Event, Market, Outcome
-from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 
 
 MEXICO = ZoneInfo("America/Mexico_City")
 SUPPORTED_MARKETS = frozenset({"h2h", "totals", "spreads"})
+SUPPORTED_BOX_TITLES = {
+    "h2h": frozenset({"resultado final", "ganador del partido", "moneyline", "1x2"}),
+    "totals": frozenset(
+        {"total de goles", "total de carreras", "total de puntos"}
+    ),
+    "spreads": frozenset(
+        {"hándicap del partido", "handicap del partido", "línea de juego"}
+    ),
+}
+UNSUPPORTED_MARKET_SCOPES = frozenset({"first_half", "team_total"})
 _DECIMAL = re.compile(r"(?:0|[1-9]\d*)(?:\.\d+)?\Z")
 _SIGNED_DECIMAL = re.compile(r"[+-]?(?:0|[1-9]\d*)(?:\.\d+)?\Z")
 _CALENDAR_DATE = re.compile(r"(\d{2})([/\-])(\d{2})\Z")
 _CLOCK_TIME = re.compile(r"([01]\d|2[0-3]):([0-5]\d)\Z")
+
+
+class MissingStartTimeError(ValueError):
+    """A source record omitted either its date label or exact clock time."""
+
+    reason = "missing_start_time"
 
 
 _EVENT_SUMMARIES_SCRIPT = r"""
@@ -45,18 +60,16 @@ return containers.map(function(container) {
   var timeMatch = text.match(/(?:^|\s)((?:[01]\d|2[0-3]):[0-5]\d)(?=\s|$)/m);
   var date = dateMatch ? dateMatch[1] : '';
   var clock = timeMatch ? timeMatch[1] : '';
-  var identityNode = container.querySelector(
-    '[data-event-id], [data-eventid], [data-event-id-value], [data-id]'
-  );
-  var identityCandidates = [container, identityNode].filter(Boolean);
-  var eventId = '';
-  identityCandidates.some(function(node) {
-    eventId = node.getAttribute('data-event-id') ||
+  var identityCandidates = [container].concat(Array.from(container.querySelectorAll(
+    '[data-event-id], [data-eventid], [data-event-id-value]'
+  )));
+  var eventIds = identityCandidates.map(function(node) {
+    return node.getAttribute('data-event-id') ||
       node.getAttribute('data-eventid') ||
-      node.getAttribute('data-event-id-value') ||
-      node.getAttribute('data-id') || '';
-    return Boolean(eventId.trim());
-  });
+      node.getAttribute('data-event-id-value') || '';
+  }).map(function(value) { return value.trim(); }).filter(Boolean);
+  eventIds = Array.from(new Set(eventIds));
+  var eventId = eventIds.length === 1 ? eventIds[0] : '';
   var competitors = Array.from(container.querySelectorAll(
     '[class*="CompetitorName"], [class*="NameContainer"], [class*="EventName"]'
   )).map(function(node) { return (node.innerText || '').split('\n')[0].trim(); })
@@ -72,7 +85,9 @@ return containers.map(function(container) {
     home: home,
     away: away,
     date_label: date,
-    time_label: clock
+    time_label: clock,
+    rejection_reason: eventIds.length > 1 ? 'ambiguous_event_identity' :
+      (!eventId ? 'missing_event_identity' : (!date || !clock ? 'missing_start_time' : ''))
   };
 }).filter(Boolean);
 """
@@ -86,10 +101,12 @@ var host = document.querySelector('div#altenar > div') ||
 if (!host || !host.shadowRoot) return false;
 var containers = Array.from(host.shadowRoot.querySelectorAll('div[class*="EventBoxContainer"]'));
 var target = containers.find(function(container) {
-  var node = container.querySelector('[data-event-id], [data-eventid], [data-event-id-value], [data-id]');
-  var values = [container, node].filter(Boolean).map(function(candidate) {
+  var nodes = [container].concat(Array.from(container.querySelectorAll(
+    '[data-event-id], [data-eventid], [data-event-id-value]'
+  )));
+  var values = nodes.map(function(candidate) {
     return candidate.getAttribute('data-event-id') || candidate.getAttribute('data-eventid') ||
-      candidate.getAttribute('data-event-id-value') || candidate.getAttribute('data-id') || '';
+      candidate.getAttribute('data-event-id-value') || '';
   });
   var text = (container.innerText || '').toLocaleLowerCase();
   return values.some(function(value) { return value.trim() === sourceId; }) &&
@@ -139,6 +156,22 @@ return true;
 """
 
 
+_IS_MARKET_TAB_ACTIVE_SCRIPT = r"""
+/* playdoit:is-market-tab-active */
+var token = Number(arguments[0]);
+var host = document.querySelector('div#altenar > div') ||
+  document.querySelector('asb-sports-app, asb-app, altenar-app');
+if (!host || !host.shadowRoot || !Number.isInteger(token)) return false;
+var node = Array.from(host.shadowRoot.querySelectorAll('*'))[token];
+if (!node) return false;
+var candidate = node.parentElement || node;
+return node.getAttribute('aria-selected') === 'true' ||
+  candidate.getAttribute('aria-selected') === 'true' ||
+  node.classList.contains('active') || node.classList.contains('selected') ||
+  candidate.classList.contains('active') || candidate.classList.contains('selected');
+"""
+
+
 _MARKET_SIGNATURE_SCRIPT = r"""
 /* playdoit:market-signature */
 var host = document.querySelector('div#altenar > div') ||
@@ -161,20 +194,40 @@ if (!host || !host.shadowRoot) return [];
 var boxes = Array.from(host.shadowRoot.querySelectorAll(
   '[class*="MarketBox"], [class*="EventDetailsMarketBox"]'
 ));
-var decimal = /(?:^|\s)(\d+(?:\.\d+)?)(?:\s|$)/g;
-var signed = /([+-]?\d+(?:\.\d+)?)/g;
+var SUPPORTED_BOX_TITLES = {
+  h2h: ['resultado final', 'ganador del partido', 'moneyline', '1x2'],
+  totals: ['total de goles', 'total de carreras', 'total de puntos'],
+  spreads: ['hándicap del partido', 'handicap del partido', 'línea de juego']
+};
+var decimal = /^\d+(?:\.\d+)?$/;
+var signed = /^[+-]?\d+(?:\.\d+)?$/;
 return boxes.map(function(box) {
+  var titleNode = box.querySelector('[class*="MarketName"], [class*="MarketTitle"], [class*="HeaderMarket"]');
+  var title = titleNode ? (titleNode.textContent || '').trim().toLocaleLowerCase() : '';
+  var period = (box.getAttribute('data-period') || '').trim().toLocaleLowerCase();
+  var scope = (box.getAttribute('data-scope') || '').trim().toLocaleLowerCase();
+  if (!(SUPPORTED_BOX_TITLES[marketKey] || []).includes(title)) return null;
+  if (!['full_game', 'full game', 'partido completo'].includes(period)) return null;
+  if (!['event', 'match', 'partido'].includes(scope)) return null;
+  if (/primer|primera mitad|1st|equipo|team|local|visitante/.test(title)) return null;
   var buttons = Array.from(box.querySelectorAll(
     'button, [class*="OddBoxButton"], [class*="SelectionButton"]'
   ));
   var outcomes = [];
   var marketLine = null;
   buttons.forEach(function(button) {
-    var text = (button.innerText || '').replace(/\n+/g, ' ').trim();
-    var prices = Array.from(text.matchAll(decimal)).map(function(match) { return match[1]; });
-    var price = prices.length ? prices[prices.length - 1] : '';
-    if (!price) return;
-    var label = text.slice(0, text.lastIndexOf(price)).trim();
+    var priceNode = button.querySelector(
+      '[data-odds], [data-price], [class*="OddValue"], [class*="Price"]'
+    );
+    var nameNode = button.querySelector(
+      '[data-selection-name], [class*="SelectionName"], [class*="OutcomeName"], [class*="Name"]'
+    );
+    if (!priceNode || !nameNode) return;
+    var price = (priceNode.getAttribute('data-odds') ||
+      priceNode.getAttribute('data-price') || priceNode.textContent || '').trim();
+    if (!decimal.test(price)) return;
+    var label = (nameNode.getAttribute('data-selection-name') || nameNode.textContent || '').trim();
+    if (!label) return;
     var lower = label.toLocaleLowerCase();
     var key = null, name = label, line = null;
     if (marketKey === 'h2h') {
@@ -184,15 +237,18 @@ return boxes.map(function(box) {
     } else if (marketKey === 'totals') {
       if (/\b(más|mas|over)\b/.test(lower)) key = 'over';
       else if (/\b(menos|under)\b/.test(lower)) key = 'under';
-      var totalPoints = Array.from(label.matchAll(signed));
-      if (totalPoints.length) line = totalPoints[totalPoints.length - 1][1];
     } else if (marketKey === 'spreads') {
       if (lower.startsWith(home.toLocaleLowerCase())) { key = 'home'; name = label; }
       else if (lower.startsWith(away.toLocaleLowerCase())) { key = 'away'; name = label; }
-      var spreadPoints = Array.from(label.matchAll(signed));
-      if (spreadPoints.length) line = spreadPoints[spreadPoints.length - 1][1];
     }
     if (!key) return;
+    if (marketKey !== 'h2h') {
+      var lineNode = button.querySelector('[data-line], [data-point], [class*="Point"], [class*="Handicap"]');
+      if (!lineNode) return;
+      line = (lineNode.getAttribute('data-line') || lineNode.getAttribute('data-point') ||
+        lineNode.textContent || '').trim();
+      if (!signed.test(line)) return;
+    }
     var outcome = {key: key, name: name, price: price};
     if (line !== null) {
       outcome.line = line;
@@ -219,6 +275,15 @@ var button = host.shadowRoot.querySelector(
 if (!button) return false;
 button.click();
 return true;
+"""
+
+
+_EVENT_LIST_READY_SCRIPT = r"""
+/* playdoit:event-list-ready */
+var host = document.querySelector('div#altenar > div') ||
+  document.querySelector('asb-sports-app, asb-app, altenar-app');
+return Boolean(host && host.shadowRoot &&
+  host.shadowRoot.querySelector('div[class*="EventBoxContainer"]'));
 """
 
 
@@ -265,8 +330,15 @@ def resolve_mexico_start(
     """Resolve a strict Playdoit label to one future Mexico City instant."""
 
     observed = _mexico_observation(observed_at)
-    date_text = _required_text(date_label, "date_label")
-    time_text = _required_text(time_label, "time_label")
+    if (
+        not isinstance(date_label, str)
+        or not date_label.strip()
+        or not isinstance(time_label, str)
+        or not time_label.strip()
+    ):
+        raise MissingStartTimeError("missing_start_time")
+    date_text = date_label.strip()
+    time_text = time_label.strip()
     time_match = _CLOCK_TIME.fullmatch(time_text)
     if time_match is None:
         raise ValueError("time_label must be HH:MM")
@@ -300,18 +372,35 @@ def resolve_mexico_start(
         day_value, _separator, month_value = date_match.groups()
         day_number = int(day_value)
         month = int(month_value)
+        current_candidate = None
         try:
-            candidate = datetime(
+            current_candidate = datetime(
                 observed.year, month, day_number, hour, minute, tzinfo=MEXICO
             )
-        except ValueError as exc:
-            raise ValueError("date_label is not a valid calendar date") from exc
-        if candidate <= observed and (observed.date() - candidate.date()).days > 180:
-            try:
-                candidate = candidate.replace(year=observed.year + 1)
-            except ValueError as exc:
-                raise ValueError("date_label is not valid in the resolved year") from exc
+        except ValueError:
+            pass
+        if current_candidate is not None and current_candidate > observed:
+            candidate = current_candidate
+        elif current_candidate is not None and (
+            observed.date() - current_candidate.date()
+        ).days <= 180:
+            candidate = current_candidate
+        else:
+            candidate = None
+            for year in range(observed.year + 1, observed.year + 9):
+                try:
+                    possible = datetime(
+                        year, month, day_number, hour, minute, tzinfo=MEXICO
+                    )
+                except ValueError:
+                    continue
+                if possible > observed:
+                    candidate = possible
+                    break
+            if candidate is None:
+                raise ValueError("date_label is not a valid calendar date")
 
+    assert candidate is not None
     if candidate <= observed:
         raise ValueError("event start must be in the future")
     return candidate
@@ -481,9 +570,17 @@ def normalize_playdoit_event(raw: dict[str, Any], observed_at: datetime) -> Even
     home = _required_text(raw.get("home"), "home")
     away = _required_text(raw.get("away"), "away")
     observed = _mexico_observation(observed_at)
+    if not isinstance(raw.get("date_label"), str) or not str(
+        raw.get("date_label")
+    ).strip():
+        raise MissingStartTimeError("missing_start_time")
+    if not isinstance(raw.get("time_label"), str) or not str(
+        raw.get("time_label")
+    ).strip():
+        raise MissingStartTimeError("missing_start_time")
     starts_at = resolve_mexico_start(
-        _required_text(raw.get("date_label"), "date_label"),
-        _required_text(raw.get("time_label"), "time_label"),
+        str(raw["date_label"]),
+        str(raw["time_label"]),
         observed,
     )
 
@@ -522,7 +619,10 @@ def normalize_playdoit_event(raw: dict[str, Any], observed_at: datetime) -> Even
 
 
 def normalize_playdoit_events(
-    raw_events: Iterable[dict[str, Any]], observed_at: datetime
+    raw_events: Iterable[dict[str, Any]],
+    observed_at: datetime,
+    *,
+    rejections: list[str] | None = None,
 ) -> tuple[Event, ...]:
     """Normalize a batch and omit any source ID with conflicting revisions."""
 
@@ -532,6 +632,10 @@ def normalize_playdoit_events(
     for raw in raw_events:
         try:
             event = normalize_playdoit_event(raw, observed_at)
+        except MissingStartTimeError:
+            if rejections is not None:
+                rejections.append(MissingStartTimeError.reason)
+            continue
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
         event_id = event.source_event_id
@@ -601,36 +705,49 @@ def extract_supported_markets(
     active_wait_factory = wait_factory or WebDriverWait
 
     markets: list[dict[str, Any]] = []
+    try:
+        active_wait_factory(driver, timeout).until(
+            lambda active: bool(_available_market_tabs(active))
+        )
+    except Exception:
+        # A transient discovery failure is isolated; each market below gets a
+        # fresh bounded attempt against the current DOM.
+        pass
     for market_key in ("h2h", "totals", "spreads"):
-        # Altenar frequently replaces tab nodes after a click, so recapture the
-        # current DOM before every market rather than retaining stale elements.
-        tabs = _available_market_tabs(driver)
-        token = tabs.get(market_key)
-        if token is None:
-            continue
-        previous = market_signature(driver)
-        clicked = driver.execute_script(_CLICK_MARKET_TAB_SCRIPT, token)
-        if clicked is not True:
-            continue
         try:
+            # Altenar replaces tab nodes after clicks. Recapture every time.
+            tabs = _available_market_tabs(driver)
+            token = tabs.get(market_key)
+            if token is None:
+                continue
+            active = driver.execute_script(_IS_MARKET_TAB_ACTIVE_SCRIPT, token)
+            if active is not True:
+                if driver.execute_script(_CLICK_MARKET_TAB_SCRIPT, token) is not True:
+                    continue
             active_wait_factory(driver, timeout).until(
                 lambda active: (
                     signature
                     if (signature := market_signature(active))
-                    and signature != previous
+                    and active.execute_script(
+                        _IS_MARKET_TAB_ACTIVE_SCRIPT, token
+                    ) is True
                     else False
                 )
             )
-        except TimeoutException:
+            markets.extend(
+                extract_visible_markets(driver, market_key, home, away)
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
             continue
-        markets.extend(extract_visible_markets(driver, market_key, home, away))
     return markets
 
 
 def _complete_summary(raw: object) -> bool:
     if not isinstance(raw, Mapping):
         return False
-    for field in ("event_id", "home", "away", "date_label", "time_label"):
+    for field in ("event_id", "home", "away"):
         value = raw.get(field)
         if not isinstance(value, str) or not value.strip():
             return False
@@ -642,23 +759,49 @@ def extract_playdoit_raw_events(
     *,
     wait_factory: Any = None,
     timeout: float = 8.0,
+    rejections: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Capture structured raw records without positional prices or defaults."""
 
-    summaries = driver.execute_script(_EVENT_SUMMARIES_SCRIPT)
+    active_wait_factory = wait_factory or WebDriverWait
+    try:
+        summaries = driver.execute_script(_EVENT_SUMMARIES_SCRIPT)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        return []
     if not isinstance(summaries, list):
         return []
     records: list[dict[str, Any]] = []
     for summary in summaries:
         if not _complete_summary(summary):
+            if rejections is not None and isinstance(summary, Mapping):
+                reason = summary.get("rejection_reason")
+                if isinstance(reason, str) and reason:
+                    rejections.append(reason)
             continue
         record = dict(summary)
+        if not isinstance(record.get("date_label"), str) or not str(
+            record.get("date_label")
+        ).strip() or not isinstance(record.get("time_label"), str) or not str(
+            record.get("time_label")
+        ).strip():
+            if rejections is not None:
+                rejections.append(MissingStartTimeError.reason)
+            continue
         event_id = str(record["event_id"]).strip()
         home = str(record["home"]).strip()
         away = str(record["away"]).strip()
-        if driver.execute_script(
-            _CLICK_EVENT_SCRIPT, event_id, home, away
-        ) is not True:
+        entered_detail = False
+        try:
+            entered_detail = driver.execute_script(
+                _CLICK_EVENT_SCRIPT, event_id, home, away
+            ) is True
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            continue
+        if not entered_detail:
             continue
         try:
             record["markets"] = extract_supported_markets(
@@ -669,6 +812,25 @@ def extract_playdoit_raw_events(
                 timeout=timeout,
             )
             records.append(record)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            continue
         finally:
-            driver.execute_script(_RETURN_TO_EVENTS_SCRIPT)
+            try:
+                driver.execute_script(_RETURN_TO_EVENTS_SCRIPT)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception:
+                pass
+            try:
+                active_wait_factory(driver, timeout).until(
+                    lambda active: active.execute_script(
+                        _EVENT_LIST_READY_SCRIPT
+                    ) is True
+                )
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception:
+                pass
     return records

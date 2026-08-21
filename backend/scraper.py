@@ -257,7 +257,8 @@ def _event_record_identity(event):
         return None
     source_event_id = str(event.get('source_event_id') or '').strip()
     if source_event_id:
-        return ('source', source_event_id)
+        source = _normalized_event_identity(event.get('source')) or 'unknown'
+        return ('source', source, source_event_id)
 
     home = _normalized_event_identity(event.get('local'))
     away = _normalized_event_identity(event.get('visitante'))
@@ -553,14 +554,14 @@ def click_category(driver, category):
             pass
 
     # 1. Buscar en Top Leagues y Menú deportivo
-    script = get_shadow_script() + f"""
-    try {{
+    script = get_shadow_script() + """
+    try {
         var shadow = getShadow();
         if (!shadow) return false;
         var all = Array.from(shadow.querySelectorAll('*'));
-        var catLower = '{catLower}';
+        var catLower = arguments[0];
         
-        var match = all.find(n => {{
+        var match = all.find(n => {
             if (n.children.length > 0) return false;
             var t = (n.textContent || '').trim().toLowerCase();
             if ((catLower.includes('champions') || catLower.includes('uefa champions')) && (t === 'uefa champions league' || t.includes('champions league') || t.includes('liga de campeones'))) return true;
@@ -572,17 +573,17 @@ def click_category(driver, category):
             if (catLower.includes('mls') && (t === 'mls')) return true;
             if (catLower.includes('nfl') && (t === 'nfl' || t.includes('fútbol americano'))) return true;
             return t === catLower;
-        }});
+        });
         
-        if (match) {{
+        if (match) {
             (match.parentElement || match).click();
             match.click();
             return true;
-        }}
+        }
         return false;
-    }} catch(e) {{ return false; }}
+    } catch(e) { return false; }
     """
-    return driver.execute_script(script)
+    return driver.execute_script(script, catLower)
 
 def es_partido_futuro_valido(horario_str):
     """
@@ -691,6 +692,7 @@ def extract_events_from_page(
     return [
         _legacy_odds_projection(event)
         for event in normalize_playdoit_events(enriched, observed)
+        if event.markets
     ]
 
 def _legacy_odds_projection(event):
@@ -1096,144 +1098,64 @@ def fase3_filtro_inteligente(partidos_data, *, groq_api_key=None):
 # ============================================================
 #  FASE 4: INMERSIÓN QUIRÚRGICA (Insights, Córners, Crear Apuesta)
 # ============================================================
-def fase4_inmersion(driver, objetivos, partidos_data):
-    print("\n" + "="*60)
-    print("🎯  FASE 4: INMERSIÓN QUIRÚRGICA (Insights + Mercados Profundos)")
-    print("="*60)
-    
-    datos_profundos = []
-    
-    for i, obj in enumerate(objetivos, 1):
-        objective_identity = _normalized_event_identity(obj)
-        base = next(
-            (
-                p for p in partidos_data
-                if _normalized_event_identity(p.get('partido'))
-                == objective_identity
-            ),
-            None,
-        )
-        if not base:
-            print(f"\n   [{i}/{len(objetivos)}] Omitido sin identidad exacta: {obj}")
+def _resolve_deep_objective(objective, events):
+    """Resolve one exact unique event; text-only doubleheaders are ambiguous."""
+
+    requested_source_id = ""
+    requested_source = ""
+    if isinstance(objective, dict):
+        requested_match = _normalized_event_identity(objective.get('partido'))
+        requested_source_id = str(
+            objective.get('source_event_id') or ''
+        ).strip()
+        requested_source = str(objective.get('source') or '').strip().casefold()
+    else:
+        requested_match = _normalized_event_identity(objective)
+    if requested_match is None:
+        return None
+
+    matches = []
+    for event in events:
+        if not isinstance(event, dict):
             continue
-        
-        print(f"\n   [{i}/{len(objetivos)}] Infiltrando: {obj}")
-        
-        # Clic confiable con mouse dispatch en el partido dentro del Shadow DOM
-        script_click = """
-        try {
-            var local = arguments[0].toLocaleLowerCase();
-            var visitante = arguments[1].toLocaleLowerCase();
-            var host = document.querySelector('div#altenar > div') || document.querySelector('asb-sports-app, asb-app, altenar-app');
-            if (!host || !host.shadowRoot) return false;
-            var shadow = host.shadowRoot;
-            
-            var containers = Array.from(shadow.querySelectorAll('div[class*="EventBoxContainer"]'));
-            var targetContainer = containers.find(function(c) {
-                var t = c.innerText.toLowerCase();
-                return t.includes(local) && t.includes(visitante);
-            });
-            
-            if(targetContainer) {
-                var clickEl = targetContainer.querySelector('div[class*="Competitors"], div[class*="NameContainer"], div[class*="EventName"], [class*="CompetitorName"]') || targetContainer;
-                ['mousedown', 'click', 'mouseup'].forEach(function(evtType) {
-                    clickEl.dispatchEvent(new MouseEvent(evtType, { bubbles: true, cancelable: true, view: window }));
-                });
-                return true; 
-            }
-            return false;
-        } catch(e) { return false; }
-        """
-        
-        clicked = driver.execute_script(
-            script_click, base.get('local', ''), base.get('visitante', '')
-        )
-        if not clicked:
-            # Reintentar navegando si estaba en otra vista
-            click_category(driver, base.get('categoria', 'Liga MX'))
-            time.sleep(2)
-            clicked = driver.execute_script(
-                script_click, base.get('local', ''), base.get('visitante', '')
+        if _normalized_event_identity(event.get('partido')) != requested_match:
+            continue
+        event_source_id = str(event.get('source_event_id') or '').strip()
+        event_source = str(event.get('source') or '').strip().casefold()
+        if requested_source_id and event_source_id != requested_source_id:
+            continue
+        if requested_source and event_source != requested_source:
+            continue
+        matches.append(event)
+    return matches[0] if len(matches) == 1 else None
+
+
+def fase4_inmersion(driver, objetivos, partidos_data):
+    """Use only already structured markets; unbounded deep DOM tabs are disabled."""
+
+    print("\n" + "="*60)
+    print("🎯  FASE 4: MERCADOS ESTRUCTURADOS VERIFICADOS")
+    print("="*60)
+    datos_profundos = []
+    for i, objective in enumerate(objetivos, 1):
+        base = _resolve_deep_objective(objective, partidos_data)
+        if base is None:
+            print(
+                f"\n   [{i}/{len(objetivos)}] Omitido sin identidad exacta: "
+                f"{objective}"
             )
-            
-        if clicked:
-            time.sleep(3)
-            
-            # PASO A: Extraer Pestañas Profundas (Tiros de Esquina, Goles, Tarjetas, Jugador)
-            script_extract_deep = """
-            try {
-                var host = document.querySelector('div#altenar > div') || document.querySelector('asb-sports-app, asb-app, altenar-app');
-                if (!host || !host.shadowRoot) return "";
-                var shadow = host.shadowRoot;
-                
-                var tabsToExplore = ['tiros esquina', 'goles', 'tarjetas', 'especiales por jugador', 'crear apuesta'];
-                var allNodes = Array.from(shadow.querySelectorAll('*'));
-                var marketSummary = [];
-                
-                tabsToExplore.forEach(function(tabName) {
-                    var tabEl = allNodes.find(function(n) {
-                        return n.children.length === 0 && n.textContent && n.textContent.trim().toLowerCase().includes(tabName);
-                    });
-                    if (tabEl) {
-                        try {
-                            tabEl.click();
-                            if (tabEl.parentElement) tabEl.parentElement.click();
-                        } catch(e) {}
-                    }
-                    
-                    var boxes = Array.from(shadow.querySelectorAll('[class*="MarketBox"], [class*="EventDetailsMarketBox"]'));
-                    boxes.forEach(function(box) {
-                        var titleEl = box.querySelector('[class*="MarketName"], [class*="Title"], [class*="HeaderMarket"]');
-                        var title = titleEl ? titleEl.innerText.trim() : box.innerText.split('\\n')[0];
-                        
-                        var buttons = Array.from(box.querySelectorAll('button, [class*="OddBoxButton"], [class*="SelectionButton"]'));
-                        var odds = buttons.map(function(b) {
-                            return b.innerText.replace(/\\n+/g, ' ').trim();
-                        }).filter(Boolean);
-                        
-                        if (odds.length > 0) {
-                            var entry = "▶ MERCADO [" + title + "]: " + odds.join(" | ");
-                            if (!marketSummary.includes(entry)) {
-                                marketSummary.push(entry);
-                            }
-                        }
-                    });
-                });
-                
-                return marketSummary.join("\\n");
-            } catch(e) { return ""; }
-            """
-            
-            mercados_texto = driver.execute_script(script_extract_deep) or ""
-            if mercados_texto:
-                print(f"      🎯 {len(mercados_texto.splitlines())} Mercados profundos extraídos (Córners, Goles, Tarjetas).")
-            
-            # Regresar al listado general haciendo clic en el botón 'Volver' o pestaña principal
-            script_back = """
-            try {
-                var host = document.querySelector('div#altenar > div') || document.querySelector('asb-sports-app, asb-app, altenar-app');
-                if (host && host.shadowRoot) {
-                    var backBtn = host.shadowRoot.querySelector('button[class*="BackButton"], [class*="HeaderBack"]');
-                    if (backBtn) backBtn.click();
-                }
-            } catch(e) {}
-            """
-            driver.execute_script(script_back)
-            time.sleep(1)
-            
-            datos_profundos.append({
-                **base,
-                "mercados_profundos": mercados_texto[:1200],
-            })
-        else:
-            if base.get('mercados_reales'):
-                base['mercados_profundos'] = "\n".join(base['mercados_reales'])[:1200]
-                print(f"      🎯 Usando {len(base['mercados_reales'])} mercados verificados del satélite.")
-            else:
-                print("      ⚠️ No se pudo entrar al partido, usando cuotas de superficie.")
-            datos_profundos.append(base)
-    
-    print(f"\n   📊 Inmersión completada: {len(datos_profundos)} partidos analizados a fondo.")
+            continue
+        verified = base.get('mercados_reales')
+        market_text = (
+            "\n".join(str(item) for item in verified)[:1200]
+            if isinstance(verified, list)
+            else ""
+        )
+        datos_profundos.append({**base, "mercados_profundos": market_text})
+    print(
+        f"\n   📊 Inmersión completada: {len(datos_profundos)} "
+        "partidos con evidencia estructurada."
+    )
     return datos_profundos
 
 # ============================================================

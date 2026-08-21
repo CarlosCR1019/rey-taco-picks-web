@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from argparse import ArgumentParser
+from dataclasses import dataclass
+from enum import IntEnum
 import os
 import json
 import time
@@ -5,6 +10,7 @@ import sys
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -14,38 +20,24 @@ if str(REPO_ROOT) not in sys.path:
 import undetected_chromedriver as uc
 import urllib.request
 from groq import Groq
-from dotenv import load_dotenv
-from supabase import create_client, Client
-try:
-    from backend.publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
-    from backend.pick_publisher import SupabaseBatchRepository, publish_batch
-    from backend.scraper_config import load_settings
-    from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
-except ImportError:  # So `python backend/scraper.py` also resolves the helper.
-    from publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
-    from pick_publisher import SupabaseBatchRepository, publish_batch
-    from scraper_config import load_settings
-    from telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
+from supabase import create_client
+
+from backend.publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
+from backend.pick_publisher import SupabaseBatchRepository, publish_batch
+from backend.scraper_config import ConfigError, ScraperSettings, load_settings
+from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
 
 # Forzar codificación UTF-8
-sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
-# Cargar variables de entorno
-load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
-
-if not GROQ_API_KEY:
-    print("⚠️ ADVERTENCIA: No se encontró GROQ_API_KEY en el archivo .env")
-
-# Configurar Supabase
-if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-else:
-    supabase = None
-    print("⚠️ ADVERTENCIA: No se encontraron SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY.")
+# Legacy phase helpers retain optional module defaults for backwards-compatible
+# direct calls. The command path injects values loaded by scraper_config instead
+# of reading dotenv or creating a privileged client during import.
+GROQ_API_KEY = ""
+ODDS_API_KEY = ""
+SUPABASE_SERVICE_ROLE_KEY = ""
+supabase = None
 
 def retire_previous_public_pending_pick():
     """Fail closed: retire the old free pick before publishing today's batch."""
@@ -177,7 +169,7 @@ def get_chrome_driver():
             fresh_opts, _ = make_options()
             return uc.Chrome(options=fresh_opts, version_main=chrome_ver)
         except Exception as e:
-            print(f"   ⚠️ Intentando inicialización estándar: {e}")
+            print(f"   ⚠️ Intentando inicialización estándar; failure={type(e).__name__}")
 
     try:
         fresh_opts, _ = make_options()
@@ -430,7 +422,7 @@ def es_partido_futuro_valido(horario_str):
             
         return False, "Sin horario específico confirmado"
     except Exception as e:
-        return False, f"Error validación: {e}"
+        return False, f"Error validación; failure={type(e).__name__}"
 
 def extract_events_from_page(driver):
     """Extrae ÚNICAMENTE eventos PRE-MATCH directamente de Playdoit y convierte momios a Decimal."""
@@ -518,9 +510,10 @@ def extract_events_from_page(driver):
     """
     return driver.execute_script(script) or []
 
-def obtener_eventos_odds_api():
+def obtener_eventos_odds_api(odds_api_key=None):
     """Obtiene ÚNICAMENTE partidos PRE-MATCH futuros con cuotas reales y exactas (1X2, Totales Over/Under y Spreads)."""
-    if not ODDS_API_KEY:
+    active_odds_api_key = odds_api_key or ODDS_API_KEY
+    if not active_odds_api_key:
         return []
     
     print("\n🌐 Conectando satélite The Odds API (Champions League, Liga MX, MLB, La Liga, MLS, Premier, NFL)...")
@@ -544,7 +537,7 @@ def obtener_eventos_odds_api():
     
     for s in sports:
         try:
-            url = f"https://api.the-odds-api.com/v4/sports/{s}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h,totals,spreads"
+            url = f"https://api.the-odds-api.com/v4/sports/{s}/odds/?apiKey={active_odds_api_key}&regions=us,eu&markets=h2h,totals,spreads"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
@@ -600,7 +593,7 @@ def obtener_eventos_odds_api():
                             "info_texto": f"{deporte_cat}: {home} vs {away}. Horario: {horario_str}. Mercados verificados: {' | '.join(cuotas_mercados)}"
                         })
         except Exception as e:
-            print(f"   ⚠️ Error en {s}: {e}")
+            print(f"   ⚠️ Error en {s}; failure={type(e).__name__}")
             
     print(f"   ✅ {len(eventos_api)} partidos PRE-MATCH verificados listos con mercados reales.")
     return eventos_api
@@ -608,7 +601,7 @@ def obtener_eventos_odds_api():
 # ============================================================
 #  FASE 1: ESCÁNER RADAR DE SUPERFICIE
 # ============================================================
-def fase1_escaneo_superficie(driver):
+def fase1_escaneo_superficie(driver, *, odds_api_key=None):
     print("\n" + "="*60)
     print("🕵️  FASE 1: ESCÁNER RADAR DE SUPERFICIE (Solo Hoy y Mañana)")
     print("="*60)
@@ -687,12 +680,12 @@ def fase1_escaneo_superficie(driver):
             else:
                 print("⚠️ no encontrada")
     except Exception as e:
-        print(f"   ⚠️ Nota en escáner Playdoit: {e}")
+        print(f"   ⚠️ Nota en escáner Playdoit; failure={type(e).__name__}")
     
     # Si la lista inicial en Playdoit tuviera pocos eventos o fuera entre semana (martes/miércoles)
     if len(partidos_data) < 4:
         print(f"\n   🌐 Cartelera en Playdoit reducida ({len(partidos_data)}). Conectando satélite The Odds API...")
-        api_events = obtener_eventos_odds_api()
+        api_events = obtener_eventos_odds_api(odds_api_key)
         for ae in api_events:
             if not any(x["partido"].lower() == ae["partido"].lower() for x in partidos_data):
                 partidos_data.append(ae)
@@ -703,12 +696,13 @@ def fase1_escaneo_superficie(driver):
 # ============================================================
 #  FASE 2: COMPARACIÓN CON MERCADO (The Odds API)
 # ============================================================
-def fase2_comparacion_mercado(partidos_data):
+def fase2_comparacion_mercado(partidos_data, *, odds_api_key=None):
     print("\n" + "="*60)
     print("📈  FASE 2: COMPARACIÓN CON CUOTAS DEL MERCADO")
     print("="*60)
     
-    if not ODDS_API_KEY:
+    active_odds_api_key = odds_api_key or ODDS_API_KEY
+    if not active_odds_api_key:
         print("   ⚠️ No hay ODDS_API_KEY. Saltando comparación de mercado.")
         print("   ℹ️ Para activar esta función, agrega ODDS_API_KEY en tu .env")
         return {}
@@ -724,7 +718,7 @@ def fase2_comparacion_mercado(partidos_data):
         market_odds = {}
         
         for sport_key, categorias in sports_map.items():
-            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=decimal"
+            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={active_odds_api_key}&regions=us&markets=h2h&oddsFormat=decimal"
             try:
                 req = urllib.request.Request(url)
                 with urllib.request.urlopen(req, timeout=10) as resp:
@@ -751,13 +745,13 @@ def fase2_comparacion_mercado(partidos_data):
                 
                 print(f"   ✅ {sport_key}: {len(data)} eventos del mercado global.")
             except Exception as e:
-                print(f"   ⚠️ Error consultando {sport_key}: {e}")
+                print(f"   ⚠️ Error consultando {sport_key}; failure={type(e).__name__}")
         
         print(f"   📊 {len(market_odds)} cuotas de referencia del mercado obtenidas.")
         return market_odds
         
     except Exception as e:
-        print(f"   ❌ Error general en comparación de mercado: {e}")
+        print(f"   ❌ Error general en comparación de mercado; failure={type(e).__name__}")
         return {}
 
 def ejecutar_groq_con_fallback(client, messages, temperature=0.2):
@@ -794,14 +788,14 @@ def ejecutar_groq_con_fallback(client, messages, temperature=0.2):
                     time.sleep(3)
                     continue
                 else:
-                    print(f"   ⚠️ Nota en Groq ({modelo}): {e}")
+                    print(f"   ⚠️ Nota en Groq ({modelo}); failure={type(e).__name__}")
                     continue
     return ""
 
 # ============================================================
 #  FASE 3: FILTRO INTELIGENTE (Top 8 por Groq)
 # ============================================================
-def fase3_filtro_inteligente(partidos_data):
+def fase3_filtro_inteligente(partidos_data, *, groq_api_key=None):
     print("\n" + "="*60)
     print("🧠  FASE 3: FILTRO INTELIGENTE (Groq selecciona Top 8 Pre-Match Multideporte)")
     print("="*60)
@@ -809,7 +803,7 @@ def fase3_filtro_inteligente(partidos_data):
     if not partidos_data:
         return []
     
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=groq_api_key or GROQ_API_KEY)
     
     # Filtrar solo eventos con horario futuro y priorizar deportes principales
     eventos_filtrados = []
@@ -879,7 +873,7 @@ def fase3_filtro_inteligente(partidos_data):
             print(f"      {i}. {obj}")
         return objetivos_finales
     except Exception as e:
-        print(f"   ⚠️ Nota en filtro IA: {e}. Aplicando balanceador multideporte...")
+        print(f"   ⚠️ Nota en filtro IA; failure={type(e).__name__}. Aplicando balanceador multideporte...")
         # Selección balanceada: Champions League + KBO + MLB + Liga MX / Fútbol
         champs = [p['partido'] for p in partidos_data if 'champions' in p.get('categoria', '').lower() or 'uefa' in p.get('categoria', '').lower()]
         kbo = [p['partido'] for p in partidos_data if 'kbo' in p.get('categoria', '').lower() or 'corea' in p.get('categoria', '').lower()]
@@ -1029,16 +1023,17 @@ def fase4_inmersion(driver, objetivos, partidos_data):
 # ============================================================
 #  FASE 5: MEMORIA HISTÓRICA
 # ============================================================
-def fase5_memoria_historica():
+def fase5_memoria_historica(database=None):
     print("\n" + "="*60)
     print("📚  FASE 5: RECUPERANDO MEMORIA HISTÓRICA")
     print("="*60)
     
-    if not supabase:
+    active_database = database or supabase
+    if not active_database:
         return "Sin conexión a base de datos."
     
     try:
-        res = supabase.table("picks").select("categoria, partido, pick, cuota, estado, fecha_generacion").order("id", desc=True).limit(30).execute()
+        res = active_database.table("picks").select("categoria, partido, pick, cuota, estado, fecha_generacion").order("id", desc=True).limit(30).execute()
         picks = res.data
         
         if not picks:
@@ -1064,13 +1059,20 @@ PICKS RECIENTES:
         print(f"   ✅ Memoria cargada: {len(picks)} picks, {ganados}W-{perdidos}L")
         return memoria
     except Exception as e:
-        print(f"   ⚠️ Error leyendo historial: {e}")
+        print(f"   ⚠️ Error leyendo historial; failure={type(e).__name__}")
         return "Error leyendo historial."
 
 # ============================================================
 #  FASE 6: ANÁLISIS FINAL — DEBATE Y CONSENSO MULTI-IA
 # ============================================================
-def fase6_analisis_final(datos_profundos, memoria, market_odds, partidos_data=None):
+def fase6_analisis_final(
+    datos_profundos,
+    memoria,
+    market_odds,
+    partidos_data=None,
+    *,
+    groq_api_key=None,
+):
     print("\n" + "="*60)
     print("🧠⚡  FASE 6: DEBATE Y CONSENSO MULTI-IA (Quant vs Auditor vs Juez)")
     print("="*60)
@@ -1078,10 +1080,11 @@ def fase6_analisis_final(datos_profundos, memoria, market_odds, partidos_data=No
     if partidos_data is None:
         partidos_data = datos_profundos
         
-    if not GROQ_API_KEY or not (datos_profundos or partidos_data):
+    active_groq_api_key = groq_api_key or GROQ_API_KEY
+    if not active_groq_api_key or not (datos_profundos or partidos_data):
         return []
     
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=active_groq_api_key)
     
     # Contexto de mercado global
     market_context = ""
@@ -1129,7 +1132,7 @@ Devuelve tu catálogo cuantitativo con las justificaciones matemáticas respetan
         resp_quant = ejecutar_groq_con_fallback(client, [{"role": "user", "content": prompt_quant}], temperature=0.2)
         print("   ✅ [Alpha Quant] Propuestas de córners, combos y parlays generadas.")
     except Exception as e:
-        print(f"   ⚠️ Error en IA Quant: {e}")
+        print(f"   ⚠️ Error en IA Quant; failure={type(e).__name__}")
         resp_quant = "Análisis quant no disponible."
 
     # -------------------------------------------------------------
@@ -1159,7 +1162,7 @@ Devuelve tu dictamen de aprobación y ajustes recomendados.
         resp_auditor = ejecutar_groq_con_fallback(client, [{"role": "user", "content": prompt_auditor}], temperature=0.2)
         print("   ✅ [Risk Auditor] Auditoría de riesgo y correlación completada.")
     except Exception as e:
-        print(f"   ⚠️ Error en IA Auditor: {e}")
+        print(f"   ⚠️ Error en IA Auditor; failure={type(e).__name__}")
         resp_auditor = "Auditoría no disponible."
 
     # -------------------------------------------------------------
@@ -1327,7 +1330,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             raise ValueError(f"Solo {len(picks_validados)} picks validados, activando generador de respaldo...")
             
     except Exception as e:
-        print(f"   ⚠️ Nota en síntesis de debate IA: {e}. Activando generador de cartera cuantitativa...")
+        print(f"   ⚠️ Nota en síntesis de debate IA; failure={type(e).__name__}. Activando generador de cartera cuantitativa...")
         
         # Generador de respaldo cuantitativo 100% DINÁMICO e infalible
         picks_fallback = []
@@ -1639,56 +1642,200 @@ def fase7_guardar_y_notificar(
     return publication, deliveries
 
 # ============================================================
-#  MAIN: ORQUESTADOR DE FASES
+#  MAIN: SAFE COMMAND BOUNDARY AND LEGACY PIPELINE ADAPTER
 # ============================================================
-def main():
-    print("\n" + "="*60)
-    print("🌮  REY TACO PICKS BOT v5.0  🌮")
-    print("   Arquitectura: Escáner → Mercado → Filtro → Inmersión → Memoria → IA → Picks")
-    print("="*60)
-    
-    require_publish_backend()
-    driver = None
+class ExitCode(IntEnum):
+    SUCCESS = 0
+    CONFIGURATION = 2
+    NO_EVENTS = 3
+    NO_CANDIDATES = 4
+    PERSISTENCE = 5
+    DELIVERY = 6
+    UNEXPECTED = 10
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    event_count: int
+    pick_count: int
+    persisted: bool
+    failed_deliveries: tuple[str, ...]
+
+
+def _schema_status_data(data):
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    return data if isinstance(data, dict) else None
+
+
+def probe_secure_schema(client):
+    """Fail closed using a read-only RPC supplied by the scraper migration."""
     try:
-        driver = get_chrome_driver()
-        
-        # Fase 1: Radar
-        partidos = fase1_escaneo_superficie(driver)
-        if not partidos:
-            print("\n❌ No se encontraron partidos. Abortando.")
-            return
-        
-        # Fase 2: Cuotas del mercado global
-        market_odds = fase2_comparacion_mercado(partidos)
-        
-        # Fase 3: Filtro Inteligente
-        objetivos = fase3_filtro_inteligente(partidos)
-        
-        # Fase 4: Inmersión Quirúrgica
-        datos_profundos = fase4_inmersion(driver, objetivos, partidos)
-        
-        # Fase 5: Memoria Histórica
-        memoria = fase5_memoria_historica()
-        
-        # Fase 6: Análisis Final
-        picks = fase6_analisis_final(datos_profundos, memoria, market_odds, partidos)
-        
-        # Fase 7: Guardar y Notificar
-        fase7_guardar_y_notificar(picks)
-        
-        print("\n" + "="*60)
-        print("✅  MISIÓN COMPLETADA. Revisa tu página web.")
-        print("="*60)
-        
-    except Exception as e:
-        print(f"\n❌ Error general: {e}")
-    finally:
-        if driver:
+        response = client.rpc("scraper_schema_status", {}).execute()
+        status = _schema_status_data(response.data)
+    except Exception:
+        status = None
+    if (
+        status is None
+        or status.get("public_picks") is not True
+        or status.get("publish_pick_batch") is not True
+    ):
+        raise ConfigError("secure Supabase scraper migration is not applied")
+
+
+class LegacyPipeline:
+    """Injectable adapter around the existing collection and publication phases."""
+
+    def __init__(
+        self,
+        settings,
+        *,
+        repository=None,
+        history_client=None,
+        driver_factory=None,
+    ):
+        self.settings = settings
+        self.repository = repository
+        self.history_client = history_client
+        self.driver_factory = driver_factory or get_chrome_driver
+
+    def run(self):
+        print("\n" + "=" * 60)
+        print("🌮  REY TACO PICKS BOT v5.0  🌮")
+        print(
+            "   Arquitectura: Escáner → Mercado → Filtro → "
+            "Inmersión → Memoria → IA → Picks"
+        )
+        print("=" * 60)
+        print(f"dry_run={str(self.settings.dry_run).lower()}")
+
+        driver = self.driver_factory()
+        try:
+            partidos = fase1_escaneo_superficie(
+                driver, odds_api_key=self.settings.odds_api_key
+            )
+            if not partidos:
+                return PipelineResult(0, 0, False, ())
+
+            market_odds = fase2_comparacion_mercado(
+                partidos, odds_api_key=self.settings.odds_api_key
+            )
+            objetivos = fase3_filtro_inteligente(
+                partidos, groq_api_key=self.settings.groq_api_key
+            )
+            datos_profundos = fase4_inmersion(driver, objetivos, partidos)
+            memoria = fase5_memoria_historica(self.history_client)
+            picks = fase6_analisis_final(
+                datos_profundos,
+                memoria,
+                market_odds,
+                partidos,
+                groq_api_key=self.settings.groq_api_key,
+            )
+            if not picks:
+                return PipelineResult(len(partidos), 0, False, ())
+
+            if self.settings.dry_run:
+                print(
+                    f"dry_run=true events={len(partidos)} candidates={len(picks)} "
+                    "persistence=skipped telegram=skipped"
+                )
+                return PipelineResult(len(partidos), len(picks), False, ())
+
+            publication, deliveries = fase7_guardar_y_notificar(
+                picks,
+                repository=self.repository,
+                settings=self.settings,
+            )
+            failed = tuple(
+                sorted(
+                    name
+                    for name, result in deliveries.items()
+                    if not result.success
+                )
+            )
+            persisted = bool(publication and publication.run_id)
+            return PipelineResult(len(partidos), len(picks), persisted, failed)
+        finally:
             try:
                 driver.quit()
-            except:
+            except Exception:
                 pass
             print("🔒 Navegador cerrado.")
 
+
+def build_pipeline(
+    settings: ScraperSettings,
+    *,
+    client_factory=None,
+    schema_probe=None,
+    driver_factory=None,
+):
+    """Build production dependencies, probing secure schema before Chrome."""
+    if settings.dry_run:
+        return LegacyPipeline(settings, driver_factory=driver_factory)
+
+    active_client_factory = client_factory or create_client
+    active_probe = schema_probe or probe_secure_schema
+    try:
+        client: Any = active_client_factory(
+            settings.supabase_url, settings.service_role_key
+        )
+    except Exception:
+        raise ConfigError("could not initialize secure Supabase scraper client") from None
+    active_probe(client)
+    return LegacyPipeline(
+        settings,
+        repository=SupabaseBatchRepository(client),
+        history_client=client,
+        driver_factory=driver_factory,
+    )
+
+
+def parse_args(argv=None):
+    parser = ArgumentParser(description="Rey Taco Picks scraper")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args(argv)
+
+
+def run_main(argv=None, *, values=None, pipeline=None):
+    args = parse_args(argv)
+    try:
+        settings = load_settings(values, dry_run=args.dry_run)
+        active_pipeline = pipeline or build_pipeline(settings)
+        result = active_pipeline.run()
+        if result.event_count == 0:
+            return ExitCode.NO_EVENTS
+        if result.pick_count == 0:
+            return ExitCode.NO_CANDIDATES
+        if not settings.dry_run and not result.persisted:
+            return ExitCode.PERSISTENCE
+        if result.failed_deliveries:
+            return ExitCode.DELIVERY
+        return ExitCode.SUCCESS
+    except ConfigError as error:
+        print(f"configuration_error={_safe_configuration_error(error)}")
+        return ExitCode.CONFIGURATION
+    except Exception as error:
+        print(f"unexpected_error={type(error).__name__}")
+        return ExitCode.UNEXPECTED
+
+
+def _safe_configuration_error(error):
+    message = str(error)
+    if message.startswith("Required scraper configuration missing:"):
+        return message
+    if message in {
+        "secure Supabase scraper migration is not applied",
+        "could not initialize secure Supabase scraper client",
+    }:
+        return message
+    return "invalid scraper configuration"
+
+
+def main():
+    return run_main()
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_main())

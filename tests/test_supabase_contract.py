@@ -171,6 +171,24 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertNotIn("grant select on table public.scraper_runs to anon", text)
         self.assertNotIn("grant select on table public.pick_batches to authenticated", text)
 
+    def test_scraper_schema_probe_rpc_is_read_only_and_service_role_only(self):
+        text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
+        signature = "public.scraper_schema_status()"
+        self.assertIn(f"create or replace function {signature}", text)
+        self.assertIn("to_regclass('public.public_picks') is not null", text)
+        self.assertIn(
+            "to_regprocedure('public.publish_pick_batch(text,text,jsonb)') is not null",
+            text,
+        )
+        self.assertIn(f"revoke all on function {signature} from public, anon, authenticated", text)
+        self.assertIn(f"grant execute on function {signature} to service_role", text)
+        probe_start = text.index(f"create or replace function {signature}")
+        probe_end = text.index(f"revoke all on function {signature}", probe_start)
+        probe = text[probe_start:probe_end]
+        self.assertNotIn("insert into", probe)
+        self.assertNotIn("update public.", probe)
+        self.assertNotIn("delete from", probe)
+
     def test_direct_pick_reads_enforce_the_active_batch_lifecycle(self):
         text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
         self.assertIn("drop policy if exists picks_public_read on public.picks", text)

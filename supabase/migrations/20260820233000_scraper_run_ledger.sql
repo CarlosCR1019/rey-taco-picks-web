@@ -366,6 +366,23 @@ create policy picks_admin_delete on public.picks
     for delete to authenticated
     using (public.is_admin(auth.uid()));
 
+-- Read-only deployment preflight. The scraper calls this before opening Chrome;
+-- unlike publish_pick_batch, it cannot claim a run or mutate a batch.
+create or replace function public.scraper_schema_status()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+    select jsonb_build_object(
+        'version', 1,
+        'public_picks', to_regclass('public.public_picks') is not null,
+        'publish_pick_batch',
+            to_regprocedure('public.publish_pick_batch(text,text,jsonb)') is not null
+    );
+$$;
+
 revoke all on table public.scraper_runs from public, anon, authenticated;
 revoke all on table public.pick_batches from public, anon, authenticated;
 grant all on table public.scraper_runs to service_role;
@@ -376,6 +393,9 @@ revoke all on function public.publish_pick_batch(text, text, jsonb) from public,
 revoke all on function public.record_scraper_delivery(uuid, text, boolean, text) from public, anon, authenticated;
 grant execute on function public.publish_pick_batch(text, text, jsonb) to service_role;
 grant execute on function public.record_scraper_delivery(uuid, text, boolean, text) to service_role;
+
+revoke all on function public.scraper_schema_status() from public, anon, authenticated;
+grant execute on function public.scraper_schema_status() to service_role;
 
 revoke all on function public.get_visible_picks() from public;
 grant execute on function public.get_visible_picks() to anon, authenticated;

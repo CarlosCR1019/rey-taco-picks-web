@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import yaml
 
@@ -67,3 +68,56 @@ def test_workflow_keeps_all_schedules_and_python_311():
     for job_name in ("verificar", "scraper"):
         setup_python = _step(workflow["jobs"][job_name], "Setup Python")
         assert setup_python["with"]["python-version"] == "3.11"
+
+
+def test_workflow_has_read_only_permissions_and_non_persistent_checkout_credentials():
+    workflow = _workflow()
+    assert workflow["permissions"] == {"contents": "read"}
+
+    for job_name in ("verificar", "scraper"):
+        checkout = _step(workflow["jobs"][job_name], "Checkout code")
+        assert checkout["with"]["persist-credentials"] == "false"
+
+
+def test_every_action_is_pinned_to_a_full_commit_with_version_comment():
+    action_lines = [
+        line.strip()
+        for line in WORKFLOW.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("uses:")
+    ]
+    assert len(action_lines) == 5
+
+    expected = {
+        "actions/checkout": (
+            "11d5960a326750d5838078e36cf38b85af677262",
+            "v4",
+            2,
+        ),
+        "actions/setup-python": (
+            "a26af69be951a213d495a4c3e4e4022e16d87065",
+            "v5",
+            2,
+        ),
+        "browser-actions/setup-chrome": (
+            "19ae4b339ee18925ab85cf12c1041150ea4a44c8",
+            "v1",
+            1,
+        ),
+    }
+    observed_counts = {action: 0 for action in expected}
+
+    for line in action_lines:
+        match = re.fullmatch(
+            r"uses:\s*([^@\s]+)@([0-9a-f]{40})\s+#\s*(v\d+)", line
+        )
+        assert match is not None, f"action must use a full lowercase SHA: {line}"
+        action, sha, version = match.groups()
+        assert action in expected
+        expected_sha, expected_version, _ = expected[action]
+        assert (sha, version) == (expected_sha, expected_version)
+        observed_counts[action] += 1
+
+    assert observed_counts == {
+        action: expected_count
+        for action, (_, _, expected_count) in expected.items()
+    }

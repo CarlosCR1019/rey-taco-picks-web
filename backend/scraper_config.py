@@ -19,23 +19,23 @@ class ConfigError(RuntimeError):
 @dataclass(frozen=True)
 class ScraperSettings:
     dry_run: bool
-    supabase_url: str | None
-    service_role_key: str | None
-    groq_api_key: str | None
-    odds_api_key: str | None
-    telegram_token: str | None
-    telegram_admin_id: str | None
-    telegram_vip_id: str | None
-    telegram_free_id: str | None
+    supabase_url: str
+    service_role_key: str
+    groq_api_key: str
+    odds_api_key: str
+    telegram_token: str
+    telegram_admin_id: str
+    telegram_vip_id: str
+    telegram_free_id: str
     public_picks_path: Path
     queue_path: Path
 
 
-def _clean(value: str | None) -> str | None:
+def _clean(value: str | None) -> str:
     if value is None:
-        return None
+        return ""
     value = value.strip()
-    return value or None
+    return value
 
 
 def _settings_values(values: Mapping[str, str | None] | None) -> Mapping[str, str | None]:
@@ -44,8 +44,8 @@ def _settings_values(values: Mapping[str, str | None] | None) -> Mapping[str, st
 
     # Resolve explicitly from this module so invocation cwd has no effect.
     file_values = dict(dotenv_values(BACKEND_DIR / ".env"))
-    for key, value in os.environ.items():
-        file_values.setdefault(key, value)
+    # Environment variables are the runtime override for dotenv defaults.
+    file_values.update(os.environ)
     return file_values
 
 
@@ -64,7 +64,7 @@ def load_settings(
                 ("SUPABASE_URL", supabase_url),
                 ("SUPABASE_SERVICE_ROLE_KEY", service_role_key),
             )
-            if value is None
+            if not value
         ]
         if missing:
             raise ConfigError(f"Required scraper configuration missing: {', '.join(missing)}")

@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from backend.scraper_config import ConfigError, REPO_ROOT, load_settings
+import backend.scraper_config as scraper_config
+from backend.scraper_config import BACKEND_DIR, ConfigError, REPO_ROOT, load_settings
 
 
 def test_paths_are_repository_anchored_when_cwd_changes(tmp_path, monkeypatch):
@@ -22,8 +23,8 @@ def test_production_requires_supabase_write_credentials():
 def test_dry_run_allows_missing_supabase_write_credentials():
     settings = load_settings({}, dry_run=True)
 
-    assert settings.supabase_url is None
-    assert settings.service_role_key is None
+    assert settings.supabase_url == ""
+    assert settings.service_role_key == ""
 
 
 def test_injected_mapping_does_not_read_dotenv(monkeypatch):
@@ -54,11 +55,20 @@ def test_telegram_canonical_values_and_compatibility_fallbacks():
     )
     assert fallback.telegram_admin_id == "legacy-admin"
     assert fallback.telegram_vip_id == "legacy-channel"
-    assert fallback.telegram_free_id is None
+    assert fallback.telegram_free_id == ""
 
 
-def test_env_file_is_loaded_relative_to_module(monkeypatch):
+def test_dotenv_path_is_module_relative_and_environment_overrides_file(monkeypatch):
+    calls = []
+
+    def fake_dotenv_values(path):
+        calls.append(path)
+        return {"SUPABASE_URL": "file-url"}
+
+    monkeypatch.setattr(scraper_config, "dotenv_values", fake_dotenv_values)
+    monkeypatch.setenv("SUPABASE_URL", "environment-url")
     monkeypatch.chdir(Path(__file__).parent)
     settings = load_settings(None, dry_run=True)
 
-    assert settings.public_picks_path == REPO_ROOT / "frontend" / "public" / "picks.json"
+    assert calls == [BACKEND_DIR / ".env"]
+    assert settings.supabase_url == "environment-url"

@@ -56,10 +56,31 @@ def test_phase7_delegates_persistence_and_delivery_without_legacy_side_effects()
 
 def test_scraper_script_can_import_extracted_publishers_from_repo_root():
     environment = dict(os.environ)
-    environment.pop("SUPABASE_URL", None)
-    environment.pop("SUPABASE_SERVICE_ROLE_KEY", None)
+    for name in (
+        "SUPABASE_URL",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_KEY",
+        "GROQ_API_KEY",
+        "ODDS_API_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_ADMIN_ID",
+        "TELEGRAM_CHAT_ID",
+        "TELEGRAM_VIP_CHANNEL_ID",
+        "TELEGRAM_CHANNEL_ID",
+        "TELEGRAM_FREE_CHANNEL_ID",
+        "SCRAPER_RUN_KEY",
+        "GITHUB_RUN_ID",
+    ):
+        environment.pop(name, None)
+    environment["PYTHON_DOTENV_DISABLED"] = "1"
+    probe = (
+        "import runpy, sys; "
+        "namespace = runpy.run_path(sys.argv[1], run_name='scraper_import_probe'); "
+        "assert namespace['__name__'] == 'scraper_import_probe'; "
+        "assert callable(namespace.get('main'))"
+    )
     completed = subprocess.run(
-        [sys.executable, str(SCRAPER)],
+        [sys.executable, "-c", probe, str(SCRAPER)],
         cwd=REPO_ROOT,
         env=environment,
         capture_output=True,
@@ -68,7 +89,7 @@ def test_scraper_script_can_import_extracted_publishers_from_repo_root():
         timeout=10,
     )
 
-    assert completed.returncode != 0
+    assert completed.returncode == 0, completed.stderr
     assert "ModuleNotFoundError" not in completed.stderr
 
 

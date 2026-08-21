@@ -10,27 +10,37 @@ alter table public.picks
 
 -- Existing rows predate the audit contract. Keep settled history intact, but
 -- fail closed for any unaudited pending row that could still be displayed.
-update public.pick_batches as legacy_batches
-set active = false
-where legacy_batches.active
-  and exists (
-      select 1
-      from public.picks as legacy_picks
-      where legacy_picks.batch_id = legacy_batches.id
-        and legacy_picks.active
-        and (
-            nullif(btrim(legacy_picks.source), '') is null
-            or nullif(btrim(legacy_picks.source_event_id), '') is null
-            or nullif(btrim(legacy_picks.source_market_key), '') is null
-            or nullif(btrim(legacy_picks.source_selection_key), '') is null
-            or legacy_picks.source_observed_at is null
-            or length(btrim(legacy_picks.source)) not between 1 and 100
-            or length(btrim(legacy_picks.source_event_id)) not between 1 and 500
-            or length(btrim(legacy_picks.source_market_key)) not between 1 and 1000
-            or length(btrim(legacy_picks.source_selection_key)) not between 1 and 500
-            or legacy_picks.source_observed_at > now()
-        )
-  );
+with retired_batches as (
+    update public.pick_batches as legacy_batches
+    set active = false
+    where legacy_batches.active
+      and exists (
+          select 1
+          from public.picks as legacy_picks
+          where legacy_picks.batch_id = legacy_batches.id
+            and legacy_picks.active
+            and (
+                nullif(btrim(legacy_picks.source), '') is null
+                or nullif(btrim(legacy_picks.source_event_id), '') is null
+                or nullif(btrim(legacy_picks.source_market_key), '') is null
+                or nullif(btrim(legacy_picks.source_selection_key), '') is null
+                or legacy_picks.source_observed_at is null
+                or length(btrim(legacy_picks.source)) not between 1 and 100
+                or length(btrim(legacy_picks.source_event_id)) not between 1 and 500
+                or length(btrim(legacy_picks.source_market_key)) not between 1 and 1000
+                or length(btrim(legacy_picks.source_selection_key)) not between 1 and 500
+                or legacy_picks.source_observed_at > now()
+            )
+      )
+    returning legacy_batches.id
+)
+update public.picks as retired_batch_picks
+set active = false,
+    visibility = case
+        when retired_batch_picks.estado = 'pendiente' then 'premium'
+        else retired_batch_picks.visibility
+    end
+where retired_batch_picks.batch_id in (select id from retired_batches);
 
 update public.picks as legacy_picks
 set active = false,
@@ -57,6 +67,11 @@ where (
       or length(btrim(legacy_picks.source_selection_key)) not between 1 and 500
       or legacy_picks.source_observed_at > now()
   );
+
+update public.picks
+set razonamiento = null
+where visibility = 'public'
+  and razonamiento is not null;
 
 alter table public.picks
     alter column source_audit_version set default 1;
@@ -101,6 +116,8 @@ begin
         new.razonamiento := null;
     end if;
     if tg_op = 'INSERT' then
+        new.source_audit_version := 1;
+    elsif new.estado = 'pendiente' and new.active then
         new.source_audit_version := 1;
     elsif old.source_audit_version = 1 then
         new.source_audit_version := 1;
@@ -590,9 +607,22 @@ as $$
                       where publish_acl.privilege_type = 'EXECUTE'
                         and (
                             publish_acl.grantee = 0
-                            or publish_role.rolname in (
-                                'anon', 'authenticated'
+                            or (
+                                publish_acl.grantee <> publish_rpc.proowner
+                                and publish_role.rolname <> 'service_role'
                             )
+                        )
+                  )
+                  and not exists (
+                      select 1
+                      from pg_roles as executable_role
+                      where not executable_role.rolsuper
+                        and executable_role.oid <> publish_rpc.proowner
+                        and executable_role.rolname <> 'service_role'
+                        and has_function_privilege(
+                            executable_role.oid,
+                            publish_rpc.oid,
+                            'EXECUTE'
                         )
                   )
                   and exists (
@@ -697,6 +727,15 @@ as $$
                   and position(
                       'new.source_audit_version := 1'
                       in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'elsif new.estado = ''pendiente'' and new.active then'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(audit_trigger.tgfoid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
                   ) > 0
                   and position(
                       'new.source is distinct from old.source'

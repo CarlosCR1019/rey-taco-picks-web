@@ -324,6 +324,10 @@ class SupabaseContractTests(unittest.TestCase):
             text,
         )
         self.assertIn("if tg_op = 'insert' then new.source_audit_version := 1", text)
+        self.assertIn(
+            "elsif new.estado = 'pendiente' and new.active then new.source_audit_version := 1",
+            text,
+        )
         self.assertIn("old.source_audit_version = 1", text)
         for field in (
             "source",
@@ -460,7 +464,7 @@ class SupabaseContractTests(unittest.TestCase):
 
     def test_source_audit_upgrade_hides_active_unaudited_legacy_rows_before_v2(self):
         text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
-        batch_demotion = text.index("update public.pick_batches as legacy_batches")
+        batch_demotion = text.index("with retired_batches as (")
         pick_demotion = text.index("update public.picks as legacy_picks")
         version_default = text.index("alter column source_audit_version set default 1")
         probe = text.index("create or replace function public.scraper_schema_status()")
@@ -486,6 +490,31 @@ class SupabaseContractTests(unittest.TestCase):
             demotion,
         )
         self.assertIn("legacy_picks.source_observed_at > now()", demotion)
+        self.assertIn("with retired_batches as ( update public.pick_batches", demotion)
+        self.assertIn("returning legacy_batches.id", demotion)
+        self.assertIn("update public.picks as retired_batch_picks", demotion)
+        self.assertIn(
+            "update public.picks as retired_batch_picks set active = false",
+            demotion,
+        )
+        self.assertIn(
+            "retired_batch_picks.batch_id in (select id from retired_batches)",
+            demotion,
+        )
+
+    def test_source_audit_upgrade_backfills_public_reasoning_before_v2(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        backfill = text.index(
+            "update public.picks set razonamiento = null "
+            "where visibility = 'public' and razonamiento is not null"
+        )
+        trigger = text.index(
+            "create or replace function public.enforce_pick_source_audit_version"
+        )
+        probe = text.index("create or replace function public.scraper_schema_status()")
+
+        self.assertLess(backfill, trigger)
+        self.assertLess(backfill, probe)
 
     def test_database_redacts_public_reasoning_in_every_rpc_and_view(self):
         for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):
@@ -546,11 +575,26 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("search_path=public, pg_temp", probe)
         self.assertIn("from aclexplode", probe)
         self.assertIn("publish_acl.grantee = 0", probe)
-        self.assertIn("'anon', 'authenticated'", probe)
+        self.assertIn("publish_acl.grantee <> publish_rpc.proowner", probe)
+        self.assertIn("publish_role.rolname <> 'service_role'", probe)
+        self.assertIn("from pg_roles as executable_role", probe)
+        self.assertIn("not executable_role.rolsuper", probe)
+        self.assertIn(
+            "has_function_privilege( executable_role.oid, publish_rpc.oid, 'execute' )",
+            probe,
+        )
+        self.assertNotIn(
+            "publish_role.rolname in ( 'anon', 'authenticated' )",
+            probe,
+        )
         self.assertIn("service_role.rolname = 'service_role'", probe)
         self.assertIn("pg_get_functiondef", probe)
 
         self.assertIn("picks_table.relrowsecurity", probe)
+        self.assertIn(
+            "elsif new.estado = ''pendiente'' and new.active then",
+            probe,
+        )
         self.assertIn("policyname = 'picks_public_read'", probe)
         self.assertIn("policyname = 'picks_member_read'", probe)
         for policy in (

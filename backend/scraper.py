@@ -24,6 +24,13 @@ from groq import Groq
 from supabase import create_client
 
 from backend.publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
+from backend.odds_source import (
+    OddsSourceError,
+    SUPPORTED_MARKETS,
+    SUPPORTED_SPORT_KEYS,
+    fetch_odds_events,
+    normalize_odds_event,
+)
 from backend.pick_publisher import SupabaseBatchRepository, publish_batch
 from backend.scraper_config import ConfigError, ScraperSettings, load_settings
 from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
@@ -519,90 +526,102 @@ def extract_events_from_page(driver):
     """
     return driver.execute_script(script) or []
 
-def obtener_eventos_odds_api(odds_api_key=None):
+def _legacy_odds_projection(event):
+    """Project a normalized event for legacy phases during the migration."""
+
+    h2h = next((market for market in event.markets if market.key == "h2h"), None)
+    named_h2h = {}
+    surface_odds = []
+    if h2h is not None:
+        for key in ("home", "draw", "away"):
+            try:
+                price = f"{h2h.outcome(key).price:.2f}"
+            except KeyError:
+                continue
+            named_h2h[key] = price
+            surface_odds.append(price)
+
+    market_descriptions = []
+    for market in event.markets:
+        selections = ", ".join(
+            f"{outcome.name} @ {outcome.price:.2f}"
+            for outcome in market.outcomes
+        )
+        line = "" if market.line is None else f" {market.line:g}"
+        market_descriptions.append(
+            f"[{market.key.upper()}{line}]: {selections}"
+        )
+
+    mexico_start = event.starts_at.astimezone(ZoneInfo("America/Mexico_City"))
+    mexico_observed = event.observed_at.astimezone(ZoneInfo("America/Mexico_City"))
+    if mexico_start.date() == mexico_observed.date():
+        schedule = f"Hoy {mexico_start.strftime('%H:%M')} hrs"
+    elif mexico_start.date() == mexico_observed.date() + timedelta(days=1):
+        schedule = f"Mañana {mexico_start.strftime('%H:%M')} hrs"
+    else:
+        schedule = mexico_start.strftime("%d/%m %H:%M hrs")
+
+    match_name = f"{event.home_team} vs {event.away_team}"
+    return {
+        "categoria": event.league,
+        "partido": match_name,
+        "local": event.home_team,
+        "visitante": event.away_team,
+        "horario": schedule,
+        "cuotas_por_resultado": named_h2h,
+        "cuotas_superficie": surface_odds,
+        "mercados_reales": market_descriptions,
+        "info_texto": (
+            f"{event.league}: {match_name}. Horario: {schedule}. "
+            f"Mercados verificados: {' | '.join(market_descriptions)}"
+        ),
+    }
+
+
+def obtener_eventos_odds_api(odds_api_key=None, *, observed_at=None):
     """Obtiene ÚNICAMENTE partidos PRE-MATCH futuros con cuotas reales y exactas (1X2, Totales Over/Under y Spreads)."""
     active_odds_api_key = odds_api_key or ODDS_API_KEY
     if not active_odds_api_key:
         return []
     
     print("\n🌐 Conectando satélite The Odds API (Champions League, Liga MX, MLB, La Liga, MLS, Premier, NFL)...")
-    sports = [
-        'soccer_uefa_champs_league_qualification',
-        'soccer_uefa_champs_league',
-        'soccer_uefa_europa_league',
-        'soccer_conmebol_copa_libertadores',
-        'soccer_mexico_ligamx',
-        'baseball_mlb',
-        'soccer_spain_la_liga',
-        'soccer_epl',
-        'soccer_usa_mls',
-        'americanfootball_nfl'
-    ]
     eventos_api = []
-    
-    now_utc = datetime.now(ZoneInfo("UTC"))
+
+    now_utc = observed_at or datetime.now(ZoneInfo("UTC"))
     min_time_utc = now_utc + timedelta(minutes=15) # Mínimo 15 minutos en el futuro
     max_time_utc = now_utc + timedelta(hours=36)
-    
-    for s in sports:
-        try:
-            url = f"https://api.the-odds-api.com/v4/sports/{s}/odds/?apiKey={active_odds_api_key}&regions=us,eu&markets=h2h,totals,spreads"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode())
-                for match in data:
-                    commence_str = match.get('commence_time')
-                    horario_str = "Hoy"
-                    if commence_str:
-                        try:
-                            match_dt = datetime.fromisoformat(commence_str.replace('Z', '+00:00'))
-                            if match_dt < min_time_utc or match_dt > max_time_utc:
-                                continue 
-                            
-                            # Convertir a hora de México (UTC-6)
-                            cdmx_dt = match_dt - timedelta(hours=6)
-                            hoy_cdmx = (now_utc - timedelta(hours=6)).date()
-                            if cdmx_dt.date() == hoy_cdmx:
-                                horario_str = f"Hoy {cdmx_dt.strftime('%H:%M')} hrs"
-                            elif cdmx_dt.date() == hoy_cdmx + timedelta(days=1):
-                                horario_str = f"Mañana {cdmx_dt.strftime('%H:%M')} hrs"
-                            else:
-                                horario_str = cdmx_dt.strftime("%d/%m %H:%M hrs")
-                        except Exception:
-                            continue
 
-                    home = match.get('home_team')
-                    away = match.get('away_team')
-                    
-                    # Extraer cuotas exactas de todos los mercados disponibles
-                    cuotas_mercados = []
-                    h2h_cuotas = []
-                    for bookmaker in match.get('bookmakers', []):
-                        for market in bookmaker.get('markets', []):
-                            mkey = market.get('key')
-                            outcomes = market.get('outcomes', [])
-                            if mkey == 'h2h' and not h2h_cuotas:
-                                h2h_cuotas = [str(o.get('price')) for o in outcomes]
-                            
-                            outs = [f"{o.get('name')} {o.get('point', '')} @ {o.get('price')}".strip() for o in outcomes]
-                            if outs and not any(mkey in x for x in cuotas_mercados):
-                                cuotas_mercados.append(f"[{mkey.upper()}]: {', '.join(outs)}")
-                    
-                    nombre = f"{home} vs {away}"
-                    if not any(x["partido"] == nombre for x in eventos_api):
-                        deporte_cat = "UEFA Champions League" if "champs" in s else ("Liga MX" if "ligamx" in s else ("MLB" if "baseball" in s else ("La Liga" if "spain" in s else ("Copa Libertadores" if "libertadores" in s else ("NFL" if "nfl" in s else "Fútbol")))))
-                        eventos_api.append({
-                            "categoria": deporte_cat,
-                            "partido": nombre,
-                            "local": home,
-                            "visitante": away,
-                            "horario": horario_str,
-                            "cuotas_superficie": h2h_cuotas[:3] if h2h_cuotas else ["1.85", "3.20", "2.10"],
-                            "mercados_reales": cuotas_mercados,
-                            "info_texto": f"{deporte_cat}: {home} vs {away}. Horario: {horario_str}. Mercados verificados: {' | '.join(cuotas_mercados)}"
-                        })
-        except Exception as e:
-            print(f"   ⚠️ Error en {s}; failure={type(e).__name__}")
+    for sport_key in SUPPORTED_SPORT_KEYS:
+        try:
+            raw_events = fetch_odds_events(
+                active_odds_api_key,
+                sport_key,
+                regions=("us", "eu"),
+                markets=SUPPORTED_MARKETS,
+                timeout=10.0,
+                opener=urllib.request.urlopen,
+            )
+            for raw_event in raw_events:
+                try:
+                    event = normalize_odds_event(raw_event, now_utc)
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    print(
+                        f"   ⚠️ Evento inválido en {sport_key}; "
+                        f"failure={type(exc).__name__}"
+                    )
+                    continue
+                if not min_time_utc <= event.starts_at <= max_time_utc:
+                    continue
+                projected = _legacy_odds_projection(event)
+                if not any(
+                    row["partido"].casefold() == projected["partido"].casefold()
+                    for row in eventos_api
+                ):
+                    eventos_api.append(projected)
+        except OddsSourceError as exc:
+            print(f"   ⚠️ Error en {sport_key}; {exc}")
+        except Exception as exc:
+            print(f"   ⚠️ Error en {sport_key}; failure={type(exc).__name__}")
             
     print(f"   ✅ {len(eventos_api)} partidos PRE-MATCH verificados listos con mercados reales.")
     return eventos_api
@@ -705,7 +724,9 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
 # ============================================================
 #  FASE 2: COMPARACIÓN CON MERCADO (The Odds API)
 # ============================================================
-def fase2_comparacion_mercado(partidos_data, *, odds_api_key=None):
+def fase2_comparacion_mercado(
+    partidos_data, *, odds_api_key=None, observed_at=None
+):
     print("\n" + "="*60)
     print("📈  FASE 2: COMPARACIÓN CON CUOTAS DEL MERCADO")
     print("="*60)
@@ -717,47 +738,61 @@ def fase2_comparacion_mercado(partidos_data, *, odds_api_key=None):
         return {}
     
     try:
-        # Obtener cuotas de fútbol (soccer) y otros deportes
-        sports_map = {
-            'soccer': ['Liga MX', 'La Liga', 'UEFA Champions League', 'Copa Italia', 'MLS'],
-            'americanfootball_nfl': ['NFL'],
-            'baseball_mlb': ['MLB']
+        market_odds = {}
+        observed = observed_at or datetime.now(ZoneInfo("UTC"))
+
+        for sport_key in SUPPORTED_SPORT_KEYS:
+            try:
+                raw_events = fetch_odds_events(
+                    active_odds_api_key,
+                    sport_key,
+                    regions=("us",),
+                    markets=("h2h",),
+                    timeout=10.0,
+                    opener=urllib.request.urlopen,
+                )
+                normalized_events = []
+                for raw_event in raw_events:
+                    try:
+                        normalized_events.append(
+                            normalize_odds_event(raw_event, observed)
+                        )
+                    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                        print(
+                            f"   ⚠️ Evento inválido en {sport_key}; "
+                            f"failure={type(exc).__name__}"
+                        )
+
+                for event in normalized_events:
+                    for market in event.markets:
+                        if market.key != "h2h":
+                            continue
+                        for key, team in (
+                            ("home", event.home_team),
+                            ("away", event.away_team),
+                        ):
+                            price = market.outcome(key).price
+                            market_odds.setdefault(team.casefold(), []).append(price)
+
+                print(
+                    f"   ✅ {sport_key}: {len(normalized_events)} "
+                    "eventos del mercado global."
+                )
+            except OddsSourceError as exc:
+                print(f"   ⚠️ Error consultando {sport_key}; {exc}")
+            except Exception as exc:
+                print(
+                    f"   ⚠️ Error consultando {sport_key}; "
+                    f"failure={type(exc).__name__}"
+                )
+
+        averaged_odds = {
+            team: round(sum(prices) / len(prices), 2)
+            for team, prices in market_odds.items()
         }
         
-        market_odds = {}
-        
-        for sport_key, categorias in sports_map.items():
-            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={active_odds_api_key}&regions=us&markets=h2h&oddsFormat=decimal"
-            try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = json.loads(resp.read().decode())
-                    for game in data:
-                        home = game.get('home_team', '')
-                        away = game.get('away_team', '')
-                        
-                        # Calcular cuota promedio del mercado
-                        all_home_odds = []
-                        all_away_odds = []
-                        for bm in game.get('bookmakers', []):
-                            for market in bm.get('markets', []):
-                                for outcome in market.get('outcomes', []):
-                                    if outcome['name'] == home:
-                                        all_home_odds.append(outcome['price'])
-                                    elif outcome['name'] == away:
-                                        all_away_odds.append(outcome['price'])
-                        
-                        if all_home_odds:
-                            market_odds[home.lower()] = round(sum(all_home_odds) / len(all_home_odds), 2)
-                        if all_away_odds:
-                            market_odds[away.lower()] = round(sum(all_away_odds) / len(all_away_odds), 2)
-                
-                print(f"   ✅ {sport_key}: {len(data)} eventos del mercado global.")
-            except Exception as e:
-                print(f"   ⚠️ Error consultando {sport_key}; failure={type(e).__name__}")
-        
-        print(f"   📊 {len(market_odds)} cuotas de referencia del mercado obtenidas.")
-        return market_odds
+        print(f"   📊 {len(averaged_odds)} cuotas de referencia del mercado obtenidas.")
+        return averaged_odds
         
     except Exception as e:
         print(f"   ❌ Error general en comparación de mercado; failure={type(e).__name__}")

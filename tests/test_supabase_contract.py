@@ -111,17 +111,60 @@ class SupabaseContractTests(unittest.TestCase):
             "if claimed_run.source_hash <> requested_source_hash"
         )
         replay_position = text.index("if claimed_run.status in ('published', 'partial')")
-        self.assertLess(lock_position, hash_check_position)
-        self.assertLess(hash_check_position, replay_position)
+        self.assertLess(lock_position, replay_position)
+        self.assertLess(replay_position, hash_check_position)
         self.assertIn("claimed_run.status in ('published', 'partial')", text)
         self.assertIn("'run_id', claimed_run.id", text)
-        self.assertIn(
-            "'batch_id', ( select id from public.pick_batches where run_id = claimed_run.id )",
-            text,
-        )
+        self.assertIn("select id into created_batch from public.pick_batches", text)
         self.assertIn("where run_id = claimed_run.id", text)
         self.assertIn("'delivery_status', claimed_run.delivery_status", text)
         self.assertIn("'created', false", text)
+        self.assertIn("'picks', persisted_picks", text)
+
+    def test_publishing_rpcs_return_exact_persisted_rows_for_create_and_replay(self):
+        expected_fields = {
+            "id",
+            "categoria",
+            "partido",
+            "pick",
+            "cuota",
+            "confianza",
+            "razonamiento",
+            "marcador",
+            "estado",
+            "es_parlay",
+            "liga",
+            "mercado",
+            "riesgo",
+            "resultado_apuesta",
+            "ganancia_simulada",
+            "fecha_generacion",
+            "fecha_evento",
+            "horario",
+            "odds_mercado",
+            "tiene_valor",
+            "visibility",
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+            "source_observed_at",
+        }
+        for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):
+            text = " ".join(migration.read_text(encoding="utf-8").lower().split())
+            start = text.index("create or replace function public.publish_pick_batch")
+            function = text[start:]
+            replay = function.index("if claimed_run.status in ('published', 'partial')")
+            hash_guard = function.index(
+                "if claimed_run.source_hash <> requested_source_hash"
+            )
+            self.assertLess(replay, hash_guard)
+            self.assertGreaterEqual(function.count("into persisted_picks"), 2)
+            self.assertGreaterEqual(function.count("'picks', persisted_picks"), 2)
+            self.assertIn("jsonb_agg(jsonb_build_object(", function)
+            for field in expected_fields:
+                self.assertIn(f"'{field}', persisted_row.{field}", function)
+            self.assertNotIn("to_jsonb(persisted_row)", function)
 
     def test_publishing_rpc_replaces_the_active_pending_lifecycle(self):
         text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())

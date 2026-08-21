@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from hashlib import sha256
 import json
 import os
@@ -42,6 +43,26 @@ PERSISTED_PICK_COLUMNS = frozenset(
         "source_observed_at",
     }
 )
+RETURNED_PICK_COLUMNS = PERSISTED_PICK_COLUMNS | {"id"}
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedPick(Mapping[str, object]):
+    """Immutable defensive copy of one row returned by the database."""
+
+    _items: tuple[tuple[str, object], ...]
+
+    def __getitem__(self, key: str) -> object:
+        for item_key, value in self._items:
+            if item_key == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (key for key, _value in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
 
 
 class PublishResponse(TypedDict):
@@ -49,6 +70,7 @@ class PublishResponse(TypedDict):
     batch_id: str
     created: bool
     delivery_status: dict[str, object]
+    picks: tuple[PersistedPick, ...]
 
 
 class _SupabaseResponse(Protocol):
@@ -81,6 +103,7 @@ class PublicationResult:
     batch_id: str | None
     created: bool
     delivery_status: dict[str, object]
+    picks: tuple[PersistedPick, ...] = ()
     dry_run: bool = False
 
 
@@ -180,11 +203,14 @@ def publish_batch(
     if not isinstance(run_key, str) or not run_key.strip():
         raise ValueError("run_key must not be empty")
     if dry_run:
-        return PublicationResult(None, None, False, {}, dry_run=True)
+        return PublicationResult(None, None, False, {}, picks=(), dry_run=True)
 
     response = repository.publish(run_key, source_hash_for(picks), picks)
-    result = _publication_result(response)
-    _write_public_payload(public_path, public_payload(picks))
+    result = _publication_result(_normalized_publish_response(response))
+    _write_public_payload(
+        public_path,
+        _safe_public_payload(result.picks),
+    )
     return result
 
 
@@ -208,12 +234,84 @@ def _normalized_publish_response(data: object) -> PublishResponse:
     if delivery_status is None:
         raise RuntimeError("publish_pick_batch returned an invalid delivery_status")
 
+    persisted_picks = _validated_persisted_picks(response.get("picks"))
+
     return {
         "run_id": run_id,
         "batch_id": batch_id,
         "created": created,
         "delivery_status": delivery_status,
+        "picks": persisted_picks,
     }
+
+
+def _validated_persisted_picks(value: object) -> tuple[PersistedPick, ...]:
+    if isinstance(value, tuple) and value and all(
+        isinstance(row, PersistedPick) for row in value
+    ):
+        value = [dict(row) for row in value]
+    if not isinstance(value, list) or not value:
+        raise RuntimeError("publish_pick_batch returned invalid persisted picks")
+
+    normalized: list[PersistedPick] = []
+    public_count = 0
+    for raw_row in value:
+        row = _string_keyed_dict(raw_row)
+        if row is None or set(row) != RETURNED_PICK_COLUMNS:
+            raise RuntimeError("publish_pick_batch returned invalid persisted picks")
+        if not all(
+            item is None or isinstance(item, (str, int, float, bool))
+            for item in row.values()
+        ):
+            raise RuntimeError("publish_pick_batch returned invalid persisted picks")
+
+        pick_id = row["id"]
+        if type(pick_id) is not int or pick_id <= 0:
+            raise RuntimeError("publish_pick_batch returned invalid persisted pick id")
+        for field in (
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+        ):
+            field_value = row[field]
+            if not isinstance(field_value, str) or not field_value.strip():
+                raise RuntimeError("publish_pick_batch returned invalid source audit")
+
+        observed_at = row["source_observed_at"]
+        if not isinstance(observed_at, str) or not observed_at.endswith(("Z", "+00:00")):
+            raise RuntimeError("publish_pick_batch returned invalid source audit")
+        try:
+            observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise RuntimeError("publish_pick_batch returned invalid source audit") from error
+        if observed.utcoffset() != timedelta(0):
+            raise RuntimeError("publish_pick_batch returned invalid source audit")
+
+        visibility = row["visibility"]
+        if visibility not in ("public", "premium"):
+            raise RuntimeError("publish_pick_batch returned invalid visibility")
+        if visibility == "public":
+            public_count += 1
+            if row["es_parlay"] is not False or row["razonamiento"] is not None:
+                raise RuntimeError("publish_pick_batch returned unsafe public pick")
+
+        normalized.append(
+            PersistedPick(tuple((key, row[key]) for key in sorted(row)))
+        )
+
+    if public_count != 1:
+        raise RuntimeError("publish_pick_batch returned invalid public policy")
+    return tuple(normalized)
+
+
+def _safe_public_payload(
+    picks: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    payload = public_payload([dict(row) for row in picks])
+    for row in payload:
+        row.pop("razonamiento", None)
+    return payload
 
 
 def _string_keyed_dict(value: object) -> dict[str, object] | None:
@@ -232,7 +330,8 @@ def _publication_result(response: PublishResponse) -> PublicationResult:
         run_id=response["run_id"],
         batch_id=response["batch_id"],
         created=response["created"],
-        delivery_status=response["delivery_status"],
+        delivery_status=dict(response["delivery_status"]),
+        picks=response["picks"],
     )
 
 

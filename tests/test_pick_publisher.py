@@ -4,6 +4,7 @@ import pytest
 
 import backend.pick_publisher as pick_publisher
 from backend.pick_publisher import (
+    PERSISTED_PICK_COLUMNS,
     SupabaseBatchRepository,
     publish_batch,
     source_hash_for,
@@ -12,12 +13,7 @@ from backend.pick_publisher import (
 
 class FakeRepository:
     def __init__(self, response=None, error=None, public_path=None):
-        self.response = response or {
-            "run_id": "run-1",
-            "batch_id": "batch-1",
-            "created": True,
-            "delivery_status": {"free": {"success": True}},
-        }
+        self.response = response
         self.error = error
         self.public_path = public_path
         self.calls = []
@@ -29,7 +25,9 @@ class FakeRepository:
             assert not self.public_path.exists()
         if self.error is not None:
             raise self.error
-        return self.response
+        if self.response is not None:
+            return self.response
+        return publish_response(persisted_picks(picks))
 
     def record_delivery(self, run_id, destination, success, error=""):
         self.delivery_calls.append((run_id, destination, success, error))
@@ -37,9 +35,55 @@ class FakeRepository:
 
 def picks():
     return [
-        {"pick": "Gratis", "visibility": "public", "es_parlay": False},
-        {"pick": "Solo VIP", "visibility": "premium", "es_parlay": False},
+        {
+            "pick": "Gratis",
+            "cuota": 1.8,
+            "visibility": "public",
+            "es_parlay": False,
+            "source": "the-odds-api",
+            "source_event_id": "event-public",
+            "source_market_key": "h2h|full_time|",
+            "source_selection_key": "home",
+            "source_observed_at": "2026-08-20T20:00:00+00:00",
+        },
+        {
+            "pick": "Solo VIP",
+            "cuota": 2.1,
+            "visibility": "premium",
+            "es_parlay": False,
+            "source": "the-odds-api",
+            "source_event_id": "event-premium",
+            "source_market_key": "h2h|full_time|",
+            "source_selection_key": "away",
+            "source_observed_at": "2026-08-20T20:00:00Z",
+        },
     ]
+
+
+def persisted_picks(rows=None):
+    rows = picks() if rows is None else rows
+    persisted = []
+    for index, row in enumerate(rows, start=1):
+        stored = {column: row.get(column) for column in PERSISTED_PICK_COLUMNS}
+        stored["id"] = index
+        if stored["visibility"] == "public":
+            stored["razonamiento"] = None
+        persisted.append(stored)
+    return persisted
+
+
+def publish_response(rows, *, created=True, delivery_status=None):
+    return {
+        "run_id": "run-1",
+        "batch_id": "batch-1",
+        "created": created,
+        "delivery_status": (
+            {"free": {"success": True}}
+            if delivery_status is None
+            else delivery_status
+        ),
+        "picks": rows,
+    }
 
 
 def test_publish_writes_only_public_pick_after_repository_acceptance(tmp_path):
@@ -48,12 +92,15 @@ def test_publish_writes_only_public_pick_after_repository_acceptance(tmp_path):
 
     result = publish_batch(repository, picks(), "run-1", destination)
 
-    assert json.loads(destination.read_text(encoding="utf-8")) == [picks()[0]]
+    expected_public = persisted_picks()[0]
+    expected_public.pop("razonamiento")
+    assert json.loads(destination.read_text(encoding="utf-8")) == [expected_public]
     assert repository.calls[0][0] == "run-1"
     assert result.run_id == "run-1"
     assert result.batch_id == "batch-1"
     assert result.created is True
     assert result.delivery_status == {"free": {"success": True}}
+    assert [dict(row) for row in result.picks] == persisted_picks()
     assert result.dry_run is False
 
 
@@ -69,6 +116,7 @@ def test_dry_run_never_calls_repository_or_writes_file(tmp_path):
     assert result.batch_id is None
     assert result.created is False
     assert result.delivery_status == {}
+    assert result.picks == ()
     assert result.dry_run is True
 
 
@@ -127,18 +175,53 @@ def test_replay_rewrites_stale_or_missing_public_file_with_current_projection(
     destination = tmp_path / "picks.json"
     if existing_content is not None:
         destination.write_text(existing_content, encoding="utf-8")
-    repository = FakeRepository(response={
-        "run_id": "run-1",
-        "batch_id": "batch-1",
-        "created": False,
-        "delivery_status": {"vip": {"success": True}},
-    })
+    stored = persisted_picks()
+    repository = FakeRepository(response=publish_response(
+        stored,
+        created=False,
+        delivery_status={"vip": {"success": True}},
+    ))
 
     result = publish_batch(repository, picks(), "run-1", destination)
 
-    assert json.loads(destination.read_text(encoding="utf-8")) == [picks()[0]]
+    assert json.loads(destination.read_text(encoding="utf-8")) == [
+        {key: value for key, value in stored[0].items() if key != "razonamiento"}
+    ]
     assert result.created is False
     assert result.delivery_status == {"vip": {"success": True}}
+
+
+def test_replay_uses_persisted_rows_instead_of_new_requested_payload(tmp_path):
+    destination = tmp_path / "picks.json"
+    stored = persisted_picks()
+    requested = picks()
+    requested[0]["pick"] = "NEW PUBLIC MUST NOT ESCAPE"
+    requested[1]["pick"] = "NEW VIP MUST NOT ESCAPE"
+    repository = FakeRepository(response=publish_response(stored, created=False))
+
+    result = publish_batch(repository, requested, "same-run", destination)
+
+    public_rows = json.loads(destination.read_text(encoding="utf-8"))
+    assert [row["pick"] for row in public_rows] == ["Gratis"]
+    assert "NEW" not in destination.read_text(encoding="utf-8")
+    assert [dict(row) for row in result.picks] == stored
+
+
+def test_persisted_result_is_defensively_immutable(tmp_path):
+    stored = persisted_picks()
+    response = publish_response(stored)
+    result = publish_batch(
+        FakeRepository(response=response),
+        picks(),
+        "run-1",
+        tmp_path / "picks.json",
+    )
+
+    stored[0]["pick"] = "mutated after publication"
+
+    assert result.picks[0]["pick"] == "Gratis"
+    with pytest.raises(TypeError):
+        result.picks[0]["pick"] = "mutation"  # type: ignore[index]
 
 
 def test_local_replacement_failure_preserves_destination_and_removes_temp_file(
@@ -188,8 +271,8 @@ class FakeClient:
 
 
 @pytest.mark.parametrize("response_data", [
-    {"run_id": "run-1", "batch_id": "batch-1", "created": True, "delivery_status": {}},
-    [{"run_id": "run-1", "batch_id": "batch-1", "created": False, "delivery_status": {"vip": {}}}],
+    publish_response(persisted_picks(), delivery_status={}),
+    [publish_response(persisted_picks(), created=False, delivery_status={"vip": {}})],
 ])
 def test_supabase_repository_uses_rpc_arguments_and_normalizes_response(response_data):
     client = FakeClient([response_data, None])
@@ -227,6 +310,14 @@ def test_supabase_repository_uses_rpc_arguments_and_normalizes_response(response
     {"run_id": "run-1", "batch_id": "batch-1", "created": "true", "delivery_status": {}},
     {"run_id": "run-1", "batch_id": "batch-1", "created": 0, "delivery_status": {}},
     {"run_id": "run-1", "batch_id": "batch-1", "created": None, "delivery_status": {}},
+    {"run_id": "run-1", "batch_id": "batch-1", "created": True, "delivery_status": {}, "picks": {}},
+    {"run_id": "run-1", "batch_id": "batch-1", "created": True, "delivery_status": {}, "picks": []},
+    publish_response([{**persisted_picks()[0], "unexpected": "hostile"}]),
+    publish_response([{**persisted_picks()[0], "id": True}]),
+    publish_response([{**persisted_picks()[0], "source_event_id": ""}]),
+    publish_response([{**persisted_picks()[0], "source_observed_at": "2026-08-20T14:00:00-06:00"}]),
+    publish_response([{**persisted_picks()[0], "visibility": "internal"}]),
+    publish_response([{**persisted_picks()[0], "razonamiento": "public secret"}]),
 ])
 def test_supabase_repository_rejects_invalid_publish_response(response_data):
     repository = SupabaseBatchRepository(FakeClient([response_data]))

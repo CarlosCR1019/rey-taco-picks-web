@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from backend.pick_publisher import PERSISTED_PICK_COLUMNS
 from backend.scraper_config import ScraperSettings
 
 
@@ -109,6 +110,7 @@ class FakeRepository:
             "batch_id": "batch-1",
             "created": True,
             "delivery_status": {},
+            "picks": stored_rows(picks),
         }
 
     def record_delivery(self, run_id, destination, success, error=""):
@@ -141,58 +143,77 @@ def single_pick(selection):
             "confianza": "85%",
             "razonamiento": "Análisis privado",
             "es_parlay": False,
+            "source": "the-odds-api",
+            "source_event_id": "event-pumas-atlas",
+            "source_market_key": "h2h|full_time|",
+            "source_selection_key": "home",
+            "source_observed_at": "2026-08-20T20:00:00Z",
         }
     ]
 
 
-class HashGuardRepository(FakeRepository):
+def stored_rows(picks):
+    result = []
+    for index, pick in enumerate(picks, start=1):
+        row = {column: pick.get(column) for column in PERSISTED_PICK_COLUMNS}
+        row["id"] = index
+        if row["visibility"] == "public":
+            row["razonamiento"] = None
+        result.append(row)
+    return result
+
+
+class ReplayRepository(FakeRepository):
     def __init__(self):
         super().__init__()
-        self.run_hashes = {}
+        self.persisted = None
+        self.delivery_status = {}
         self.batch_count = 0
 
     def publish(self, run_key, source_hash, picks):
         self.published.append((run_key, source_hash, list(picks)))
-        previous_hash = self.run_hashes.get(run_key)
-        if previous_hash is not None and previous_hash != source_hash:
-            raise RuntimeError("SQL rejected a reused run key with a different hash")
-        if previous_hash is None:
-            self.run_hashes[run_key] = source_hash
+        created = self.persisted is None
+        if created:
+            self.persisted = stored_rows(picks)
             self.batch_count += 1
         return {
             "run_id": "run-1",
             "batch_id": "batch-1",
-            "created": previous_hash is None,
-            "delivery_status": {},
+            "created": created,
+            "delivery_status": dict(self.delivery_status),
+            "picks": self.persisted,
         }
 
+    def record_delivery(self, run_id, destination, success, error=""):
+        super().record_delivery(run_id, destination, success, error)
+        self.delivery_status[destination] = {"success": success, "error": error}
 
-def test_github_run_id_is_stable_across_reruns_and_source_hash_stays_separate(tmp_path):
-    from backend.scraper import PersistenceFailure, fase7_guardar_y_notificar
 
-    repository = HashGuardRepository()
-    sent = []
+def test_same_run_retry_uses_persisted_rows_and_only_missing_deliveries(tmp_path):
+    from backend.scraper import fase7_guardar_y_notificar
 
-    def transport(destination, text):
-        sent.append((destination.name, text))
+    repository = ReplayRepository()
+
+    def first_transport(destination, _text):
+        if destination.name == "vip":
+            raise RuntimeError("temporary Telegram failure")
 
     fase7_guardar_y_notificar(
         single_pick("Pumas gana"),
         repository=repository,
         settings=scraper_settings(tmp_path),
-        transport=transport,
+        transport=first_transport,
         run_key="github-run:424242",
     )
-    sent_after_first_run = list(sent)
+    retried = []
 
-    with pytest.raises(PersistenceFailure, match="scraper batch persistence failed"):
-        fase7_guardar_y_notificar(
-            single_pick("Atlas gana"),
-            repository=repository,
-            settings=scraper_settings(tmp_path),
-            transport=transport,
-            run_key="github-run:424242",
-        )
+    publication, deliveries = fase7_guardar_y_notificar(
+        single_pick("NEW ATLAS PICK MUST NOT ESCAPE"),
+        repository=repository,
+        settings=scraper_settings(tmp_path),
+        transport=lambda destination, text: retried.append((destination.name, text)),
+        run_key="github-run:424242",
+    )
 
     assert [attempt[0] for attempt in repository.published] == [
         "github-run:424242",
@@ -200,7 +221,16 @@ def test_github_run_id_is_stable_across_reruns_and_source_hash_stays_separate(tm
     ]
     assert repository.published[0][1] != repository.published[1][1]
     assert repository.batch_count == 1
-    assert sent == sent_after_first_run
+    assert publication.created is False
+    assert [name for name, _text in retried] == ["vip"]
+    assert "Pumas gana" in retried[0][1]
+    assert "NEW ATLAS" not in retried[0][1]
+    assert deliveries["admin"].skipped is True
+    assert deliveries["free"].skipped is True
+    public_rows = json.loads(
+        scraper_settings(tmp_path).public_picks_path.read_text(encoding="utf-8")
+    )
+    assert [row["pick"] for row in public_rows] == ["Pumas gana"]
 
 
 def test_phase7_uses_only_the_explicit_resolved_run_key(tmp_path, monkeypatch):
@@ -339,24 +369,18 @@ def test_phase7_public_projection_redacts_reasoning_and_premium_picks(tmp_path):
     def transport(destination, text):
         sent.append((destination.name, text))
 
-    picks = [
-        {
-            "partido": "Pumas vs Atlas",
-            "pick": "Pumas gana",
-            "cuota": "1.80",
-            "confianza": "85%",
-            "razonamiento": "Razonamiento público que no debe filtrarse",
-            "es_parlay": False,
-        },
-        {
-            "partido": "Toluca vs América",
-            "pick": "PREMIUM SECRET",
-            "cuota": "2.10",
-            "confianza": "82%",
-            "razonamiento": "Análisis VIP",
-            "es_parlay": False,
-        },
-    ]
+    public_pick = single_pick("Pumas gana")[0]
+    public_pick["razonamiento"] = "Razonamiento público que no debe filtrarse"
+    premium_pick = single_pick("PREMIUM SECRET")[0]
+    premium_pick.update({
+        "partido": "Toluca vs América",
+        "cuota": "2.10",
+        "confianza": "82%",
+        "razonamiento": "Análisis VIP",
+        "source_event_id": "event-toluca-america",
+        "source_selection_key": "away",
+    })
+    picks = [public_pick, premium_pick]
 
     publication, deliveries = fase7_guardar_y_notificar(
         picks,

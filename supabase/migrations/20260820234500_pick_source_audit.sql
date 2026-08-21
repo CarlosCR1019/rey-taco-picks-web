@@ -327,6 +327,7 @@ declare
     public_parlay_count bigint;
     audit_entry jsonb;
     observed_at_value timestamptz;
+    persisted_picks jsonb;
 begin
     if requested_run_key is null or btrim(requested_run_key) = '' then
         raise exception 'requested_run_key must not be empty';
@@ -410,21 +411,59 @@ begin
     where run_key = requested_run_key
     for update;
 
-    if claimed_run.source_hash <> requested_source_hash then
-        raise exception 'run key % already belongs to a different source hash', requested_run_key;
-    end if;
-
     if claimed_run.status in ('published', 'partial') then
+        select id
+        into created_batch
+        from public.pick_batches
+        where run_id = claimed_run.id;
+
+        select coalesce(jsonb_agg(jsonb_build_object(
+            'id', persisted_row.id,
+            'categoria', persisted_row.categoria,
+            'partido', persisted_row.partido,
+            'pick', persisted_row.pick,
+            'cuota', persisted_row.cuota,
+            'confianza', persisted_row.confianza,
+            'razonamiento', persisted_row.razonamiento,
+            'marcador', persisted_row.marcador,
+            'estado', persisted_row.estado,
+            'es_parlay', persisted_row.es_parlay,
+            'liga', persisted_row.liga,
+            'mercado', persisted_row.mercado,
+            'riesgo', persisted_row.riesgo,
+            'resultado_apuesta', persisted_row.resultado_apuesta,
+            'ganancia_simulada', persisted_row.ganancia_simulada,
+            'fecha_generacion', persisted_row.fecha_generacion,
+            'fecha_evento', persisted_row.fecha_evento,
+            'horario', persisted_row.horario,
+            'odds_mercado', persisted_row.odds_mercado,
+            'tiene_valor', persisted_row.tiene_valor,
+            'visibility', persisted_row.visibility,
+            'source', persisted_row.source,
+            'source_event_id', persisted_row.source_event_id,
+            'source_market_key', persisted_row.source_market_key,
+            'source_selection_key', persisted_row.source_selection_key,
+            'source_observed_at', persisted_row.source_observed_at
+        ) order by persisted_row.id), '[]'::jsonb)
+        into persisted_picks
+        from public.picks as persisted_row
+        where persisted_row.batch_id = created_batch;
+
+        if created_batch is null or jsonb_array_length(persisted_picks) = 0 then
+            raise exception 'completed scraper run has no persisted pick batch';
+        end if;
+
         return jsonb_build_object(
             'run_id', claimed_run.id,
-            'batch_id', (
-                select id
-                from public.pick_batches
-                where run_id = claimed_run.id
-            ),
+            'batch_id', created_batch,
             'created', false,
-            'delivery_status', claimed_run.delivery_status
+            'delivery_status', claimed_run.delivery_status,
+            'picks', persisted_picks
         );
+    end if;
+
+    if claimed_run.source_hash <> requested_source_hash then
+        raise exception 'run key % already belongs to a different source hash', requested_run_key;
     end if;
 
     update public.picks
@@ -520,11 +559,48 @@ begin
     set status = 'published', finished_at = now()
     where id = claimed_run.id;
 
+    select coalesce(jsonb_agg(jsonb_build_object(
+        'id', persisted_row.id,
+        'categoria', persisted_row.categoria,
+        'partido', persisted_row.partido,
+        'pick', persisted_row.pick,
+        'cuota', persisted_row.cuota,
+        'confianza', persisted_row.confianza,
+        'razonamiento', persisted_row.razonamiento,
+        'marcador', persisted_row.marcador,
+        'estado', persisted_row.estado,
+        'es_parlay', persisted_row.es_parlay,
+        'liga', persisted_row.liga,
+        'mercado', persisted_row.mercado,
+        'riesgo', persisted_row.riesgo,
+        'resultado_apuesta', persisted_row.resultado_apuesta,
+        'ganancia_simulada', persisted_row.ganancia_simulada,
+        'fecha_generacion', persisted_row.fecha_generacion,
+        'fecha_evento', persisted_row.fecha_evento,
+        'horario', persisted_row.horario,
+        'odds_mercado', persisted_row.odds_mercado,
+        'tiene_valor', persisted_row.tiene_valor,
+        'visibility', persisted_row.visibility,
+        'source', persisted_row.source,
+        'source_event_id', persisted_row.source_event_id,
+        'source_market_key', persisted_row.source_market_key,
+        'source_selection_key', persisted_row.source_selection_key,
+        'source_observed_at', persisted_row.source_observed_at
+    ) order by persisted_row.id), '[]'::jsonb)
+    into persisted_picks
+    from public.picks as persisted_row
+    where persisted_row.batch_id = created_batch;
+
+    if jsonb_array_length(persisted_picks) = 0 then
+        raise exception 'created scraper run has no persisted picks';
+    end if;
+
     return jsonb_build_object(
         'run_id', claimed_run.id,
         'batch_id', created_batch,
         'created', true,
-        'delivery_status', claimed_run.delivery_status
+        'delivery_status', claimed_run.delivery_status,
+        'picks', persisted_picks
     );
 end;
 $$;

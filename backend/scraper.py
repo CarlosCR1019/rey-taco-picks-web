@@ -1628,6 +1628,7 @@ def fase7_guardar_y_notificar(
     except Exception:
         raise PersistenceFailure("scraper batch persistence failed") from None
     print(f"   ✅ Lote {publication.batch_id} publicado atómicamente.")
+    delivery_picks = [dict(row) for row in publication.picks]
 
     destinations = [
         TelegramDestination("admin", active_settings.telegram_admin_id, "all")
@@ -1669,7 +1670,7 @@ def fase7_guardar_y_notificar(
         if transport is None:
             transport = TelegramHttpTransport(active_settings.telegram_token)
         deliveries = deliver_batch(
-            clean_picks,
+            delivery_picks,
             active_destinations,
             transport,
             completed=completed,

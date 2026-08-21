@@ -432,12 +432,20 @@ class _FakeSupabaseClient:
 
     def rpc(self, function_name, arguments):
         self.calls.append((function_name, arguments))
+        stored = []
+        for index, requested in enumerate(arguments["requested_picks"], start=1):
+            row = {column: requested.get(column) for column in PERSISTED_PICK_COLUMNS}
+            row["id"] = index
+            if row["visibility"] == "public":
+                row["razonamiento"] = None
+            stored.append(row)
         return _RpcRequest(
             {
                 "run_id": "run-real",
                 "batch_id": "batch-real",
                 "created": True,
                 "delivery_status": {},
+                "picks": stored,
             }
         )
 

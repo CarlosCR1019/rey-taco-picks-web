@@ -10,7 +10,7 @@ import math
 import time
 import sys
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -1382,6 +1382,9 @@ def _legacy_ranked_pick_projection(
         "local": candidate.home_team,
         "visitante": candidate.away_team,
         "horario": _candidate_schedule(candidate),
+        "fecha_evento": candidate.starts_at.astimezone(
+            ZoneInfo("America/Mexico_City")
+        ).date().isoformat(),
         "market_key": candidate.market_key,
         "mercado": candidate.market_key,
         "period": candidate.period,
@@ -1413,6 +1416,28 @@ def _fase6_candidate_ranking(
     records = list(datos_profundos or ()) + list(partidos_data or ())
     candidates = _collect_verified_candidates(records)
     if not groq_api_key or not candidates:
+        return []
+
+    try:
+        catalog_reference_at = (
+            datetime.now(timezone.utc)
+            if reference_at is None
+            else reference_at
+        )
+        if (
+            catalog_reference_at.tzinfo is None
+            or catalog_reference_at.utcoffset() is None
+        ):
+            return []
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.starts_at.astimezone(timezone.utc)
+            > catalog_reference_at.astimezone(timezone.utc)
+        ]
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return []
+    if not candidates:
         return []
 
     prompt_candidates, prompt = _bounded_prompt_candidates(candidates)
@@ -1468,7 +1493,20 @@ def _fase6_candidate_ranking(
 
     raw_ranking = _parse_strict_json_array(raw_response)
     ranked = validate_ai_ranking(raw_ranking, prompt_candidates)
-    evidence_reference_at = reference_at or datetime.now(timezone.utc)
+    try:
+        evidence_reference_at = (
+            datetime.now(timezone.utc)
+            if reference_at is None
+            else reference_at
+        )
+        ranked = [
+            row
+            for row in ranked
+            if row.candidate.starts_at.astimezone(timezone.utc)
+            > evidence_reference_at.astimezone(timezone.utc)
+        ]
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return []
     picks = []
     for row in ranked:
         evidence = evidence_for_candidate(
@@ -1538,7 +1576,14 @@ def fase7_guardar_y_notificar(
     for pick in visible_picks:
         prepared = dict(pick)
         prepared['fecha_generacion'] = hoy
-        prepared['fecha_evento'] = scheduled_event_date(prepared.get('horario'), hoy)
+        event_date = prepared.get('fecha_evento')
+        try:
+            if not isinstance(event_date, str):
+                raise ValueError("missing verified event date")
+            date.fromisoformat(event_date)
+        except (TypeError, ValueError):
+            event_date = scheduled_event_date(prepared.get('horario'), hoy)
+        prepared['fecha_evento'] = event_date
         prepared['estado'] = 'pendiente'
         prepared['liga'] = prepared.get('liga') or prepared.get(
             'categoria', 'Fútbol Internacional'

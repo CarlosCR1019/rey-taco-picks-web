@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 import math
@@ -596,6 +597,93 @@ def test_phase6_captures_one_scoring_clock_after_the_model_response(monkeypatch)
     assert picks[0]["tiene_valor"] is False
 
 
+def test_phase6_never_presents_a_candidate_that_already_started(monkeypatch):
+    from backend import scraper
+
+    projected = _verified_projection()
+    candidate = projected["_verified_candidates"][0]
+    groq_calls = []
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: groq_calls.append(True),
+    )
+
+    picks = scraper.fase6_analisis_final(
+        [projected],
+        "",
+        {},
+        [projected],
+        groq_api_key="fake",
+        reference_at=candidate.starts_at,
+    )
+
+    assert picks == []
+    assert groq_calls == []
+
+
+def test_phase6_omits_a_candidate_that_starts_during_model_response(monkeypatch):
+    from backend import scraper
+
+    projected = _verified_projection()
+    candidate = projected["_verified_candidates"][0]
+
+    class AdvancingDatetime:
+        current = candidate.starts_at - timedelta(seconds=1)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is None else cls.current.astimezone(tz)
+
+    def fake_groq(*_args, **_kwargs):
+        AdvancingDatetime.current = candidate.starts_at
+        return json.dumps([{
+            "candidate_id": candidate.candidate_id,
+            "rationale": "El evento comenzó mientras respondía el proveedor externo.",
+        }])
+
+    monkeypatch.setattr(scraper, "datetime", AdvancingDatetime)
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(scraper, "ejecutar_groq_con_fallback", fake_groq)
+
+    assert scraper.fase6_analisis_final(
+        [projected], "", {}, [projected], groq_api_key="fake"
+    ) == []
+
+
+def test_phase6_projects_exact_mexico_event_date_across_utc_midnight(monkeypatch):
+    from backend import scraper
+
+    projected = _verified_projection()
+    original = projected["_verified_candidates"][0]
+    candidate = replace(
+        original,
+        starts_at=datetime(2026, 8, 21, 6, 30, tzinfo=timezone.utc),
+    )
+    projected = {"_verified_candidates": (candidate,)}
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: json.dumps([{
+            "candidate_id": candidate.candidate_id,
+            "rationale": "La fecha local debe venir del inicio verificado del evento.",
+        }]),
+    )
+
+    picks = scraper.fase6_analisis_final(
+        [projected],
+        "",
+        {},
+        [projected],
+        groq_api_key="fake",
+        reference_at=OBSERVED_AT + timedelta(minutes=5),
+    )
+
+    assert picks[0]["fecha_evento"] == "2026-08-21"
+
+
 def test_groq_fallback_preserves_response_schema_on_every_retry(monkeypatch):
     from backend import scraper
 
@@ -687,10 +775,10 @@ def test_phase6_bounds_large_catalog_as_valid_deterministic_json(monkeypatch):
     reverse = {"_verified_candidates": tuple(reversed(candidates))}
 
     assert scraper.fase6_analisis_final(
-        [forward], "", {}, [], groq_api_key="fake"
+        [forward], "", {}, [], groq_api_key="fake", reference_at=OBSERVED_AT
     ) == []
     assert scraper.fase6_analisis_final(
-        [reverse], "", {}, [], groq_api_key="fake"
+        [reverse], "", {}, [], groq_api_key="fake", reference_at=OBSERVED_AT
     ) == []
 
     catalogs = []
@@ -792,7 +880,12 @@ def test_phase6_deduplicates_exact_private_candidates_across_phase_records(
     )
 
     picks = scraper.fase6_analisis_final(
-        [projected], "", {}, [projected], groq_api_key="fake"
+        [projected],
+        "",
+        {},
+        [projected],
+        groq_api_key="fake",
+        reference_at=OBSERVED_AT,
     )
 
     assert [pick["source_event_id"] for pick in picks] == [candidate.source_event_id]

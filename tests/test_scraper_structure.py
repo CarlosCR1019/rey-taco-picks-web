@@ -1,4 +1,5 @@
 import ast
+from datetime import datetime
 import inspect
 import json
 import os
@@ -221,6 +222,34 @@ def test_phase7_uses_only_the_explicit_resolved_run_key(tmp_path, monkeypatch):
     )
 
     assert repository.published[0][0] == "resolved-key"
+
+
+def test_phase7_preserves_verified_event_date_across_midnight(tmp_path, monkeypatch):
+    from backend import scraper
+
+    class BeforeMidnight(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            current = datetime(2026, 8, 20, 23, 59, tzinfo=tz)
+            return current
+
+    monkeypatch.setattr(scraper, "datetime", BeforeMidnight)
+    repository = FakeRepository()
+    picks = single_pick("Pumas gana")
+    picks[0].update({
+        "fecha_evento": "2026-08-21",
+        "horario": "Hoy 00:30 hrs",
+    })
+
+    scraper.fase7_guardar_y_notificar(
+        picks,
+        repository=repository,
+        settings=scraper_settings(tmp_path),
+        transport=lambda _destination, _text: None,
+        run_key="midnight-run",
+    )
+
+    assert repository.published[0][2][0]["fecha_evento"] == "2026-08-21"
 
 
 def test_phase7_fails_closed_without_a_stable_run_key(tmp_path, monkeypatch):

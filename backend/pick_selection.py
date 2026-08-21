@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 import json
 import math
 from numbers import Real
 from typing import Iterable
+import unicodedata
 from zoneinfo import ZoneInfo
 
 from backend.scraper_domain import Event
@@ -227,7 +228,7 @@ def build_candidates(events: Iterable[Event]) -> list[CandidatePick]:
                 existing = candidates.get(identity)
                 if existing is None:
                     candidates[identity] = candidate
-                elif existing.price != candidate.price:
+                elif existing != candidate:
                     candidates.pop(identity, None)
                     conflicted.add(identity)
     return list(candidates.values())
@@ -247,20 +248,54 @@ def _is_individually_valid(candidate: object) -> bool:
     )
 
 
+def _normalized_competitor(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value.casefold())
+    return " ".join(normalized.split())
+
+
+def _physical_event_identity(candidate: CandidatePick) -> tuple[str, str, datetime]:
+    return (
+        _normalized_competitor(candidate.home_team),
+        _normalized_competitor(candidate.away_team),
+        candidate.starts_at.astimezone(timezone.utc),
+    )
+
+
 def build_same_day_parlay(
     candidates: Iterable[CandidatePick],
 ) -> tuple[CandidatePick, ...] | None:
     """Validate and bundle legs without calculating or claiming a parlay quote."""
 
-    legs = tuple(candidates)
-    if len(legs) < 2 or not all(_is_individually_valid(leg) for leg in legs):
-        return None
-    if len({leg.candidate_id for leg in legs}) != len(legs):
-        return None
-    event_identities = {(leg.source, leg.source_event_id) for leg in legs}
-    if len(event_identities) != len(legs):
-        return None
-    mexico_dates = {leg.starts_at.astimezone(MEXICO).date() for leg in legs}
-    if len(mexico_dates) != 1:
-        return None
-    return legs
+    catalog: dict[str, CandidatePick] = {}
+    conflicted: set[str] = set()
+    for candidate in candidates:
+        if not _is_individually_valid(candidate):
+            continue
+        identity = candidate.candidate_id
+        if identity in conflicted:
+            continue
+        existing = catalog.get(identity)
+        if existing is None:
+            catalog[identity] = candidate
+        elif existing != candidate:
+            catalog.pop(identity, None)
+            conflicted.add(identity)
+
+    eligible = sorted(
+        catalog.values(),
+        key=lambda candidate: (candidate.starts_at, candidate.candidate_id),
+    )
+    for index, first in enumerate(eligible):
+        first_date = first.starts_at.astimezone(MEXICO).date()
+        for second in eligible[index + 1 :]:
+            if (first.source, first.source_event_id) == (
+                second.source,
+                second.source_event_id,
+            ):
+                continue
+            if _physical_event_identity(first) == _physical_event_identity(second):
+                continue
+            if second.starts_at.astimezone(MEXICO).date() != first_date:
+                continue
+            return first, second
+    return None

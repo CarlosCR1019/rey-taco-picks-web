@@ -1,4 +1,4 @@
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -160,6 +160,48 @@ def test_conflicting_prices_for_same_candidate_identity_fail_closed():
     assert candidates[0].price == 2.04
 
 
+def test_same_price_with_conflicting_selection_name_fails_closed():
+    first = Market(
+        "h2h",
+        "full_game",
+        None,
+        (Outcome("home", "Dodgers", 1.82), Outcome("away", "Padres", 2.04)),
+        bookmaker_key="playdoit",
+    )
+    renamed = Market(
+        "h2h",
+        "full_game",
+        None,
+        (
+            Outcome("home", "Los Angeles Dodgers", 1.82),
+            Outcome("away", "Padres", 2.04),
+        ),
+        bookmaker_key="playdoit",
+    )
+
+    candidates = build_candidates([event_with(markets=(first, renamed))])
+
+    assert [candidate.selection_key for candidate in candidates] == ["away"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("starts_at", OBSERVED + timedelta(hours=11)),
+        ("observed_at", OBSERVED + timedelta(minutes=1)),
+        ("sport", "softball"),
+        ("league", "Liga distinta"),
+        ("home_team", "Yankees"),
+        ("away_team", "Mets"),
+    ],
+)
+def test_same_identity_with_different_event_evidence_fails_closed(field, value):
+    event = event_with()
+    conflicting = replace(event, **{field: value})
+
+    assert build_candidates([event, conflicting]) == []
+
+
 def test_candidate_is_frozen_and_slotted(event_fixture):
     candidate = build_candidates([event_fixture])[0]
 
@@ -202,6 +244,52 @@ def test_parlay_rejects_dates_that_differ_in_mexico():
     assert build_same_day_parlay([today, tomorrow]) is None
 
 
+def test_parlay_ignores_nonmatching_extra_candidates_and_finds_a_pair():
+    extra = build_candidates(
+        [event_with(source_event_id="extra", starts_at=OBSERVED + timedelta(hours=2))]
+    )[0]
+    first = build_candidates(
+        [
+            event_with(
+                source_event_id="first",
+                starts_at=OBSERVED + timedelta(days=1, hours=2),
+                home_team="Yankees",
+                away_team="Mets",
+            )
+        ]
+    )[0]
+    second = build_candidates(
+        [
+            event_with(
+                source_event_id="second",
+                starts_at=OBSERVED + timedelta(days=1, hours=3),
+                home_team="Cubs",
+                away_team="Reds",
+            )
+        ]
+    )[0]
+
+    assert build_same_day_parlay([extra, second, first]) == (first, second)
+
+
+def test_parlay_returns_the_first_pair_in_stable_start_and_id_order():
+    earlier = build_candidates(
+        [event_with(source_event_id="z-event", starts_at=OBSERVED + timedelta(hours=8))]
+    )[0]
+    later = build_candidates(
+        [
+            event_with(
+                source_event_id="a-event",
+                starts_at=OBSERVED + timedelta(hours=9),
+                home_team="Yankees",
+                away_team="Mets",
+            )
+        ]
+    )[0]
+
+    assert build_same_day_parlay([later, earlier]) == (earlier, later)
+
+
 def test_parlay_rejects_duplicate_candidate_or_correlated_event_legs():
     candidates = build_candidates([event_with()])
 
@@ -225,6 +313,65 @@ def test_event_identity_includes_source_when_source_event_ids_match():
     )[0]
 
     assert build_same_day_parlay([first, second]) == (first, second)
+
+
+def test_parlay_rejects_same_physical_event_observed_by_different_sources():
+    starts_at = OBSERVED + timedelta(hours=8)
+    playdoit = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="playdoit-123",
+                starts_at=starts_at,
+                home_team="Club América",
+                away_team="Tigres UANL",
+            )
+        ]
+    )[0]
+    odds_api = build_candidates(
+        [
+            event_with(
+                source="the_odds_api",
+                source_event_id="odds-987",
+                starts_at=starts_at.astimezone(timezone.utc),
+                home_team="  CLUB  AME\u0301RICA  ",
+                away_team="tigres uanl",
+            )
+        ]
+    )[0]
+
+    assert build_same_day_parlay([playdoit, odds_api]) is None
+
+
+def test_physical_event_identity_preserves_exact_home_away_orientation():
+    starts_at = OBSERVED + timedelta(hours=8)
+    first = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="playdoit-123",
+                starts_at=starts_at,
+                home_team="Club América",
+                away_team="Tigres UANL",
+            )
+        ]
+    )[0]
+    reversed_orientation = build_candidates(
+        [
+            event_with(
+                source="the_odds_api",
+                source_event_id="odds-987",
+                starts_at=starts_at.astimezone(timezone.utc),
+                home_team="Tigres UANL",
+                away_team="Club América",
+            )
+        ]
+    )[0]
+
+    assert build_same_day_parlay([first, reversed_orientation]) == (
+        first,
+        reversed_orientation,
+    )
 
 
 def test_parlay_is_only_an_explicit_leg_bundle_without_synthesized_quote():

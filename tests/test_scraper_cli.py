@@ -203,15 +203,6 @@ def test_impossible_or_ill_typed_pipeline_results_are_unexpected(result, capsys)
     assert "unexpected_error=" in capsys.readouterr().out
 
 
-def test_pipeline_result_accepts_a_safe_delivery_sequence_in_production():
-    result = SimpleNamespace(
-        event_count=2,
-        pick_count=1,
-        persisted=True,
-        failed_deliveries=["vip"],
-    )
-
-
 def test_pipeline_result_normalizes_safe_delivery_sequences_to_an_immutable_tuple():
     result = PipelineResult(2, 1, True, ["vip"])  # type: ignore[arg-type]
 

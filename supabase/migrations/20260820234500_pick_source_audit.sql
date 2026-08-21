@@ -14,6 +14,33 @@ alter table public.picks
 create index if not exists picks_source_event_idx
     on public.picks (source, source_event_id);
 
+do $$
+begin
+    if not exists (
+        select 1
+        from pg_index as audit_index
+        join pg_class as audit_index_class
+          on audit_index_class.oid = audit_index.indexrelid
+        join pg_namespace as audit_index_schema
+          on audit_index_schema.oid = audit_index_class.relnamespace
+        where audit_index.indrelid = 'public.picks'::regclass
+          and audit_index.indisvalid
+          and audit_index.indisready
+          and not audit_index.indisunique
+          and audit_index_class.relname = 'picks_source_event_idx'
+          and audit_index_schema.nspname = 'public'
+          and regexp_replace(
+              lower(pg_get_indexdef(audit_index.indexrelid)),
+              '[[:space:]]+',
+              ' ',
+              'g'
+          ) = 'create index picks_source_event_idx on public.picks using btree (source, source_event_id)'
+    ) then
+        raise exception 'picks_source_event_idx has unexpected definition';
+    end if;
+end
+$$;
+
 create or replace function public.enforce_pick_source_audit_version()
 returns trigger
 language plpgsql
@@ -373,13 +400,32 @@ as $$
                 where table_schema = 'public' and table_name = 'picks'
                   and column_name = 'source_audit_version'
             )
-            and to_regclass('public.picks_source_event_idx') is not null
+            and exists (
+                select 1
+                from pg_index as audit_index
+                join pg_class as audit_index_class
+                  on audit_index_class.oid = audit_index.indexrelid
+                join pg_namespace as audit_index_schema
+                  on audit_index_schema.oid = audit_index_class.relnamespace
+                where audit_index.indrelid = 'public.picks'::regclass
+                  and audit_index.indisvalid
+                  and audit_index.indisready
+                  and not audit_index.indisunique
+                  and audit_index_class.relname = 'picks_source_event_idx'
+                  and audit_index_schema.nspname = 'public'
+                  and regexp_replace(
+                      lower(pg_get_indexdef(audit_index.indexrelid)),
+                      '[[:space:]]+',
+                      ' ',
+                      'g'
+                  ) = 'create index picks_source_event_idx on public.picks using btree (source, source_event_id)'
+            )
             and exists (
                 select 1
                 from pg_trigger as audit_trigger
                 where audit_trigger.tgrelid = 'public.picks'::regclass
                   and not audit_trigger.tgisinternal
-                  and audit_trigger.tgenabled <> 'D'
+                  and audit_trigger.tgenabled in ('O', 'A')
                   and audit_trigger.tgname = 'picks_enforce_source_audit_version'
                   and position(
                       'before insert or update'

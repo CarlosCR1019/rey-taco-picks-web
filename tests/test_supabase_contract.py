@@ -354,7 +354,19 @@ class SupabaseContractTests(unittest.TestCase):
         probe = text[start:end]
 
         self.assertIn("'version', 2", probe)
-        self.assertIn("to_regclass('public.picks_source_event_idx') is not null", probe)
+        self.assertIn("from pg_index as audit_index", probe)
+        self.assertIn("audit_index.indrelid = 'public.picks'::regclass", probe)
+        self.assertIn("audit_index.indisvalid", probe)
+        self.assertIn("audit_index.indisready", probe)
+        self.assertIn("pg_get_indexdef(audit_index.indexrelid)", probe)
+        self.assertIn(
+            "create index picks_source_event_idx on public.picks using btree (source, source_event_id)",
+            probe,
+        )
+        self.assertNotIn(
+            "to_regclass('public.picks_source_event_idx') is not null",
+            probe,
+        )
         self.assertIn("conname = 'picks_source_audit_complete_check'", probe)
         self.assertIn("column_name = 'source_audit_version'", probe)
         self.assertIn("tgname = 'picks_enforce_source_audit_version'", probe)
@@ -372,6 +384,36 @@ class SupabaseContractTests(unittest.TestCase):
             self.assertIn(f"'{field} is not null'", probe)
         self.assertIn("'source_audit_version is null'", probe)
         self.assertIn("'source_audit_version = 1'", probe)
+
+    def test_final_probe_rejects_replica_only_or_disabled_audit_triggers(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        start = text.index("create or replace function public.scraper_schema_status()")
+        end = text.index("$$;", start)
+        probe = text[start:end]
+
+        self.assertIn("audit_trigger.tgenabled in ('o', 'a')", probe)
+        self.assertNotIn("audit_trigger.tgenabled <> 'd'", probe)
+        self.assertNotIn("audit_trigger.tgenabled = 'r'", probe)
+
+    def test_audit_migration_fails_closed_on_a_wrong_homonymous_source_index(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        create_position = text.index("create index if not exists picks_source_event_idx")
+        validation_position = text.index("from pg_index as audit_index")
+        failure_position = text.index(
+            "raise exception 'picks_source_event_idx has unexpected definition'"
+        )
+        function_position = text.index(
+            "create or replace function public.enforce_pick_source_audit_version"
+        )
+
+        self.assertLess(create_position, validation_position)
+        self.assertLess(validation_position, failure_position)
+        self.assertLess(failure_position, function_position)
+        validation = text[validation_position:failure_position]
+        self.assertIn("audit_index.indrelid = 'public.picks'::regclass", validation)
+        self.assertIn("audit_index.indisvalid", validation)
+        self.assertIn("audit_index.indisready", validation)
+        self.assertIn("pg_get_indexdef(audit_index.indexrelid)", validation)
 
     def test_publishing_rpcs_require_utc_non_future_observations_before_mutation(self):
         for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):

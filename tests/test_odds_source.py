@@ -105,10 +105,9 @@ def test_spreads_require_opposing_points_and_use_home_handicap_as_line():
     assert all(market.key != "spreads" for market in malformed.markets)
 
 
-def test_exact_duplicate_market_signatures_are_deduplicated_deterministically():
+def test_exact_duplicate_market_signatures_from_one_bookmaker_are_deduplicated():
     raw = fixture_event()
     duplicate = deepcopy(raw["bookmakers"][0])
-    duplicate["key"] = "book-b"
     for market in duplicate["markets"]:
         market["outcomes"].reverse()
     raw["bookmakers"].append(duplicate)
@@ -133,6 +132,56 @@ def test_distinct_bookmaker_quotes_are_preserved():
 
     h2h = [market for market in event.markets if market.key == "h2h"]
     assert [market.outcome("away").price for market in h2h] == [2.40, 2.45]
+    assert [market.bookmaker_key for market in h2h] == ["book-a", "book-b"]
+
+
+def test_identical_quotes_from_distinct_bookmakers_preserve_multiplicity():
+    raw = fixture_event()
+    second = deepcopy(raw["bookmakers"][0])
+    second["key"] = "book-b"
+    raw["bookmakers"].append(second)
+
+    event = normalize_odds_event(raw, OBSERVED_AT)
+
+    assert len([market for market in event.markets if market.key == "h2h"]) == 2
+    assert {market.bookmaker_key for market in event.markets} == {"book-a", "book-b"}
+
+
+def test_bookmaker_without_stable_identity_contributes_no_markets():
+    raw = fixture_event()
+    raw["bookmakers"][0]["key"] = "  "
+
+    event = normalize_odds_event(raw, OBSERVED_AT)
+
+    assert event.markets == ()
+
+
+def test_soccer_h2h_requires_exact_home_draw_away_set():
+    raw = fixture_event()
+    raw["bookmakers"][0]["markets"][0]["outcomes"] = [
+        {"name": "América", "price": 1.70},
+        {"name": "Tigres", "price": 2.40},
+    ]
+
+    event = normalize_odds_event(raw, OBSERVED_AT)
+
+    assert all(market.key != "h2h" for market in event.markets)
+
+
+def test_two_way_sport_h2h_requires_exact_home_away_set():
+    raw = fixture_event()
+    raw["sport_key"] = "baseball_mlb"
+
+    with_draw = normalize_odds_event(raw, OBSERVED_AT)
+    assert all(market.key != "h2h" for market in with_draw.markets)
+
+    raw["bookmakers"][0]["markets"][0]["outcomes"] = [
+        {"name": "Tigres", "price": 2.40},
+        {"name": "América", "price": 1.70},
+    ]
+    two_way = normalize_odds_event(raw, OBSERVED_AT)
+    h2h = next(market for market in two_way.markets if market.key == "h2h")
+    assert tuple(outcome.key for outcome in h2h.outcomes) == ("home", "away")
 
 
 def test_invalid_or_past_event_identity_is_not_silently_swallowed():
@@ -169,8 +218,12 @@ def test_url_uses_urlencode_decimal_odds_and_only_concrete_configured_sports():
 
 
 class FakeResponse:
-    def __init__(self, payload: object):
+    def __init__(
+        self, payload: object, *, status: int = 200, raw: bytes | None = None
+    ):
         self.payload = payload
+        self.status = status
+        self.raw = raw
 
     def __enter__(self):
         return self
@@ -178,8 +231,13 @@ class FakeResponse:
     def __exit__(self, *_args):
         return False
 
-    def read(self) -> bytes:
-        return json.dumps(self.payload).encode("utf-8")
+    def read(self, amount: int = -1) -> bytes:
+        encoded = (
+            self.raw
+            if self.raw is not None
+            else json.dumps(self.payload).encode("utf-8")
+        )
+        return encoded if amount < 0 else encoded[:amount]
 
 
 def test_fetch_boundary_is_bounded_validates_list_and_does_not_leak_secret():
@@ -219,6 +277,26 @@ def test_fetch_boundary_is_bounded_validates_list_and_does_not_leak_secret():
     assert "rejected" not in str(captured.value)
 
 
+@pytest.mark.parametrize("status", [199, 300, 401, 503])
+def test_fetch_rejects_every_non_2xx_http_status(status):
+    with pytest.raises(OddsSourceError, match="HTTP status"):
+        fetch_odds_events(
+            "provider-secret",
+            "soccer_mexico_ligamx",
+            opener=lambda *_args, **_kwargs: FakeResponse([], status=status),
+        )
+
+
+def test_fetch_rejects_response_body_larger_than_configured_limit():
+    with pytest.raises(OddsSourceError, match="body exceeds"):
+        fetch_odds_events(
+            "provider-secret",
+            "soccer_mexico_ligamx",
+            max_response_bytes=16,
+            opener=lambda *_args, **_kwargs: FakeResponse(None, raw=b"[" + b" " * 16),
+        )
+
+
 def test_scraper_legacy_projection_uses_named_h2h_and_no_missing_market_price(
     monkeypatch,
 ):
@@ -241,6 +319,7 @@ def test_scraper_legacy_projection_uses_named_h2h_and_no_missing_market_price(
         "draw": "3.30",
         "away": "2.40",
     }
+    assert projected[0]["source_event_id"] == "event-123"
     assert projected[0]["cuotas_superficie"] == ["1.70", "3.30", "2.40"]
     assert all(call[1] != "soccer" for call in calls)
     assert all(call[2]["markets"] == ("h2h", "totals", "spreads") for call in calls)
@@ -323,6 +402,7 @@ def _run_legacy_ai(monkeypatch, raw_picks, *, named_prices=None):
         "cuotas_por_resultado": named_prices or {},
         "cuotas_superficie": [],
         "info_texto": "",
+        "source_event_id": "event-123",
     }
     return scraper.fase6_analisis_final(
         [event], "", {}, [event], groq_api_key="fake-key"
@@ -372,6 +452,102 @@ def test_ai_price_is_ignored_and_exact_named_observation_is_copied(monkeypatch):
 
     assert [pick["cuota"] for pick in picks] == ["1.72", "1.72", "1.72"]
     assert all("odds_mercado" not in pick for pick in picks)
+    assert all(pick["source_event_id"] == "event-123" for pick in picks)
+    assert all("confianza" not in pick and "tiene_valor" not in pick for pick in picks)
+
+
+def test_legacy_event_matching_requires_exact_two_team_identity_and_rejects_ambiguity():
+    from backend import scraper
+
+    events = [
+        {
+            "source_event_id": "america-tigres",
+            "partido": "América vs Tigres",
+            "local": "América",
+            "visitante": "Tigres",
+        },
+        {
+            "source_event_id": "america-pumas",
+            "partido": "América vs Pumas",
+            "local": "América",
+            "visitante": "Pumas",
+        },
+    ]
+
+    assert (
+        scraper._match_observed_event("América vs Pumas", None, events)
+        is events[1]
+    )
+    assert scraper._match_observed_event("América", None, events) is None
+    assert scraper._match_observed_event("América vs Pumas", "america-tigres", events) is None
+    assert scraper._match_observed_event("América vs Tigres", "america-tigres", events) is events[0]
+
+    duplicate = dict(events[0])
+    duplicate["source_event_id"] = "duplicate-id"
+    assert scraper._match_observed_event("América vs Tigres", None, events + [duplicate]) is None
+
+    conflicting_revision = dict(events[0])
+    events[0]["cuotas_por_resultado"] = {"home": "1.70"}
+    conflicting_revision["cuotas_por_resultado"] = {"home": "9.99"}
+    assert (
+        scraper._match_observed_event(
+            "América vs Tigres",
+            "america-tigres",
+            [events[0], conflicting_revision],
+        )
+        is None
+    )
+
+
+def test_ai_cannot_bind_price_by_matching_only_one_team(monkeypatch):
+    from backend import scraper
+
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    raw_picks = [
+        {
+            "partido": "América vs Pumas",
+            "pick": "América Gana Directo",
+            "cuota": "9.99",
+            "horario": "Mañana 23:59",
+            "es_parlay": False,
+        }
+        for _ in range(3)
+    ]
+    responses = iter(("quant", "audit", json.dumps(raw_picks)))
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: next(responses),
+    )
+    catalog = [
+        {
+            "source_event_id": "america-tigres",
+            "categoria": "Liga MX",
+            "partido": "América vs Tigres",
+            "local": "América",
+            "visitante": "Tigres",
+            "horario": "Mañana 23:59",
+            "cuotas_por_resultado": {"home": "1.70"},
+            "info_texto": "",
+        },
+        {
+            "source_event_id": "america-pumas",
+            "categoria": "Liga MX",
+            "partido": "América vs Pumas",
+            "local": "América",
+            "visitante": "Pumas",
+            "horario": "Mañana 23:59",
+            "cuotas_por_resultado": {"home": "2.25"},
+            "info_texto": "",
+        },
+    ]
+
+    picks = scraper.fase6_analisis_final(
+        catalog, "", {}, catalog, groq_api_key="fake-key"
+    )
+
+    assert [pick["cuota"] for pick in picks] == ["2.25", "2.25", "2.25"]
+    assert {pick["source_event_id"] for pick in picks} == {"america-pumas"}
 
 
 @pytest.mark.parametrize(
@@ -495,6 +671,43 @@ def test_legacy_fallback_without_named_h2h_map_creates_no_moneyline_pick(
     )
 
     assert picks == []
+
+
+def test_legacy_fallback_does_not_publish_totals_parlays_or_unsupported_claims(
+    monkeypatch,
+):
+    from backend import scraper
+
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: "not-json",
+    )
+    events = [
+        {
+            "source_event_id": f"event-{index}",
+            "categoria": "Liga MX",
+            "partido": f"Local {index} vs Visitante {index}",
+            "local": f"Local {index}",
+            "visitante": f"Visitante {index}",
+            "horario": "Mañana 23:59",
+            "cuotas_por_resultado": {"home": "1.70"},
+            "mercados_profundos": "Más de 2.5 Goles @ 1.80",
+            "info_texto": "Más de 9.5 Córners @ 1.75",
+        }
+        for index in range(2)
+    ]
+
+    picks = scraper.fase6_analisis_final(
+        events, "", {}, events, groq_api_key="fake-key"
+    )
+
+    assert len(picks) == 2
+    assert all(pick["pick"].endswith("Gana Directo") for pick in picks)
+    assert all(not pick["es_parlay"] for pick in picks)
+    assert all("confianza" not in pick and "tiene_valor" not in pick for pick in picks)
+    assert {pick["source_event_id"] for pick in picks} == {"event-0", "event-1"}
 
 
 def test_legacy_source_has_no_executable_price_defaults_or_derived_market_odds():

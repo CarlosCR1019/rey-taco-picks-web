@@ -24,7 +24,7 @@ import urllib.request
 from groq import Groq
 from supabase import create_client
 
-from backend.publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
+from backend.publishing_policy import assign_visibility, public_payload, scheduled_event_date
 from backend.odds_source import (
     OddsSourceError,
     SUPPORTED_MARKETS,
@@ -221,6 +221,55 @@ def _observed_h2h_selection(pick_text, event):
         if price is not None:
             return "Empate", price
     return None
+
+
+def _normalized_event_identity(value):
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.strip().casefold().split())
+    return normalized or None
+
+
+def _match_observed_event(partido, source_event_id, events):
+    """Match one exact home/away identity, optionally pinned to a source id."""
+
+    requested_identity = _normalized_event_identity(partido)
+    if requested_identity is None:
+        return None
+    requested_source_id = (
+        str(source_event_id).strip() if source_event_id is not None else ""
+    )
+
+    matches = []
+    seen = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        home = str(event.get("local") or "").strip()
+        away = str(event.get("visitante") or "").strip()
+        if not home or not away:
+            continue
+        event_identity = _normalized_event_identity(f"{home} vs {away}")
+        if event_identity != requested_identity:
+            continue
+        event_source_id = str(event.get("source_event_id") or "").strip()
+        if requested_source_id and event_source_id != requested_source_id:
+            continue
+        identity_token = (
+            ("source", event_source_id)
+            if event_source_id
+            else ("object", id(event))
+        )
+        if identity_token in seen:
+            prior_prices = seen[identity_token].get('cuotas_por_resultado')
+            current_prices = event.get('cuotas_por_resultado')
+            if prior_prices != current_prices:
+                return None
+            continue
+        seen[identity_token] = event
+        matches.append(event)
+
+    return matches[0] if len(matches) == 1 else None
 
 def get_chrome_driver():
     def make_options():
@@ -628,6 +677,7 @@ def _legacy_odds_projection(event):
 
     match_name = f"{event.home_team} vs {event.away_team}"
     return {
+        "source_event_id": event.source_event_id,
         "categoria": event.league,
         "partido": match_name,
         "local": event.home_team,
@@ -1365,18 +1415,11 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                 continue
             
             # 1. Verificar existencia contra partidos reales escaneados
-            match_encontrado = None
-            for dp in (datos_profundos + partidos_data):
-                dp_partido = dp.get('partido', '').lower()
-                dp_local = dp.get('local', '').lower()
-                dp_vis = dp.get('visitante', '').lower()
-                
-                if (dp_local and len(dp_local) > 3 and dp_local in p_partido.lower()) or \
-                   (dp_vis and len(dp_vis) > 3 and dp_vis in p_partido.lower()) or \
-                   (dp_partido and dp_partido in p_partido.lower()) or \
-                   (p_partido.lower() in dp_partido):
-                    match_encontrado = dp
-                    break
+            match_encontrado = _match_observed_event(
+                p_partido,
+                p.get('source_event_id'),
+                datos_profundos + partidos_data,
+            )
             
             if not match_encontrado:
                 print(f"   🛑 DESCARTADO (Partido o pierna de parlay no existe en catálogo): {p_partido}")
@@ -1409,10 +1452,13 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             p['pick'] = canonical_pick
             p['cuota'] = observed_price
             p['es_parlay'] = False
-            p.pop('odds_mercado', None)
-            
-            if not p.get('razonamiento') or len(p.get('razonamiento', '')) < 10:
-                p['razonamiento'] = "Consenso IA: Ventaja matemática +EV detectada con alta probabilidad según métricas de Playdoit."
+            source_event_id = match_encontrado.get('source_event_id')
+            if source_event_id:
+                p['source_event_id'] = source_event_id
+            for unsupported_field in (
+                'odds_mercado', 'confianza', 'tiene_valor', 'razonamiento'
+            ):
+                p.pop(unsupported_field, None)
 
             picks_validados.append(p)
 
@@ -1426,164 +1472,59 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             raise ValueError(f"Solo {len(picks_validados)} picks validados, activando generador de respaldo...")
             
     except Exception as e:
-        print(f"   ⚠️ Nota en síntesis de debate IA; failure={type(e).__name__}. Activando generador de cartera cuantitativa...")
-        
-        # Generador de respaldo cuantitativo 100% DINÁMICO e infalible
+        print(
+            f"   ⚠️ Nota en síntesis de debate IA; failure={type(e).__name__}. "
+            "Usando solo moneylines observados por nombre..."
+        )
+
         picks_fallback = []
-        parlay_candidatos = []
-        
-        pool_partidos = list(datos_profundos) + [p for p in partidos_data if not any(x['partido'] == p['partido'] for x in datos_profundos)]
-        
-        for dp in pool_partidos:
-            partido = dp.get('partido', '')
-            local = dp.get('local', '')
-            vis = dp.get('visitante', '')
-            horario = dp.get('horario', 'Hoy')
-            mercados = dp.get('mercados_profundos', '') or dp.get('info_texto', '')
-            named_prices = dp.get('cuotas_por_resultado', {})
-            categoria = inferir_categoria_deporte(local, vis, fallback=dp.get('categoria', 'Fútbol Internacional'))
-            
-            es_valido, horario_limpio = es_partido_futuro_valido(horario)
-            if not es_valido: continue
-            
-            # A) Totales Over/Under (Córners, Goles en fútbol o Carreras en MLB/KBO)
-            match_totals = re.search(r'(?:más\s+de|over)\s*\(?\s*(\d+\.5)\s*\)?\s*(?:@\s*)?([+-]?\d+(?:\.\d+)?)', mercados, re.IGNORECASE)
-            if match_totals and len(picks_fallback) < 8:
-                linea = match_totals.group(1)
-                raw_c = match_totals.group(2)
-                c_val_str = normalizar_cuota_decimal(raw_c)
-                if c_val_str is None:
-                    continue
-                c_val = float(c_val_str)
-                
-                f_linea = float(linea)
-                if categoria in ["MLB", "KBO"] or "baseball" in categoria.lower() or "béisbol" in categoria.lower():
-                    if not (6.5 <= f_linea <= 13.5): continue
-                    unidad = "Carreras Totales"
-                    cat_nombre = categoria
-                elif "NFL" in categoria or "football" in categoria.lower():
-                    if not (36.5 <= f_linea <= 58.5): continue
-                    unidad = "Puntos Totales"
-                    cat_nombre = "NFL"
-                else:
-                    # Fútbol (Champions, Liga MX, MLS, etc.)
-                    if 7.5 <= f_linea <= 13.5:
-                        unidad = "Tiros de Esquina"
-                        cat_nombre = "Tiros de Esquina"
-                    elif 1.5 <= f_linea <= 4.5:
-                        unidad = "Goles Totales"
-                        cat_nombre = categoria
-                    else:
-                        continue
-                
-                p_item = {
-                    "categoria": cat_nombre,
-                    "partido": partido,
-                    "local": local or partido.split(' vs ')[0],
-                    "horario": horario_limpio,
-                    "pick": f"Más de {linea} {unidad}",
-                    "cuota": f"{c_val:.2f}",
-                    "confianza": "90%",
-                    "razonamiento": "Consenso Quant: Ventaja estadística en ritmo ofensivo y promedio histórico proyectado en Playdoit.",
-                    "es_parlay": False,
-                    "tiene_valor": True,
-                }
-                picks_fallback.append(p_item)
-                if c_val <= 1.85:
-                    parlay_candidatos.append(p_item)
-            
-            # B) Moneyline local: only from the explicitly named home quote.
-            if isinstance(named_prices, dict) and len(picks_fallback) < 6:
-                try:
-                    c_local_str = normalizar_cuota_decimal(named_prices.get('home'))
-                    if c_local_str is None:
-                        continue
-                    c_local = float(c_local_str)
-                    if 1.20 <= c_local <= 2.25:
-                        p_ml = {
-                            "categoria": categoria,
-                            "partido": partido,
-                            "local": local or partido.split(' vs ')[0],
-                            "horario": horario_limpio,
-                            "pick": f"{local or partido.split(' vs ')[0]} Gana Directo",
-                            "cuota": f"{c_local:.2f}",
-                            "confianza": "89%",
-                            "razonamiento": "Consenso Quant: Ventaja táctica y solvencia proyectada respaldada por cuotas de mercado.",
-                            "es_parlay": False,
-                            "tiene_valor": True,
-                        }
-                        if not any(x['partido'] == partido for x in picks_fallback):
-                            picks_fallback.append(p_ml)
-                        if c_local <= 1.80 and not any(x['partido'] == partido for x in parlay_candidatos):
-                            parlay_candidatos.append(p_ml)
-                except (TypeError, ValueError):
-                    pass
+        pool_partidos = list(datos_profundos) + [
+            p for p in partidos_data
+            if not any(x.get('partido') == p.get('partido') for x in datos_profundos)
+        ]
+        for event in pool_partidos:
+            partido = event.get('partido', '')
+            local = event.get('local', '')
+            visitante = event.get('visitante', '')
+            named_prices = event.get('cuotas_por_resultado')
+            if not partido or not local or not visitante or not isinstance(named_prices, dict):
+                continue
+            precio_local = normalizar_cuota_decimal(named_prices.get('home'))
+            if precio_local is None:
+                continue
+            es_valido, horario_limpio = es_partido_futuro_valido(
+                event.get('horario', 'Hoy')
+            )
+            if not es_valido:
+                continue
+            pick = {
+                "categoria": inferir_categoria_deporte(
+                    local,
+                    visitante,
+                    fallback=event.get('categoria', 'Fútbol Internacional'),
+                ),
+                "partido": partido,
+                "local": local,
+                "horario": horario_limpio,
+                "pick": f"{local} Gana Directo",
+                "cuota": precio_local,
+                "es_parlay": False,
+            }
+            if event.get('source_event_id'):
+                pick['source_event_id'] = event['source_event_id']
+            picks_fallback.append(pick)
 
-        # Garantizar SIEMPRE al menos 3 picks activos diarios (para días como viernes/lunes)
-        if len(picks_fallback) < 3 and partidos_data:
-            for p in partidos_data:
-                if len(picks_fallback) >= 3:
-                    break
-                partido_nom = p.get('partido', '')
-                if any(x['partido'] == partido_nom for x in picks_fallback):
-                    continue
-                named_prices = p.get('cuotas_por_resultado', {})
-                if isinstance(named_prices, dict):
-                    c_val_str = normalizar_cuota_decimal(named_prices.get('home'))
-                    if c_val_str is None:
-                        continue
-                    picks_fallback.append({
-                        "categoria": p.get('categoria', 'Fútbol Global'),
-                        "partido": partido_nom,
-                        "local": p.get('local', partido_nom.split(' vs ')[0]),
-                        "horario": p.get('horario', 'Hoy'),
-                        "pick": f"{p.get('local', partido_nom.split(' vs ')[0])} Gana Directo",
-                        "cuota": c_val_str,
-                        "confianza": "91%",
-                        "razonamiento": "Consenso Quant: Selección calculada de alta probabilidad matemática y valor esperado positivo.",
-                        "es_parlay": False,
-                        "tiene_valor": True,
-                    })
+        print(
+            f"\n   📋 CARTERA CON EVIDENCIA ({len(picks_fallback)} "
+            "moneylines observados por nombre):"
+        )
+        for pick in picks_fallback:
+            horario = f" [{pick.get('horario')}]" if pick.get('horario') else ""
+            print(
+                f"      → [{pick.get('categoria')}]{horario} "
+                f"{pick.get('partido')} | {pick.get('pick')} @ {pick.get('cuota')}"
+            )
 
-        # C) Construir Parlay Combinado Dinámico con piernas del mismo día CDMX.
-        parlay_pair = None
-        fecha_base = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
-        for index, p1 in enumerate(parlay_candidatos):
-            for p2 in parlay_candidatos[index + 1:]:
-                parlay_horarios = [p1.get('horario'), p2.get('horario')]
-                if event_labels_share_date(parlay_horarios, fecha_base):
-                    parlay_pair = (p1, p2)
-                    break
-            if parlay_pair:
-                break
-
-        if parlay_pair:
-            p1, p2 = parlay_pair
-            leg1_price = normalizar_cuota_decimal(p1.get('cuota'))
-            leg2_price = normalizar_cuota_decimal(p2.get('cuota'))
-            if leg1_price is not None and leg2_price is not None:
-                cuota_parlay = float(leg1_price) * float(leg2_price)
-                loc1 = p1.get('local') or p1['partido'].split(' vs ')[0]
-                loc2 = p2.get('local') or p2['partido'].split(' vs ')[0]
-                picks_fallback.append({
-                    "categoria": "Parlay Seguro",
-                    "partido": f"{p1['partido']} + {p2['partido']}",
-                    "horario": f"{p1.get('horario', 'Hoy')} / {p2.get('horario', 'Hoy')}",
-                    "pick": f"{loc1} ({p1['pick']}) & {loc2} ({p2['pick']})",
-                    "cuota": f"{cuota_parlay:.2f}",
-                    "confianza": "93%",
-                    "razonamiento": "Combinada matemática de alta correlación positiva y riesgo controlado.",
-                    "es_parlay": True,
-                    "tiene_valor": True,
-                })
-
-        print(f"\n   🏆 CARTERA APROBADA ({len(picks_fallback)} selecciones de alta credibilidad desde Playdoit):")
-        for p in picks_fallback:
-            valor = " 💎 VALOR" if p.get('tiene_valor') else ""
-            parlay = " 🔗 PARLAY" if p.get('es_parlay') else ""
-            horario = f" [{p.get('horario')}]" if p.get('horario') else ""
-            print(f"      → [{p.get('categoria')}]{horario} {p.get('partido')} | {p.get('pick')} @ {p.get('cuota')}{valor}{parlay}")
-            
         return picks_fallback
 
 # ============================================================

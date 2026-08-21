@@ -29,10 +29,10 @@ def test_scraper_has_no_duplicate_top_level_functions():
     assert len(names) == len(set(names))
 
 
-def test_fallback_uses_the_function_argument_not_an_undefined_global():
+def test_fallback_uses_only_named_moneylines_and_has_no_minimum_pick_fabrication():
     text = SCRAPER.read_text(encoding="utf-8")
-    assert "if len(picks_fallback) < 3 and partidos_data:" in text
-    assert "for p in partidos_data:" in text
+    assert "named_prices.get('home')" in text
+    assert "if len(picks_fallback) < 3" not in text
 
 
 def test_phase7_delegates_persistence_and_delivery_without_legacy_side_effects():

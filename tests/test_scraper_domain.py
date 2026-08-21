@@ -48,6 +48,22 @@ def test_market_looks_up_named_outcomes_without_using_position():
     assert market.outcome(" HoMe ").price == 1.70
 
 
+def test_market_preserves_optional_nonempty_bookmaker_identity():
+    without_bookmaker = _market()
+    with_bookmaker = Market(
+        "h2h",
+        "full_game",
+        None,
+        (_outcome(),),
+        bookmaker_key=" Book-A ",
+    )
+
+    assert without_bookmaker.bookmaker_key is None
+    assert with_bookmaker.bookmaker_key == "book-a"
+    with pytest.raises(ValueError, match="bookmaker_key"):
+        Market("h2h", "full_game", None, (_outcome(),), bookmaker_key="  ")
+
+
 def test_market_outcome_reports_the_missing_key_clearly():
     market = _market()
 

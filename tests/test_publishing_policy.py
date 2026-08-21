@@ -48,10 +48,11 @@ class PublishingPolicyTests(unittest.TestCase):
         self.assertTrue(event_labels_share_date(["21/08 • 19:00", "21/08 • 21:00"], "2026-08-20"))
         self.assertFalse(event_labels_share_date(["Hoy 19:00", "Mañana 21:00"], "2026-08-20"))
 
-    def test_scraper_applies_the_same_day_rule_to_generated_parlays(self):
+    def test_scraper_rejects_ai_parlays_and_has_no_generated_parlay_fallback(self):
         scraper = (Path(__file__).resolve().parents[1] / "backend" / "scraper.py").read_text(encoding="utf-8")
         self.assertIn("Parlay sin piernas verificadas", scraper)
-        self.assertIn("event_labels_share_date(parlay_horarios", scraper)
+        self.assertNotIn("event_labels_share_date(parlay_horarios", scraper)
+        self.assertNotIn('"categoria": "Parlay Seguro"', scraper)
 
 
 if __name__ == "__main__":

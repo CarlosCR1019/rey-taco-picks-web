@@ -86,10 +86,17 @@ class Market:
     period: str
     line: float | None
     outcomes: tuple[Outcome, ...]
+    bookmaker_key: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _canonical_key(self.key, "key"))
         object.__setattr__(self, "period", _canonical_key(self.period, "period"))
+        if self.bookmaker_key is not None:
+            object.__setattr__(
+                self,
+                "bookmaker_key",
+                _canonical_key(self.bookmaker_key, "bookmaker_key"),
+            )
         if self.line is not None:
             object.__setattr__(self, "line", _finite_float(self.line, "line"))
         if not isinstance(self.outcomes, tuple):

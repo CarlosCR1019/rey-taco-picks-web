@@ -18,14 +18,14 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 try:
     from backend.publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
-    from backend.pick_publisher import SupabaseBatchRepository, publish_batch, source_hash_for
+    from backend.pick_publisher import SupabaseBatchRepository, publish_batch
     from backend.scraper_config import load_settings
-    from backend.telegram_publisher import TelegramDestination, TelegramHttpTransport, deliver_batch
+    from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
 except ImportError:  # So `python backend/scraper.py` also resolves the helper.
     from publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
-    from pick_publisher import SupabaseBatchRepository, publish_batch, source_hash_for
+    from pick_publisher import SupabaseBatchRepository, publish_batch
     from scraper_config import load_settings
-    from telegram_publisher import TelegramDestination, TelegramHttpTransport, deliver_batch
+    from telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
 
 # Forzar codificación UTF-8
 sys.stdout.reconfigure(encoding='utf-8')
@@ -1491,6 +1491,7 @@ def fase7_guardar_y_notificar(
     settings=None,
     transport=None,
     run_key=None,
+    environment=None,
 ):
     """Publish one atomic batch, then deliver each Telegram destination independently."""
     print("\n" + "="*60)
@@ -1542,7 +1543,19 @@ def fase7_guardar_y_notificar(
     if len(free_picks) != 1 or free_picks[0].get('es_parlay'):
         raise ValueError("La publicación requiere exactamente un pick público no parlay.")
 
-    active_run_key = run_key or f"scraper:{hoy}:{source_hash_for(picks)}"
+    run_environment = os.environ if environment is None else environment
+    active_run_key = str(run_key or "").strip()
+    if not active_run_key:
+        active_run_key = str(run_environment.get("SCRAPER_RUN_KEY") or "").strip()
+    if not active_run_key:
+        github_run_id = str(run_environment.get("GITHUB_RUN_ID") or "").strip()
+        if github_run_id:
+            active_run_key = f"github-run:{github_run_id}"
+    if not active_run_key:
+        raise RuntimeError(
+            "No hay una clave estable de corrida; configura SCRAPER_RUN_KEY."
+        )
+
     publication = publish_batch(
         repository,
         picks,
@@ -1568,38 +1581,60 @@ def fase7_guardar_y_notificar(
         print("   ℹ️ No hay destinos de Telegram configurados.")
         return publication, {}
 
-    if transport is None:
-        if not active_settings.telegram_token:
-            print("   ⚠️ No hay token de Telegram configurado; se omitió la entrega.")
-            return publication, {}
-        transport = TelegramHttpTransport(active_settings.telegram_token)
-
     completed = frozenset(
         name
         for name, status in publication.delivery_status.items()
         if status is True
         or (isinstance(status, dict) and status.get('success') is True)
     )
-    deliveries = deliver_batch(
-        clean_picks,
-        active_destinations,
-        transport,
-        completed=completed,
-    )
+    if transport is None and not active_settings.telegram_token:
+        print("   ❌ Falta el token de Telegram; se registraron las entregas como fallidas.")
+        deliveries = {
+            destination.name: (
+                DeliveryResult(success=True, skipped=True)
+                if destination.name in completed
+                else DeliveryResult(
+                    success=False,
+                    error="missing_telegram_token",
+                )
+            )
+            for destination in active_destinations
+        }
+    else:
+        if transport is None:
+            transport = TelegramHttpTransport(active_settings.telegram_token)
+        deliveries = deliver_batch(
+            clean_picks,
+            active_destinations,
+            transport,
+            completed=completed,
+        )
 
     if publication.run_id is None:
         raise RuntimeError("El publicador no devolvió un identificador de corrida.")
+    record_failures = []
     for destination, result in deliveries.items():
         if result.skipped:
             continue
-        repository.record_delivery(
-            publication.run_id,
-            destination,
-            result.success,
-            result.error,
-        )
+        try:
+            repository.record_delivery(
+                publication.run_id,
+                destination,
+                result.success,
+                result.error,
+            )
+        except Exception:
+            record_failures.append(destination)
+            print(f"   ❌ No se pudo registrar la entrega Telegram {destination}.")
+            continue
         outcome = "✅" if result.success else "❌"
         print(f"   {outcome} Entrega Telegram {destination}.")
+
+    if record_failures:
+        raise RuntimeError(
+            "No se pudieron registrar entregas de Telegram: "
+            + ", ".join(record_failures)
+        )
 
     return publication, deliveries
 

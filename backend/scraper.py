@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 import os
 import json
+import math
 import time
 import sys
 import re
@@ -68,22 +69,45 @@ def require_publish_backend():
             "Publicación cancelada: faltan SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY."
         )
 
-def normalizar_cuota_decimal(val, default="1.85"):
-    try:
-        val_str = str(val).strip()
-        m = re.search(r'([+-]?\d+(?:\.\d+)?)', val_str)
-        if not m: return default
-        n = float(m.group(1))
-        if n > 50:
-            return f"{round((n / 100) + 1, 2):.2f}"
-        elif n < -50:
-            return f"{round((100 / abs(n)) + 1, 2):.2f}"
-        elif 1.01 <= n <= 50.0:
-            return f"{n:.2f}"
-        else:
-            return default
-    except Exception:
-        return default
+def normalizar_cuota_decimal(val: object) -> str | None:
+    """Return an exact decimal quote or ``None`` for untrusted input.
+
+    American odds are converted only when the source includes an explicit
+    sign and an integer magnitude of at least 100.  Bare large numbers are not
+    assumed to use a different odds format.
+    """
+
+    if val is None or isinstance(val, bool):
+        return None
+
+    if isinstance(val, (int, float)):
+        number = float(val)
+        if not math.isfinite(number) or not 1.01 <= number <= 50.0:
+            return None
+        return f"{number:.2f}"
+
+    if not isinstance(val, str):
+        return None
+    value = val.strip()
+    if re.fullmatch(r"[+-]\d+", value):
+        american = int(value)
+        if abs(american) < 100:
+            return None
+        decimal = (
+            (american / 100) + 1
+            if american > 0
+            else (100 / abs(american)) + 1
+        )
+        if not 1.01 <= decimal <= 50.0:
+            return None
+        return f"{decimal:.2f}"
+
+    if not re.fullmatch(r"\d+(?:\.\d+)?", value):
+        return None
+    decimal = float(value)
+    if not math.isfinite(decimal) or not 1.01 <= decimal <= 50.0:
+        return None
+    return f"{decimal:.2f}"
 
 def inferir_categoria_deporte(local, visitante, fallback="Fútbol Internacional"):
     """Infiere la liga y deporte exacto según los equipos involucrados."""
@@ -1357,7 +1381,12 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             p['horario'] = horario_limpio
             
             # 4. Limpieza y Normalización Matemática de Cuota
-            p['cuota'] = normalizar_cuota_decimal(p.get('cuota', '1.85'))
+            normalized_price = normalizar_cuota_decimal(p.get('cuota'))
+            if normalized_price is None:
+                print(f"   🛑 DESCARTADO (Cuota ausente o inválida): {p_partido}")
+                continue
+            p['cuota'] = normalized_price
+            p.pop('odds_mercado', None)
             
             if not p.get('razonamiento') or len(p.get('razonamiento', '')) < 10:
                 p['razonamiento'] = "Consenso IA: Ventaja matemática +EV detectada con alta probabilidad según métricas de Playdoit."
@@ -1399,7 +1428,9 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             if match_totals and len(picks_fallback) < 8:
                 linea = match_totals.group(1)
                 raw_c = match_totals.group(2)
-                c_val_str = normalizar_cuota_decimal(raw_c if raw_c else "1.75")
+                c_val_str = normalizar_cuota_decimal(raw_c)
+                if c_val_str is None:
+                    continue
                 c_val = float(c_val_str)
                 
                 f_linea = float(linea)
@@ -1433,7 +1464,6 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                     "razonamiento": "Consenso Quant: Ventaja estadística en ritmo ofensivo y promedio histórico proyectado en Playdoit.",
                     "es_parlay": False,
                     "tiene_valor": True,
-                    "odds_mercado": f"{max(1.30, c_val - 0.05):.2f}"
                 }
                 picks_fallback.append(p_item)
                 if c_val <= 1.85:
@@ -1443,6 +1473,8 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             if len(cuotas_sup) >= 1 and len(picks_fallback) < 6:
                 try:
                     c_local_str = normalizar_cuota_decimal(cuotas_sup[0])
+                    if c_local_str is None:
+                        continue
                     c_local = float(c_local_str)
                     if 1.20 <= c_local <= 2.25:
                         p_ml = {
@@ -1456,13 +1488,12 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                             "razonamiento": "Consenso Quant: Ventaja táctica y solvencia proyectada respaldada por cuotas de mercado.",
                             "es_parlay": False,
                             "tiene_valor": True,
-                            "odds_mercado": f"{max(1.20, c_local - 0.05):.2f}"
                         }
                         if not any(x['partido'] == partido for x in picks_fallback):
                             picks_fallback.append(p_ml)
                         if c_local <= 1.80 and not any(x['partido'] == partido for x in parlay_candidatos):
                             parlay_candidatos.append(p_ml)
-                except:
+                except (TypeError, ValueError):
                     pass
 
         # Garantizar SIEMPRE al menos 3 picks activos diarios (para días como viernes/lunes)
@@ -1475,19 +1506,21 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                     continue
                 cuotas = p.get('cuotas_superficie', [])
                 if cuotas:
-                    c_val = float(normalizar_cuota_decimal(cuotas[0]))
+                    c_val_str = normalizar_cuota_decimal(cuotas[0])
+                    if c_val_str is None:
+                        continue
+                    c_val = float(c_val_str)
                     picks_fallback.append({
                         "categoria": p.get('categoria', 'Fútbol Global'),
                         "partido": partido_nom,
                         "local": p.get('local', partido_nom.split(' vs ')[0]),
                         "horario": p.get('horario', 'Hoy'),
                         "pick": f"{p.get('local', partido_nom.split(' vs ')[0])} Gana o Empata (1X)" if c_val < 1.60 else f"{p.get('local', partido_nom.split(' vs ')[0])} Gana Directo",
-                        "cuota": f"{max(1.35, c_val):.2f}",
+                        "cuota": c_val_str,
                         "confianza": "91%",
                         "razonamiento": "Consenso Quant: Selección calculada de alta probabilidad matemática y valor esperado positivo.",
                         "es_parlay": False,
                         "tiene_valor": True,
-                        "odds_mercado": f"{max(1.25, c_val - 0.05):.2f}"
                     })
 
         # C) Construir Parlay Combinado Dinámico con piernas del mismo día CDMX.
@@ -1503,21 +1536,23 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
 
         if parlay_pair:
             p1, p2 = parlay_pair
-            cuota_parlay = float(p1['cuota']) * float(p2['cuota'])
-            loc1 = p1.get('local') or p1['partido'].split(' vs ')[0]
-            loc2 = p2.get('local') or p2['partido'].split(' vs ')[0]
-            picks_fallback.append({
-                "categoria": "Parlay Seguro",
-                "partido": f"{p1['partido']} + {p2['partido']}",
-                "horario": f"{p1.get('horario', 'Hoy')} / {p2.get('horario', 'Hoy')}",
-                "pick": f"{loc1} ({p1['pick']}) & {loc2} ({p2['pick']})",
-                "cuota": f"{cuota_parlay:.2f}",
-                "confianza": "93%",
-                "razonamiento": "Combinada matemática de alta correlación positiva y riesgo controlado.",
-                "es_parlay": True,
-                "tiene_valor": True,
-                "odds_mercado": f"{max(1.80, cuota_parlay - 0.10):.2f}"
-            })
+            leg1_price = normalizar_cuota_decimal(p1.get('cuota'))
+            leg2_price = normalizar_cuota_decimal(p2.get('cuota'))
+            if leg1_price is not None and leg2_price is not None:
+                cuota_parlay = float(leg1_price) * float(leg2_price)
+                loc1 = p1.get('local') or p1['partido'].split(' vs ')[0]
+                loc2 = p2.get('local') or p2['partido'].split(' vs ')[0]
+                picks_fallback.append({
+                    "categoria": "Parlay Seguro",
+                    "partido": f"{p1['partido']} + {p2['partido']}",
+                    "horario": f"{p1.get('horario', 'Hoy')} / {p2.get('horario', 'Hoy')}",
+                    "pick": f"{loc1} ({p1['pick']}) & {loc2} ({p2['pick']})",
+                    "cuota": f"{cuota_parlay:.2f}",
+                    "confianza": "93%",
+                    "razonamiento": "Combinada matemática de alta correlación positiva y riesgo controlado.",
+                    "es_parlay": True,
+                    "tiene_valor": True,
+                })
 
         print(f"\n   🏆 CARTERA APROBADA ({len(picks_fallback)} selecciones de alta credibilidad desde Playdoit):")
         for p in picks_fallback:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -279,3 +280,154 @@ def test_scraper_source_requests_decimal_and_contains_no_synthetic_fallback_trio
     scraper_text = SCRAPER.read_text(encoding="utf-8")
     assert '"oddsFormat": "decimal"' in source_text
     assert '["1.85", "3.20", "2.10"]' not in scraper_text
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [None, "", "bad", 0, "0", 99, "99", True, math.nan, math.inf, "1.70x"],
+)
+def test_legacy_decimal_normalizer_rejects_invalid_values_without_a_default(raw):
+    from backend.scraper import normalizar_cuota_decimal
+
+    assert normalizar_cuota_decimal(raw) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(1.70, "1.70"), ("1.70", "1.70"), ("+110", "2.10"), ("-110", "1.91")],
+)
+def test_legacy_decimal_normalizer_preserves_decimal_or_explicit_american_odds(
+    raw, expected
+):
+    from backend.scraper import normalizar_cuota_decimal
+
+    assert normalizar_cuota_decimal(raw) == expected
+
+
+def _run_legacy_ai(monkeypatch, raw_picks):
+    from backend import scraper
+
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    responses = iter(("quant", "audit", json.dumps(raw_picks)))
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: next(responses),
+    )
+    event = {
+        "categoria": "Liga MX",
+        "partido": "América vs Tigres",
+        "local": "América",
+        "visitante": "Tigres",
+        "horario": "Mañana 23:59",
+        "cuotas_superficie": [],
+        "info_texto": "",
+    }
+    return scraper.fase6_analisis_final(
+        [event], "", {}, [event], groq_api_key="fake-key"
+    )
+
+
+@pytest.mark.parametrize("invalid", [None, "bad", 0, 99])
+def test_ai_validated_path_discards_missing_or_invalid_price(monkeypatch, invalid):
+    raw_picks = [
+        {
+            "partido": "América vs Tigres",
+            "pick": "INVALID PRICE",
+            "cuota": invalid,
+            "horario": "Mañana 23:59",
+            "razonamiento": "Datos suficientes para explicar la selección.",
+            "es_parlay": False,
+            "odds_mercado": "1.55",
+        },
+        *[
+            {
+                "partido": "América vs Tigres",
+                "pick": f"VALID {index}",
+                "cuota": price,
+                "horario": "Mañana 23:59",
+                "razonamiento": "Datos suficientes para explicar la selección.",
+                "es_parlay": False,
+                "odds_mercado": "1.55",
+            }
+            for index, price in enumerate(("1.70", "+110", "2.00"), start=1)
+        ],
+    ]
+
+    picks = _run_legacy_ai(monkeypatch, raw_picks)
+
+    assert [pick["pick"] for pick in picks] == ["VALID 1", "VALID 2", "VALID 3"]
+    assert [pick["cuota"] for pick in picks] == ["1.70", "2.10", "2.00"]
+    assert all("odds_mercado" not in pick for pick in picks)
+
+
+@pytest.mark.parametrize("invalid", [None, "bad", 0, 99])
+def test_legacy_surface_fallback_does_not_turn_invalid_price_into_a_pick(
+    monkeypatch, invalid
+):
+    from backend import scraper
+
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: "not-json",
+    )
+    event = {
+        "categoria": "Liga MX",
+        "partido": "América vs Tigres",
+        "local": "América",
+        "visitante": "Tigres",
+        "horario": "Mañana 23:59",
+        "cuotas_superficie": [invalid],
+        "info_texto": "",
+    }
+
+    picks = scraper.fase6_analisis_final(
+        [event], "", {}, [event], groq_api_key="fake-key"
+    )
+
+    assert picks == []
+
+
+def test_legacy_surface_fallback_preserves_exact_observed_price_without_floor(
+    monkeypatch,
+):
+    from backend import scraper
+
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: "not-json",
+    )
+    event = {
+        "categoria": "Liga MX",
+        "partido": "América vs Tigres",
+        "local": "América",
+        "visitante": "Tigres",
+        "horario": "Mañana 23:59",
+        "cuotas_superficie": ["1.20"],
+        "info_texto": "",
+    }
+
+    picks = scraper.fase6_analisis_final(
+        [event], "", {}, [event], groq_api_key="fake-key"
+    )
+
+    assert picks[0]["cuota"] == "1.20"
+    assert "odds_mercado" not in picks[0]
+
+
+def test_legacy_source_has_no_executable_price_defaults_or_derived_market_odds():
+    text = SCRAPER.read_text(encoding="utf-8")
+    forbidden = (
+        'def normalizar_cuota_decimal(val, default=',
+        "p.get('cuota', '1.85')",
+        'raw_c if raw_c else "1.75"',
+        "max(1.35, c_val)",
+        "c_val - 0.05",
+        "cuota_parlay - 0.10",
+        '"odds_mercado": f',
+    )
+    assert not [pattern for pattern in forbidden if pattern in text]

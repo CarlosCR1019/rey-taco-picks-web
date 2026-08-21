@@ -413,6 +413,147 @@ def test_scraper_source_requests_decimal_and_contains_no_synthetic_fallback_trio
     assert '["1.85", "3.20", "2.10"]' not in scraper_text
 
 
+def _verified_projection():
+    from backend import scraper
+
+    event = normalize_odds_event(fixture_event(), OBSERVED_AT)
+    return scraper._legacy_odds_projection(event)
+
+
+def test_legacy_projection_preserves_candidates_only_in_private_internal_field():
+    from backend.pick_selection import CandidatePick
+
+    projected = _verified_projection()
+
+    assert isinstance(projected["_verified_candidates"], tuple)
+    assert projected["_verified_candidates"]
+    assert all(
+        isinstance(candidate, CandidatePick)
+        for candidate in projected["_verified_candidates"]
+    )
+
+
+def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypatch):
+    from backend import scraper
+
+    projected = _verified_projection()
+    candidate = projected["_verified_candidates"][0]
+    response = json.dumps(
+        [
+            {
+                "candidate_id": candidate.candidate_id,
+                "rationale": "La selección conserva toda la evidencia observada.",
+                "price": 9.99,
+                "partido": "Inventado vs Falso",
+                "pick": "Parlay inventado",
+            }
+        ]
+    )
+    calls = []
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+
+    def fake_groq(_client, messages, **_kwargs):
+        calls.append(messages)
+        return f"```json\n{response}\n```"
+
+    monkeypatch.setattr(scraper, "ejecutar_groq_con_fallback", fake_groq)
+
+    picks = scraper.fase6_analisis_final(
+        [projected], "memoria privada", {}, [projected], groq_api_key="fake"
+    )
+
+    assert len(calls) == 1
+    prompt_text = json.dumps(calls, ensure_ascii=False)
+    assert "_verified_candidates" not in prompt_text
+    assert len(picks) == 1
+    pick = picks[0]
+    assert pick["source"] == candidate.source
+    assert pick["source_event_id"] == candidate.source_event_id
+    assert pick["bookmaker_key"] == candidate.bookmaker_key
+    assert pick["starts_at"] == candidate.starts_at.isoformat()
+    assert pick["observed_at"] == candidate.observed_at.isoformat()
+    assert pick["sport"] == candidate.sport
+    assert pick["categoria"] == candidate.league
+    assert pick["local"] == candidate.home_team
+    assert pick["visitante"] == candidate.away_team
+    assert pick["market_key"] == candidate.market_key
+    assert pick["period"] == candidate.period
+    assert pick["line"] == candidate.line
+    assert pick["selection_key"] == candidate.selection_key
+    assert pick["selection_name"] == candidate.selection_name
+    assert pick["cuota"] == candidate.price
+    assert pick["razonamiento"] == "La selección conserva toda la evidencia observada."
+    assert pick["es_parlay"] is False
+    assert "confianza" not in pick and "tiene_valor" not in pick
+    assert "_verified_candidates" not in pick
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "not-json",
+        '{"candidate_id": "anything", "rationale": "Texto bastante largo"}',
+        json.dumps(
+            [
+                {
+                    "partido": "América vs Tigres",
+                    "pick": "América gana",
+                    "cuota": "9.99",
+                    "razonamiento": "El esquema libre anterior ya no es válido.",
+                }
+            ]
+        ),
+        'texto antes [{"candidate_id":"anything","rationale":"Texto bastante largo"}]',
+    ],
+)
+def test_phase6_invalid_or_legacy_response_yields_no_fallback(
+    monkeypatch,
+    response,
+):
+    from backend import scraper
+
+    projected = _verified_projection()
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: response,
+    )
+
+    assert scraper.fase6_analisis_final(
+        [projected], "", {}, [projected], groq_api_key="fake"
+    ) == []
+
+
+def test_phase6_deduplicates_exact_private_candidates_across_phase_records(
+    monkeypatch,
+):
+    from backend import scraper
+
+    projected = _verified_projection()
+    candidate = projected["_verified_candidates"][0]
+    response = json.dumps(
+        [
+            {
+                "candidate_id": candidate.candidate_id,
+                "rationale": "La identidad exacta aparece una sola vez.",
+            }
+        ]
+    )
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: response,
+    )
+
+    picks = scraper.fase6_analisis_final(
+        [projected], "", {}, [projected], groq_api_key="fake"
+    )
+
+    assert [pick["source_event_id"] for pick in picks] == [candidate.source_event_id]
+
+
 @pytest.mark.parametrize(
     "raw",
     [None, "", "bad", 0, "0", 99, "99", True, math.nan, math.inf, "1.70x"],
@@ -483,7 +624,7 @@ def test_ai_validated_path_discards_every_price_without_named_evidence(
     assert picks == []
 
 
-def test_ai_price_is_ignored_and_exact_named_observation_is_copied(monkeypatch):
+def test_legacy_ai_price_and_freeform_selection_are_never_accepted(monkeypatch):
     raw_picks = [
         {
             "partido": "América vs Tigres",
@@ -503,11 +644,7 @@ def test_ai_price_is_ignored_and_exact_named_observation_is_copied(monkeypatch):
         named_prices={"home": "1.72", "draw": "3.30", "away": "2.40"},
     )
 
-    assert [pick["cuota"] for pick in picks] == ["1.72", "1.72", "1.72"]
-    assert all("odds_mercado" not in pick for pick in picks)
-    assert all(pick["source_event_id"] == "event-123" for pick in picks)
-    assert all(pick["bookmaker_key"] == "book-a" for pick in picks)
-    assert all("confianza" not in pick and "tiene_valor" not in pick for pick in picks)
+    assert picks == []
 
 
 def test_legacy_event_matching_requires_exact_two_team_identity_and_rejects_ambiguity():
@@ -604,8 +741,7 @@ def test_ai_cannot_bind_price_by_matching_only_one_team(monkeypatch):
         catalog, "", {}, catalog, groq_api_key="fake-key"
     )
 
-    assert [pick["cuota"] for pick in picks] == ["2.25", "2.25", "2.25"]
-    assert {pick["source_event_id"] for pick in picks} == {"america-pumas"}
+    assert picks == []
 
 
 @pytest.mark.parametrize(
@@ -672,7 +808,7 @@ def test_legacy_surface_fallback_does_not_turn_invalid_price_into_a_pick(
     assert picks == []
 
 
-def test_legacy_fallback_uses_named_home_price_not_positional_surface_price(
+def test_invalid_ai_response_has_no_named_or_positional_price_fallback(
     monkeypatch,
 ):
     from backend import scraper
@@ -700,10 +836,7 @@ def test_legacy_fallback_uses_named_home_price_not_positional_surface_price(
         [event], "", {}, [event], groq_api_key="fake-key"
     )
 
-    assert picks[0]["cuota"] == "1.20"
-    assert picks[0]["pick"] == "América Gana Directo"
-    assert picks[0]["bookmaker_key"] == "book-a"
-    assert "odds_mercado" not in picks[0]
+    assert picks == []
 
 
 def test_legacy_fallback_without_named_h2h_map_creates_no_moneyline_pick(
@@ -832,11 +965,7 @@ def test_legacy_fallback_does_not_publish_totals_parlays_or_unsupported_claims(
         events, "", {}, events, groq_api_key="fake-key"
     )
 
-    assert len(picks) == 2
-    assert all(pick["pick"].endswith("Gana Directo") for pick in picks)
-    assert all(not pick["es_parlay"] for pick in picks)
-    assert all("confianza" not in pick and "tiene_valor" not in pick for pick in picks)
-    assert {pick["source_event_id"] for pick in picks} == {"event-0", "event-1"}
+    assert picks == []
 
 
 def test_legacy_source_has_no_executable_price_defaults_or_derived_market_odds():

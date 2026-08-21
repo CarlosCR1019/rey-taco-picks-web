@@ -6,10 +6,13 @@ import pytest
 
 from backend.pick_selection import (
     CandidatePick,
+    MAX_AI_RANKED_PICKS,
+    RankedPick,
     _candidate_id,
     _same_physical_event,
     build_candidates,
     build_same_day_parlay,
+    validate_ai_ranking,
 )
 from backend.scraper_domain import Event, Market, Outcome
 
@@ -640,3 +643,116 @@ def test_zero_line_remains_valid_for_totals_and_spreads():
         ("spreads", 0.0),
         ("spreads", 0.0),
     ]
+
+
+def test_ai_unknown_id_cannot_invent_a_selection(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+    response = [
+        {
+            "candidate_id": "unknown",
+            "price": 9.99,
+            "pick": "Selección inventada",
+            "rationale": "Selección supuestamente segura.",
+        }
+    ]
+
+    assert validate_ai_ranking(response, [candidate]) == []
+
+
+def test_ai_known_id_copies_exact_candidate_and_ignores_factual_fields(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+    response = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "price": 9.99,
+            "team": "Equipo inventado",
+            "market": "parlay",
+            "source": "ai",
+            "rationale": "Dos fuentes respaldan esta selección.",
+        }
+    ]
+
+    ranked = validate_ai_ranking(response, [candidate])
+
+    assert ranked == [RankedPick(candidate, "Dos fuentes respaldan esta selección.")]
+    assert ranked[0].candidate is candidate
+    assert ranked[0].candidate.price == candidate.price
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        {},
+        (),
+        "[]",
+        [None],
+        [{"candidate_id": 123, "rationale": "Explicación bastante larga."}],
+        [{"candidate_id": "id", "rationale": 123}],
+        [{"candidate_id": "id", "rationale": "muy corta"}],
+    ],
+)
+def test_ai_ranking_rejects_wrong_container_and_field_types(response, event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+
+    assert validate_ai_ranking(response, [candidate]) == []
+
+
+def test_ai_ranking_rejects_duplicate_or_ambiguous_ids(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+    item = {
+        "candidate_id": candidate.candidate_id,
+        "rationale": "Explicación suficientemente larga.",
+    }
+
+    assert validate_ai_ranking([item], [candidate, candidate]) == []
+    assert validate_ai_ranking([item, item], [candidate]) == [
+        RankedPick(candidate, item["rationale"])
+    ]
+
+
+def test_ai_ranking_rejects_freeform_legacy_schema(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+
+    assert validate_ai_ranking(
+        [
+            {
+                "partido": "América vs Tigres",
+                "pick": "América gana",
+                "cuota": "9.99",
+                "razonamiento": "La IA intenta usar el formato anterior.",
+            }
+        ],
+        [candidate],
+    ) == []
+
+
+def test_ai_ranking_trims_rationale_preserves_order_and_caps_output():
+    candidates = [
+        build_candidates([event_with(source_event_id=f"rank-{index}")])[0]
+        for index in range(MAX_AI_RANKED_PICKS + 3)
+    ]
+    response = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "rationale": f"  Razón verificada {index}. " + ("x" * 600),
+        }
+        for index, candidate in enumerate(reversed(candidates))
+    ]
+
+    ranked = validate_ai_ranking(response, candidates)
+
+    assert [row.candidate for row in ranked] == list(reversed(candidates))[
+        :MAX_AI_RANKED_PICKS
+    ]
+    assert all(len(row.rationale) == 500 for row in ranked)
+    assert all(row.rationale == row.rationale.strip() for row in ranked)
+
+
+def test_ranked_pick_is_frozen_and_slotted(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+    ranked = RankedPick(candidate, "Explicación suficientemente larga.")
+
+    with pytest.raises(FrozenInstanceError):
+        ranked.rationale = "Otra explicación"  # type: ignore[misc]
+    assert not hasattr(ranked, "__dict__")

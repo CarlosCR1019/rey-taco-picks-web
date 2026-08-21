@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 import os
@@ -37,6 +37,13 @@ from backend.playdoit_source import (
     normalize_playdoit_events,
 )
 from backend.pick_publisher import SupabaseBatchRepository, publish_batch
+from backend.pick_selection import (
+    CandidatePick,
+    RankedPick,
+    _is_individually_valid,
+    build_candidates,
+    validate_ai_ranking,
+)
 from backend.scraper_config import ConfigError, ScraperSettings, load_settings
 from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
 
@@ -51,6 +58,7 @@ GROQ_API_KEY = ""
 ODDS_API_KEY = ""
 SUPABASE_SERVICE_ROLE_KEY = ""
 supabase = None
+_VERIFIED_CANDIDATES_FIELD = "_verified_candidates"
 
 
 class PersistenceFailure(RuntimeError):
@@ -186,49 +194,6 @@ def get_chrome_version():
     return None
 
 
-def _observed_h2h_selection(pick_text, event):
-    """Resolve a direct moneyline pick to an exact named source observation.
-
-    The AI may describe a selection, but it never supplies its price. During
-    the legacy migration only direct home/away moneylines and an exact draw
-    label are supported; composite or unrecognized markets fail closed.
-    """
-
-    if not isinstance(pick_text, str) or not isinstance(event, dict):
-        return None
-    text = " ".join(pick_text.strip().casefold().split())
-    if not text:
-        return None
-
-    named_prices = event.get("cuotas_por_resultado")
-    if not isinstance(named_prices, dict):
-        return None
-    source_event_id = str(event.get("source_event_id") or "").strip()
-    bookmaker_key = str(event.get("bookmaker_key") or "").strip()
-    if not source_event_id or not bookmaker_key:
-        return None
-
-    home = str(event.get("local") or "").strip()
-    away = str(event.get("visitante") or "").strip()
-    candidates = (
-        ("home", home, f"{home} Gana Directo"),
-        ("away", away, f"{away} Gana Directo"),
-    )
-    for key, team, canonical_pick in candidates:
-        if not team:
-            continue
-        team_key = re.escape(team.casefold())
-        if re.fullmatch(rf"{team_key}\s+(?:gana(?:\s+directo)?|moneyline)", text):
-            price = normalizar_cuota_decimal(named_prices.get(key))
-            if price is not None:
-                return canonical_pick, price, bookmaker_key
-            return None
-
-    if text in {"empate", "draw"}:
-        price = normalizar_cuota_decimal(named_prices.get("draw"))
-        if price is not None:
-            return "Empate", price, bookmaker_key
-    return None
 
 
 def _normalized_event_identity(value):
@@ -274,6 +239,11 @@ def _event_record_identity(event):
 
 
 def _event_record_evidence(event):
+    private_candidates = event.get(_VERIFIED_CANDIDATES_FIELD)
+    if not isinstance(private_candidates, tuple) or not all(
+        isinstance(candidate, CandidatePick) for candidate in private_candidates
+    ):
+        private_candidates = ()
     return (
         _normalized_event_identity(event.get('source')),
         _normalized_event_identity(event.get('source_event_id')),
@@ -285,6 +255,7 @@ def _event_record_evidence(event):
         _normalized_event_identity(event.get('bookmaker_key')),
         _normalized_quote_mapping(event.get('cuotas_por_resultado')),
         tuple(str(value).strip() for value in event.get('cuotas_superficie', ())),
+        private_candidates,
     )
 
 
@@ -754,6 +725,7 @@ def _legacy_odds_projection(event):
             f"{event.league}: {match_name}. Horario: {schedule}. "
             f"Mercados verificados: {' | '.join(market_descriptions)}"
         ),
+        _VERIFIED_CANDIDATES_FIELD: tuple(build_candidates([event])),
     }
 
 
@@ -1203,6 +1175,178 @@ PICKS RECIENTES:
 # ============================================================
 #  FASE 6: ANÁLISIS FINAL — DEBATE Y CONSENSO MULTI-IA
 # ============================================================
+def _collect_verified_candidates(records) -> list[CandidatePick]:
+    """Deduplicate exact private candidates and omit conflicting identities."""
+
+    selected: dict[str, CandidatePick] = {}
+    order: list[str] = []
+    conflicts: set[str] = set()
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        private_candidates = record.get(_VERIFIED_CANDIDATES_FIELD)
+        if not isinstance(private_candidates, tuple):
+            continue
+        for candidate in private_candidates:
+            if not _is_individually_valid(candidate):
+                continue
+            candidate_id = candidate.candidate_id
+            if candidate_id in conflicts:
+                continue
+            existing = selected.get(candidate_id)
+            if existing is None:
+                selected[candidate_id] = candidate
+                order.append(candidate_id)
+            elif existing != candidate:
+                selected.pop(candidate_id, None)
+                conflicts.add(candidate_id)
+    return [
+        selected[candidate_id]
+        for candidate_id in order
+        if candidate_id in selected
+    ]
+
+
+def _candidate_prompt_row(candidate: CandidatePick) -> dict[str, object]:
+    """Serialize only read-only catalog facts, never the private object field."""
+
+    return {
+        "candidate_id": candidate.candidate_id,
+        "source": candidate.source,
+        "source_event_id": candidate.source_event_id,
+        "bookmaker_key": candidate.bookmaker_key,
+        "starts_at": candidate.starts_at.isoformat(),
+        "observed_at": candidate.observed_at.isoformat(),
+        "sport": candidate.sport,
+        "league": candidate.league,
+        "home_team": candidate.home_team,
+        "away_team": candidate.away_team,
+        "market_key": candidate.market_key,
+        "period": candidate.period,
+        "line": candidate.line,
+        "selection_key": candidate.selection_key,
+        "selection_name": candidate.selection_name,
+        "price": candidate.price,
+    }
+
+
+def _parse_strict_json_array(raw_response):
+    """Parse one JSON array, optionally inside a complete Markdown fence."""
+
+    if not isinstance(raw_response, str):
+        return []
+    clean_response = raw_response.strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?\s*(.*?)\s*```",
+        clean_response,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fenced is not None:
+        clean_response = fenced.group(1).strip()
+    try:
+        return json.loads(clean_response)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _candidate_schedule(candidate: CandidatePick) -> str:
+    start = candidate.starts_at.astimezone(ZoneInfo("America/Mexico_City"))
+    observed = candidate.observed_at.astimezone(
+        ZoneInfo("America/Mexico_City")
+    )
+    if start.date() == observed.date():
+        return f"Hoy {start.strftime('%H:%M')} hrs"
+    if start.date() == observed.date() + timedelta(days=1):
+        return f"Mañana {start.strftime('%H:%M')} hrs"
+    return start.strftime("%d/%m %H:%M hrs")
+
+
+def _legacy_ranked_pick_projection(ranked_pick: RankedPick) -> dict[str, object]:
+    """Copy all factual fields from the catalog and only rationale from AI."""
+
+    candidate = ranked_pick.candidate
+    return {
+        "source": candidate.source,
+        "source_event_id": candidate.source_event_id,
+        "bookmaker_key": candidate.bookmaker_key,
+        "starts_at": candidate.starts_at.isoformat(),
+        "observed_at": candidate.observed_at.isoformat(),
+        "sport": candidate.sport,
+        "categoria": candidate.league,
+        "liga": candidate.league,
+        "partido": f"{candidate.home_team} vs {candidate.away_team}",
+        "local": candidate.home_team,
+        "visitante": candidate.away_team,
+        "horario": _candidate_schedule(candidate),
+        "market_key": candidate.market_key,
+        "mercado": candidate.market_key,
+        "period": candidate.period,
+        "line": candidate.line,
+        "selection_key": candidate.selection_key,
+        "selection_name": candidate.selection_name,
+        "pick": candidate.selection_name,
+        "cuota": candidate.price,
+        "razonamiento": ranked_pick.rationale,
+        "es_parlay": False,
+    }
+
+
+def _fase6_candidate_ranking(
+    datos_profundos,
+    partidos_data,
+    *,
+    groq_api_key,
+):
+    records = list(datos_profundos or ()) + list(partidos_data or ())
+    candidates = _collect_verified_candidates(records)
+    if not groq_api_key or not candidates:
+        return []
+
+    prompt_catalog = [_candidate_prompt_row(candidate) for candidate in candidates]
+    prompt = f"""
+Ordena los candidatos verificados de mayor a menor utilidad editorial.
+Los hechos del catálogo son de SOLO LECTURA: no cambies partido, mercado,
+selección, horario, fuente, casa de apuestas ni cuota.
+
+CATÁLOGO VERIFICADO:
+{json.dumps(prompt_catalog, ensure_ascii=False, indent=2)}
+
+Devuelve ÚNICAMENTE un JSON array. Cada objeto debe tener exactamente:
+{{"candidate_id": "ID exacto del catálogo", "rationale": "Explicación de 10 a 500 caracteres"}}
+No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
+"""
+    try:
+        client = Groq(api_key=groq_api_key)
+        raw_response = ejecutar_groq_con_fallback(
+            client,
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Respondes solo con un JSON array de candidate_id y "
+                        "rationale. No produces hechos de apuestas."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+        )
+    except Exception as exc:
+        print(f"   ⚠️ Ranking IA no disponible; failure={type(exc).__name__}")
+        return []
+
+    raw_ranking = _parse_strict_json_array(raw_response)
+    ranked = validate_ai_ranking(raw_ranking, candidates)
+    picks = [_legacy_ranked_pick_projection(row) for row in ranked]
+    print(f"   🏆 Ranking verificado: {len(picks)} selecciones de catálogo.")
+    for pick in picks:
+        print(
+            f"      → [{pick['categoria']}] {pick['partido']} | "
+            f"{pick['pick']} @ {pick['cuota']}"
+        )
+    return picks
+
+
 def fase6_analisis_final(
     datos_profundos,
     memoria,
@@ -1211,309 +1355,14 @@ def fase6_analisis_final(
     *,
     groq_api_key=None,
 ):
-    print("\n" + "="*60)
-    print("🧠⚡  FASE 6: DEBATE Y CONSENSO MULTI-IA (Quant vs Auditor vs Juez)")
-    print("="*60)
-    
     if partidos_data is None:
         partidos_data = datos_profundos
-        
-    active_groq_api_key = groq_api_key or GROQ_API_KEY
-    if not active_groq_api_key or not (datos_profundos or partidos_data):
-        return []
-    
-    client = Groq(api_key=active_groq_api_key)
-    
-    # Contexto de mercado global
-    market_context = ""
-    if market_odds:
-        market_context = f"""
-CUOTAS PROMEDIO DEL MERCADO GLOBAL (15+ casas de apuestas):
-{json.dumps(market_odds, indent=2)}
-"""
+    return _fase6_candidate_ranking(
+        datos_profundos,
+        partidos_data,
+        groq_api_key=groq_api_key or GROQ_API_KEY,
+    )
 
-    datos_partidos_str = json.dumps(datos_profundos, indent=2)
-
-    # -------------------------------------------------------------
-    # RONDA 1: IA CUANTITATIVA ("Alpha Quant")
-    # Busca valor matemático (+EV), córners, combos y estadísticas.
-    # -------------------------------------------------------------
-    print("   🤖 [IA 1: Alpha Quant] Analizando mercados profundos (Córners, Combos, Props, Totales)...")
-    prompt_quant = f"""
-Eres "Alpha Quant", la IA líder en análisis cuantitativo y micro-estadísticas para apuestas deportivas de élite.
-Analiza los siguientes partidos y mercados especiales:
-
-{memoria}
-{market_context}
-DATOS DE PARTIDOS Y MERCADOS:
-{datos_partidos_str}
-
-REGLAS ESTRICTAS DE TAXONOMÍA DEPORTIVA (CERO TOLERANCIA A ERRORES):
-1. FÚTBOL (Soccer / Liga MX / La Liga / Champions / Premier):
-   - Mercados válidos: Tiros de Esquina (Córners ej. "Más de 8.5 Córners"), Ambos Anotan (BTTS), Over/Under Goles (ej. "Más de 2.5 Goles"), 1X2 / Doble Oportunidad, Hándicap Asiático, Tarjetas.
-   - NUNCA uses términos de béisbol o americano en fútbol.
-2. BÉISBOL (MLB):
-   - Mercados válidos: Over/Under Carreras (ej. "Más de 8.5 Carreras"), Carreras en 1er Inning (ej. "Sin Carreras en el 1er Inning - NRFI" o "Más de 0.5 Carreras 1er Inning"), Ponches del Pitcher (ej. "Más de 6.5 Ponches"), Moneyline (-1.5 Run Line).
-   - ¡PROHIBIDO ROTUNDAMENTE usar "Córners", "Goles" o "Tiros de esquina" en Béisbol! En béisbol son CARRERAS, HITS y PONCHES.
-3. FÚTBOL AMERICANO (NFL):
-   - Mercados válidos: Spread / Hándicap (ej. "-3.5"), Over/Under Puntos Totales (ej. "Más de 44.5 Puntos"), Player Props (ej. "Anotador de Touchdown", "Más de 75.5 Yardas").
-   - ¡PROHIBIDO usar "Goles" o "Córners" en NFL! En americano son PUNTOS, TOUCHDOWNS y YARDAS.
-
-REGLAS DE PARLAYS ESTRATÉGICOS:
-- "Parlay Seguro": 2 selecciones de altísima probabilidad con cuota combinada 2.10 - 2.80.
-- "Parlay Estadístico Córners/Props": 2 selecciones de micro-estadísticas (Córners de fútbol o Ponches/Carreras de MLB) cuota 2.70 - 3.80.
-- "Parlay Rompe-Bancas (+EV)": 3 selecciones de alto valor combinado (cuota 4.50 - 7.50).
-
-Devuelve tu catálogo cuantitativo con las justificaciones matemáticas respetando estrictamente la terminología de cada deporte.
-"""
-    try:
-        resp_quant = ejecutar_groq_con_fallback(client, [{"role": "user", "content": prompt_quant}], temperature=0.2)
-        print("   ✅ [Alpha Quant] Propuestas de córners, combos y parlays generadas.")
-    except Exception as e:
-        print(f"   ⚠️ Error en IA Quant; failure={type(e).__name__}")
-        resp_quant = "Análisis quant no disponible."
-
-    # -------------------------------------------------------------
-    # RONDA 2: IA AUDITORA DE RIESGO ("Risk Auditor")
-    # Audita trampas, líneas infladas de córners y correlación de parlays.
-    # -------------------------------------------------------------
-    print("   🛡️ [IA 2: Risk Auditor] Auditando riesgo en córners, combos y combinaciones de parlays...")
-    prompt_auditor = f"""
-Eres "Risk Auditor", auditor senior de gestión de riesgo en apuestas deportivas.
-Revisa las propuestas de Alpha Quant:
-
-PROPUESTAS DE ALPHA QUANT:
-{resp_quant}
-
-DATOS REALES:
-{datos_partidos_str}
-
-TAREA DE AUDITORÍA:
-1. Verifica que la taxonomía deportiva sea 100% precisa (Córners y Goles SOLO en Fútbol; Carreras y Ponches SOLO en Béisbol; Puntos y Yardas SOLO en NFL). Rechaza cualquier propuesta que confunda deportes.
-2. Evalúa si las líneas de Tiros de Esquina, Totales y Combos son realistas según el estilo de juego de los equipos.
-3. Audita los Parlays: Asegúrate de que las selecciones combinadas tengan correlación positiva o bajo riesgo de cruzarse.
-4. Si un pick o combinación es arriesgado, sugiere un ajuste más inteligente.
-
-Devuelve tu dictamen de aprobación y ajustes recomendados.
-"""
-    try:
-        resp_auditor = ejecutar_groq_con_fallback(client, [{"role": "user", "content": prompt_auditor}], temperature=0.2)
-        print("   ✅ [Risk Auditor] Auditoría de riesgo y correlación completada.")
-    except Exception as e:
-        print(f"   ⚠️ Error en IA Auditor; failure={type(e).__name__}")
-        resp_auditor = "Auditoría no disponible."
-
-    # -------------------------------------------------------------
-    # RONDA 3: IA JUEZ SUPREMO ("Chief Arbiter")
-    # Emite la selección definitiva multideporte + Tiros de Esquina + 2 Parlays.
-    # -------------------------------------------------------------
-    print("   ⚖️ [IA 3: Chief Arbiter] Emitiendo cartera definitiva (Córners, Combos y Parlays Múltiples)...")
-    prompt_juez = f"""
-Eres el "Chief Odds Arbiter" de Rey Taco Picks. Emite la cartera oficial del día tras evaluar el debate.
-
-REGLAS CRÍTICAS ESTRICTAS (CERO TOLERANCIA):
-1. SELECCIONA ÚNICAMENTE PARTIDOS QUE ESTÉN EN LA LISTA DE DATOS REALES EXTRAÍDOS HOY. ESTÁ TOTALMENTE PROHIBIDO INVENTAR O USAR PARTIDOS DE OTROS DÍAS.
-2. Utiliza exactamente el horario y nombres de equipos que vienen en los datos reales.
-3. DIVERSIDAD MULTIDEPORTE OBLIGATORIA:
-   - Incluye al menos 1 o 2 selecciones de UEFA Champions League.
-   - Incluye al menos 1 o 2 selecciones de Béisbol KBO (Corea del Sur para madrugadores).
-   - Incluye al menos 1 o 2 selecciones de Béisbol MLB.
-   - Incluye al menos 1 o 2 Parlays combinados de alto valor (+EV).
-4. Cuotas estrictamente en formato decimal (ej: 1.85, 1.62, 2.18, 3.11).
-5. Explica claramente en el campo "razonamiento" el por qué táctico/estadístico de cada elección.
-
-DATOS REALES DISPONIBLES DE PLAYDOIT HOY:
-{datos_partidos_str}
-
-DEBATE DE LOS EXPERTOS:
---- ALPHA QUANT ---
-{resp_quant}
-
---- AUDITORÍA DE RIESGO ---
-{resp_auditor}
-
---- CUOTAS DE MERCADO GLOBAL ---
-{market_context}
-
-Devuelve ÚNICAMENTE un JSON array válido con este formato:
-[
-    {{
-        "categoria": "UEFA Champions League",
-        "partido": "Nombre Real Local vs Nombre Real Visitante",
-        "horario": "Mañana • 13:00",
-        "pick": "Nombre Equipo Gana Directo",
-        "cuota": "1.85",
-        "confianza": "90%",
-        "razonamiento": "Explicación táctica y estadística del pick...",
-        "es_parlay": false,
-        "tiene_valor": true,
-        "odds_mercado": "1.80"
-    }}
-]
-"""
-    try:
-        resp_final = ejecutar_groq_con_fallback(client, [
-            {"role": "system", "content": "Devuelves únicamente JSON puro sin bloques markdown ni texto extra."},
-            {"role": "user", "content": prompt_juez}
-        ], temperature=0.15)
-
-        # Extractor ultra robusto de JSON tolerante a texto alrededor
-        clean_resp = re.sub(r'```(?:json)?', '', resp_final).strip()
-        raw_picks = []
-        try:
-            idx1 = clean_resp.find('[')
-            idx2 = clean_resp.rfind(']')
-            if idx1 != -1 and idx2 != -1:
-                raw_picks = json.loads(clean_resp[idx1:idx2+1])
-        except Exception:
-            for m in re.finditer(r'\{[^{}]*\}', clean_resp, re.DOTALL):
-                try:
-                    obj = json.loads(m.group(0))
-                    if 'pick' in obj or 'partido' in obj:
-                        raw_picks.append(obj)
-                except Exception:
-                    pass
-        
-        # -------------------------------------------------------------
-        # VALIDACIÓN Y FILTRADO DETERMINISTA ANTI-ALUCINACIONES (PYTHON)
-        # -------------------------------------------------------------
-        picks_validados = []
-        for p in raw_picks:
-            p_partido = p.get('partido', '').strip()
-            p_pick = p.get('pick')
-            if not p_partido or not p_pick or str(p_pick).strip().lower() in ('none', '', 'null'):
-                continue
-
-            # Until the structured candidate catalog is connected, the legacy
-            # AI path accepts only one direct h2h selection. AI parlays, totals,
-            # spreads and props cannot establish their own market identity.
-            if p.get('es_parlay'):
-                print(f"   🛑 DESCARTADO (Parlay sin piernas verificadas): {p_partido}")
-                continue
-            
-            # 1. Verificar existencia contra partidos reales escaneados
-            match_encontrado = _match_observed_event(
-                p_partido,
-                p.get('source_event_id'),
-                datos_profundos + partidos_data,
-            )
-            
-            if not match_encontrado:
-                print(f"   🛑 DESCARTADO (Partido o pierna de parlay no existe en catálogo): {p_partido}")
-                continue
-
-            # 2. Asignar categoría exacta
-            p['categoria'] = inferir_categoria_deporte(
-                match_encontrado.get('local', ''),
-                match_encontrado.get('visitante', ''),
-                fallback=match_encontrado.get('categoria', 'Fútbol Internacional')
-            )
-
-            # 3. Corregir y forzar Horario Real y verificar que sea futuro en CDMX
-            if not p.get('es_parlay') and match_encontrado and match_encontrado.get('horario'):
-                p['horario'] = match_encontrado.get('horario')
-            
-            es_valido_tiempo, horario_limpio = es_partido_futuro_valido(
-                p.get('horario') or ''
-            )
-            if not es_valido_tiempo:
-                print(f"   🛑 DESCARTADO (El partido ya inició): {p_partido} [{p.get('horario')}]")
-                continue
-            p['horario'] = horario_limpio
-            
-            # Resolve identity and price from named source evidence. The
-            # numeric value returned by the AI is deliberately ignored.
-            observed_selection = _observed_h2h_selection(p_pick, match_encontrado)
-            if observed_selection is None:
-                print(f"   🛑 DESCARTADO (Mercado o cuota sin evidencia): {p_partido}")
-                continue
-            canonical_pick, observed_price, bookmaker_key = observed_selection
-            p['pick'] = canonical_pick
-            p['cuota'] = observed_price
-            p['bookmaker_key'] = bookmaker_key
-            p['es_parlay'] = False
-            source_event_id = match_encontrado.get('source_event_id')
-            if source_event_id:
-                p['source_event_id'] = source_event_id
-            for unsupported_field in (
-                'odds_mercado', 'confianza', 'tiene_valor', 'razonamiento'
-            ):
-                p.pop(unsupported_field, None)
-
-            picks_validados.append(p)
-
-        if len(picks_validados) >= 3:
-            picks = picks_validados
-            print(f"\n   🏆 CARTERA APROBADA ({len(picks)} selecciones validadas):")
-            for p in picks:
-                print(f"      → [{p.get('categoria')}] {p.get('partido')} | {p.get('pick')} @ {p.get('cuota')}")
-            return picks
-        else:
-            raise ValueError(f"Solo {len(picks_validados)} picks validados, activando generador de respaldo...")
-            
-    except Exception as e:
-        print(
-            f"   ⚠️ Nota en síntesis de debate IA; failure={type(e).__name__}. "
-            "Usando solo moneylines observados por nombre..."
-        )
-
-        picks_fallback = []
-        pool_partidos = _deduplicate_event_records(
-            list(datos_profundos) + list(partidos_data)
-        )
-        for event in pool_partidos:
-            partido = event.get('partido', '')
-            local = event.get('local', '')
-            visitante = event.get('visitante', '')
-            named_prices = event.get('cuotas_por_resultado')
-            source_event_id = str(event.get('source_event_id') or '').strip()
-            bookmaker_key = str(event.get('bookmaker_key') or '').strip()
-            if (
-                not partido
-                or not local
-                or not visitante
-                or not source_event_id
-                or not bookmaker_key
-                or not isinstance(named_prices, dict)
-            ):
-                continue
-            precio_local = normalizar_cuota_decimal(named_prices.get('home'))
-            if precio_local is None:
-                continue
-            es_valido, horario_limpio = es_partido_futuro_valido(
-                event.get('horario') or ''
-            )
-            if not es_valido:
-                continue
-            pick = {
-                "categoria": inferir_categoria_deporte(
-                    local,
-                    visitante,
-                    fallback=event.get('categoria', 'Fútbol Internacional'),
-                ),
-                "partido": partido,
-                "local": local,
-                "horario": horario_limpio,
-                "pick": f"{local} Gana Directo",
-                "cuota": precio_local,
-                "bookmaker_key": bookmaker_key,
-                "es_parlay": False,
-            }
-            pick['source_event_id'] = source_event_id
-            picks_fallback.append(pick)
-
-        print(
-            f"\n   📋 CARTERA CON EVIDENCIA ({len(picks_fallback)} "
-            "moneylines observados por nombre):"
-        )
-        for pick in picks_fallback:
-            horario = f" [{pick.get('horario')}]" if pick.get('horario') else ""
-            print(
-                f"      → [{pick.get('categoria')}]{horario} "
-                f"{pick.get('partido')} | {pick.get('pick')} @ {pick.get('cuota')}"
-            )
-
-        return picks_fallback
 
 # ============================================================
 #  FASE 7: GUARDADO Y NOTIFICACIONES

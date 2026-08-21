@@ -48,9 +48,12 @@ class PublishingPolicyTests(unittest.TestCase):
         self.assertTrue(event_labels_share_date(["21/08 • 19:00", "21/08 • 21:00"], "2026-08-20"))
         self.assertFalse(event_labels_share_date(["Hoy 19:00", "Mañana 21:00"], "2026-08-20"))
 
-    def test_scraper_rejects_ai_parlays_and_has_no_generated_parlay_fallback(self):
+    def test_scraper_accepts_only_catalog_ids_and_has_no_generated_fallback(self):
         scraper = (Path(__file__).resolve().parents[1] / "backend" / "scraper.py").read_text(encoding="utf-8")
-        self.assertIn("Parlay sin piernas verificadas", scraper)
+        self.assertIn("validate_ai_ranking", scraper)
+        self.assertIn('"candidate_id"', scraper)
+        self.assertNotIn("raw_picks", scraper)
+        self.assertNotIn("picks_fallback", scraper)
         self.assertNotIn("event_labels_share_date(parlay_horarios", scraper)
         self.assertNotIn('"categoria": "Parlay Seguro"', scraper)
 

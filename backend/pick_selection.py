@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -28,6 +29,8 @@ SUPPORTED_SELECTIONS = {
     "spreads": frozenset({"home", "away"}),
 }
 MEXICO = ZoneInfo("America/Mexico_City")
+# Bound model-controlled output before persistence and notification fan-out.
+MAX_AI_RANKED_PICKS = 12
 
 
 def _required_text(value: object, field: str) -> str:
@@ -243,15 +246,16 @@ def build_candidates(events: Iterable[Event]) -> list[CandidatePick]:
 def _is_individually_valid(candidate: object) -> bool:
     if not isinstance(candidate, CandidatePick):
         return False
-    return candidate.candidate_id == _candidate_id(
-        candidate.source,
-        candidate.source_event_id,
-        candidate.bookmaker_key,
-        candidate.market_key,
-        candidate.period,
-        candidate.line,
-        candidate.selection_key,
-    )
+    try:
+        reconstructed = CandidatePick(
+            **{
+                field: getattr(candidate, field)
+                for field in CandidatePick.__dataclass_fields__
+            }
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return reconstructed == candidate
 
 
 def _normalized_competitor(value: str) -> str:
@@ -325,3 +329,71 @@ def build_same_day_parlay(
                 continue
             return first, second
     return None
+
+
+@dataclass(frozen=True, slots=True)
+class RankedPick:
+    """A model-supplied rationale bound to one verified catalog object."""
+
+    candidate: CandidatePick
+    rationale: str
+
+    def __post_init__(self) -> None:
+        if not _is_individually_valid(self.candidate):
+            raise ValueError("ranked candidate must be valid")
+        if not isinstance(self.rationale, str):
+            raise TypeError("rationale must be a string")
+        rationale = self.rationale.strip()
+        if len(rationale) < 10:
+            raise ValueError("rationale must contain at least 10 characters")
+        object.__setattr__(self, "rationale", rationale[:500])
+
+
+def validate_ai_ranking(
+    response: object,
+    candidates: Iterable[CandidatePick],
+) -> list[RankedPick]:
+    """Allow-list untrusted model rankings against an unambiguous catalog."""
+
+    if not isinstance(response, list):
+        return []
+
+    catalog: dict[str, CandidatePick] = {}
+    ambiguous_ids: set[str] = set()
+    for candidate in candidates:
+        if not _is_individually_valid(candidate):
+            continue
+        candidate_id = candidate.candidate_id
+        if candidate_id in ambiguous_ids:
+            continue
+        if candidate_id in catalog:
+            catalog.pop(candidate_id, None)
+            ambiguous_ids.add(candidate_id)
+        else:
+            catalog[candidate_id] = candidate
+
+    ranked: list[RankedPick] = []
+    seen: set[str] = set()
+    for item in response:
+        if not isinstance(item, Mapping):
+            continue
+        response_candidate_id = item.get("candidate_id")
+        rationale = item.get("rationale")
+        if (
+            not isinstance(response_candidate_id, str)
+            or not response_candidate_id
+            or response_candidate_id in seen
+            or response_candidate_id not in catalog
+            or not isinstance(rationale, str)
+        ):
+            continue
+        trimmed_rationale = rationale.strip()
+        if len(trimmed_rationale) < 10:
+            continue
+        seen.add(response_candidate_id)
+        ranked.append(
+            RankedPick(catalog[response_candidate_id], trimmed_rationale[:500])
+        )
+        if len(ranked) >= MAX_AI_RANKED_PICKS:
+            break
+    return ranked

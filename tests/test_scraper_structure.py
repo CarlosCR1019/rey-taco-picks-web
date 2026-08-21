@@ -29,9 +29,11 @@ def test_scraper_has_no_duplicate_top_level_functions():
     assert len(names) == len(set(names))
 
 
-def test_fallback_uses_only_named_moneylines_and_has_no_minimum_pick_fabrication():
+def test_phase6_has_no_deterministic_pick_fallback_or_minimum_fabrication():
     text = SCRAPER.read_text(encoding="utf-8")
-    assert "named_prices.get('home')" in text
+    assert "validate_ai_ranking" in text
+    assert "picks_fallback" not in text
+    assert "named_prices.get('home')" not in text
     assert "if len(picks_fallback) < 3" not in text
 
 

@@ -179,7 +179,9 @@ def test_totals_and_spreads_require_named_complete_opposing_selections():
     raw["markets"] = [
         {
             "key": "totals",
+            "title": "Total de goles",
             "period": "full_game",
+            "scope": "event",
             "line": "2.5",
             "outcomes": [
                 {"key": "under", "name": "Menos de 2.5", "line": "2.5", "price": "1.91"},
@@ -188,7 +190,9 @@ def test_totals_and_spreads_require_named_complete_opposing_selections():
         },
         {
             "key": "spreads",
+            "title": "Hándicap del partido",
             "period": "full_game",
+            "scope": "event",
             "line": "-1.5",
             "outcomes": [
                 {"key": "away", "name": "Tigres +1.5", "line": "1.5", "price": "1.95"},
@@ -225,7 +229,9 @@ def test_totals_reject_keys_that_contradict_the_named_selection():
     raw = fixture_event()
     raw["markets"] = [{
         "key": "totals",
+        "title": "Total de goles",
         "period": "full_game",
+        "scope": "event",
         "line": "2.5",
         "outcomes": [
             {"key": "over", "name": "Menos de 2.5", "line": "2.5", "price": "1.89"},
@@ -249,7 +255,9 @@ def test_only_supported_full_game_markets_are_kept():
             first_period,
             {
                 "key": "corners",
+                "title": "Tiros de esquina",
                 "period": "full_game",
+                "scope": "event",
                 "outcomes": [
                     {"key": "over", "name": "Más", "price": "1.80"}
                 ],
@@ -262,6 +270,32 @@ def test_only_supported_full_game_markets_are_kept():
     )
 
     assert [market.key for market in event.markets] == ["h2h"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("title", None),
+        ("period", None),
+        ("scope", None),
+        ("title", "Total de goles"),
+        ("title", "Total de goles de América"),
+        ("period", "first_half"),
+        ("scope", "team_total"),
+    ],
+)
+def test_raw_market_requires_explicit_matching_full_game_event_scope(field, value):
+    raw = fixture_event()
+    if value is None:
+        raw["markets"][0].pop(field)
+    else:
+        raw["markets"][0][field] = value
+
+    event = normalize_playdoit_event(
+        raw, datetime(2026, 8, 20, 10, tzinfo=MEXICO)
+    )
+
+    assert event.markets == ()
 
 
 def test_duplicate_market_quote_is_deduped_but_conflicting_quote_fails_closed():
@@ -367,11 +401,13 @@ class MarketDriver:
             self.active = args[0].removeprefix("tab-")
             return True
         if "playdoit:extract-visible-market" in script:
-            key, home, away = args
+            key, home, away = args[:3]
             if key == "h2h":
                 return [{
                     "key": "h2h",
+                    "title": "resultado final",
                     "period": "full_game",
+                    "scope": "event",
                     "outcomes": [
                         {"key": "home", "name": home, "price": "1.72"},
                         {"key": "draw", "name": "Empate", "price": "3.25"},
@@ -441,6 +477,48 @@ def test_one_market_dom_exception_is_isolated_from_sibling_markets():
     assert driver.discovery_calls >= 3
 
 
+class ActiveBeforeBoxesDriver(MarketDriver):
+    def __init__(self):
+        super().__init__(active="totals")
+        self.rendered = "totals"
+        self.pending_polls = 0
+
+    def execute_script(self, script, *args):
+        if "playdoit:discover-market-tabs" in script:
+            self.discovery_calls += 1
+            return [{"key": "h2h", "token": "tab-h2h"}]
+        if "playdoit:click-market-tab" in script:
+            self.active = "h2h"
+            self.pending_polls = 1
+            return True
+        if "playdoit:market-signature" in script:
+            if self.pending_polls == 1:
+                self.pending_polls = 2
+                return "market:totals"
+            if self.pending_polls == 2:
+                self.rendered = "h2h"
+                self.pending_polls = 0
+            return f"market:{self.rendered}"
+        if "playdoit:extract-visible-market" in script and self.rendered != args[0]:
+            return []
+        return super().execute_script(script, *args)
+
+
+def test_inactive_tab_waits_for_boxes_to_change_after_active_state_changes():
+    driver = ActiveBeforeBoxesDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "América",
+        "Tigres",
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+    )
+
+    assert [market["key"] for market in markets] == ["h2h"]
+    assert driver.rendered == "h2h"
+
+
 def test_market_extraction_passes_source_text_as_script_arguments():
     driver = MarketDriver()
 
@@ -460,7 +538,7 @@ def test_market_extraction_passes_source_text_as_script_arguments():
     ]
     assert source_calls
     assert all("América" not in script and "Tigres" not in script for script, _ in source_calls)
-    assert source_calls[0][1] == ("h2h", "América", "Tigres")
+    assert source_calls[0][1][:3] == ("h2h", "América", "Tigres")
 
 
 class EventDriver(MarketDriver):
@@ -516,6 +594,9 @@ def test_full_extraction_requires_id_date_time_and_never_synthesizes_defaults():
     assert records[0]["date_label"] == "21/08"
     assert records[0]["time_label"] == "20:00"
     assert records[0]["markets"][0]["key"] == "h2h"
+    assert records[0]["markets"][0]["title"] == "resultado final"
+    assert records[0]["markets"][0]["period"] == "full_game"
+    assert records[0]["markets"][0]["scope"] == "event"
     click_script, click_args = next(
         (script, args)
         for script, args in driver.calls
@@ -656,7 +737,9 @@ def test_projection_preserves_bookmaker_even_when_h2h_is_absent():
     raw = fixture_event()
     raw["markets"] = [{
         "key": "totals",
+        "title": "Total de goles",
         "period": "full_game",
+        "scope": "event",
         "line": "2.5",
         "outcomes": [
             {"key": "over", "name": "Más de 2.5", "line": "2.5", "price": "1.89"},
@@ -814,3 +897,7 @@ def test_dom_extractor_uses_only_vetted_event_ids_prices_and_full_game_titles():
     assert "team_total" in source
     assert "getAttribute('data-period') || 'full_game'" not in source
     assert "getAttribute('data-scope') || 'event'" not in source
+    assert "title: title" in source
+    assert "period: period" in source
+    assert "scope: scope" in source
+    assert "period: 'full_game'" not in source

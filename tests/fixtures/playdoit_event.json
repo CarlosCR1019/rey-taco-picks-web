@@ -9,7 +9,9 @@
   "markets": [
     {
       "key": "h2h",
+      "title": "Resultado final",
       "period": "full_game",
+      "scope": "event",
       "outcomes": [
         {"key": "away", "name": "Tigres", "price": "2.35"},
         {"key": "home", "name": "América", "price": "1.72"},

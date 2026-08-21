@@ -31,6 +31,10 @@ SUPPORTED_BOX_TITLES = {
     ),
 }
 UNSUPPORTED_MARKET_SCOPES = frozenset({"first_half", "team_total"})
+SUPPORTED_MARKET_PERIODS = frozenset(
+    {"full_game", "full game", "partido completo"}
+)
+SUPPORTED_MARKET_SCOPES = frozenset({"event", "match", "partido"})
 _DECIMAL = re.compile(r"(?:0|[1-9]\d*)(?:\.\d+)?\Z")
 _SIGNED_DECIMAL = re.compile(r"[+-]?(?:0|[1-9]\d*)(?:\.\d+)?\Z")
 _CALENDAR_DATE = re.compile(r"(\d{2})([/\-])(\d{2})\Z")
@@ -188,17 +192,13 @@ return boxes.map(function(box) { return (box.innerText || '').trim(); })
 _EXTRACT_VISIBLE_MARKET_SCRIPT = r"""
 /* playdoit:extract-visible-market */
 var marketKey = arguments[0], home = arguments[1], away = arguments[2];
+var supportedTitles = arguments[3], supportedPeriods = arguments[4], supportedScopes = arguments[5];
 var host = document.querySelector('div#altenar > div') ||
   document.querySelector('asb-sports-app, asb-app, altenar-app');
 if (!host || !host.shadowRoot) return [];
 var boxes = Array.from(host.shadowRoot.querySelectorAll(
   '[class*="MarketBox"], [class*="EventDetailsMarketBox"]'
 ));
-var SUPPORTED_BOX_TITLES = {
-  h2h: ['resultado final', 'ganador del partido', 'moneyline', '1x2'],
-  totals: ['total de goles', 'total de carreras', 'total de puntos'],
-  spreads: ['hándicap del partido', 'handicap del partido', 'línea de juego']
-};
 var decimal = /^\d+(?:\.\d+)?$/;
 var signed = /^[+-]?\d+(?:\.\d+)?$/;
 return boxes.map(function(box) {
@@ -206,9 +206,9 @@ return boxes.map(function(box) {
   var title = titleNode ? (titleNode.textContent || '').trim().toLocaleLowerCase() : '';
   var period = (box.getAttribute('data-period') || '').trim().toLocaleLowerCase();
   var scope = (box.getAttribute('data-scope') || '').trim().toLocaleLowerCase();
-  if (!(SUPPORTED_BOX_TITLES[marketKey] || []).includes(title)) return null;
-  if (!['full_game', 'full game', 'partido completo'].includes(period)) return null;
-  if (!['event', 'match', 'partido'].includes(scope)) return null;
+  if (!supportedTitles.includes(title)) return null;
+  if (!supportedPeriods.includes(period)) return null;
+  if (!supportedScopes.includes(scope)) return null;
   if (/primer|primera mitad|1st|equipo|team|local|visitante/.test(title)) return null;
   var buttons = Array.from(box.querySelectorAll(
     'button, [class*="OddBoxButton"], [class*="SelectionButton"]'
@@ -257,7 +257,13 @@ return boxes.map(function(box) {
     outcomes.push(outcome);
   });
   if (!outcomes.length) return null;
-  var result = {key: marketKey, period: 'full_game', outcomes: outcomes};
+  var result = {
+    key: marketKey,
+    title: title,
+    period: period,
+    scope: scope,
+    outcomes: outcomes
+  };
   if (marketLine !== null) result.line = marketLine;
   return result;
 }).filter(Boolean);
@@ -533,13 +539,19 @@ def _normalize_market(
     raw: Mapping[str, object], home: str, away: str, sport: str
 ) -> Market | None:
     key = raw.get("key")
-    period = raw.get("period")
     if not isinstance(key, str) or key.casefold() not in SUPPORTED_MARKETS:
-        return None
-    if not isinstance(period, str) or period.casefold() != "full_game":
         return None
     try:
         normalized_key = key.casefold()
+        title = _required_text(raw.get("title"), "market title").casefold()
+        period = _required_text(raw.get("period"), "market period").casefold()
+        scope = _required_text(raw.get("scope"), "market scope").casefold()
+        if title not in SUPPORTED_BOX_TITLES[normalized_key]:
+            return None
+        if period not in SUPPORTED_MARKET_PERIODS:
+            return None
+        if scope not in SUPPORTED_MARKET_SCOPES:
+            return None
         if normalized_key == "h2h":
             return _normalize_h2h(raw, home, away, sport)
         if normalized_key == "totals":
@@ -685,7 +697,13 @@ def extract_visible_markets(
     """Extract the active tab, passing all source text as script arguments."""
 
     raw = driver.execute_script(
-        _EXTRACT_VISIBLE_MARKET_SCRIPT, market_key, home, away
+        _EXTRACT_VISIBLE_MARKET_SCRIPT,
+        market_key,
+        home,
+        away,
+        sorted(SUPPORTED_BOX_TITLES[market_key]),
+        sorted(SUPPORTED_MARKET_PERIODS),
+        sorted(SUPPORTED_MARKET_SCOPES),
     )
     if not isinstance(raw, list):
         return []
@@ -720,8 +738,12 @@ def extract_supported_markets(
             token = tabs.get(market_key)
             if token is None:
                 continue
-            active = driver.execute_script(_IS_MARKET_TAB_ACTIVE_SCRIPT, token)
-            if active is not True:
+            was_active = driver.execute_script(
+                _IS_MARKET_TAB_ACTIVE_SCRIPT, token
+            ) is True
+            previous_signature = None
+            if not was_active:
+                previous_signature = market_signature(driver)
                 if driver.execute_script(_CLICK_MARKET_TAB_SCRIPT, token) is not True:
                     continue
             active_wait_factory(driver, timeout).until(
@@ -731,6 +753,10 @@ def extract_supported_markets(
                     and active.execute_script(
                         _IS_MARKET_TAB_ACTIVE_SCRIPT, token
                     ) is True
+                    and (
+                        was_active
+                        or signature != previous_signature
+                    )
                     else False
                 )
             )

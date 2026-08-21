@@ -37,13 +37,15 @@ def _event(**overrides: object) -> Event:
 
 def test_market_looks_up_named_outcomes_without_using_position():
     market = Market(
-        key="h2h",
-        period="full_game",
+        key=" H2H ",
+        period=" FULL_GAME ",
         line=None,
-        outcomes=(Outcome("away", "Tigres", 2.40), Outcome("home", "América", 1.70)),
+        outcomes=(Outcome(" AWAY ", "Tigres", 2.40), Outcome(" HOME ", "América", 1.70)),
     )
 
-    assert market.outcome("home").price == 1.70
+    assert market.key == "h2h"
+    assert market.period == "full_game"
+    assert market.outcome(" HoMe ").price == 1.70
 
 
 def test_market_outcome_reports_the_missing_key_clearly():
@@ -76,7 +78,7 @@ def test_outcome_requires_nonempty_text_fields(field: str):
 
 
 def test_outcome_trims_canonical_text_fields():
-    outcome = Outcome(" home ", " América ", 1.70)
+    outcome = Outcome(" HOME ", " América ", 1.70)
 
     assert outcome.key == "home"
     assert outcome.name == "América"
@@ -89,10 +91,45 @@ def test_market_rejects_invalid_lines(line: object):
 
 
 def test_market_accepts_negative_lines_without_artificial_bounds():
-    market = Market("spread", "full_game", -12, (_outcome(),))
+    market = Market(
+        "spreads",
+        "full_game",
+        -12,
+        (_outcome(), _outcome("away", "Tigres", 1.70)),
+    )
 
     assert market.line == -12.0
     assert type(market.line) is float
+
+
+@pytest.mark.parametrize(
+    ("key", "outcomes"),
+    [
+        ("totals", (Outcome("over", "Más de 2.5", 1.90), Outcome("under", "Menos de 2.5", 1.90))),
+        ("spreads", (Outcome("home", "América -0", 1.90), Outcome("away", "Tigres +0", 1.90))),
+    ],
+)
+def test_canonical_line_markets_require_a_finite_line_but_allow_zero(
+    key: str, outcomes: tuple[Outcome, ...]
+):
+    with pytest.raises(ValueError, match="line"):
+        Market(key, "full_game", None, outcomes)
+
+    assert Market(key.upper(), "full_game", 0, outcomes).line == 0.0
+
+
+@pytest.mark.parametrize(
+    ("key", "outcomes", "required"),
+    [
+        ("totals", (Outcome("over", "Más de 2.5", 1.90),), "over.*under"),
+        ("spreads", (Outcome("home", "América -1.5", 1.90),), "home.*away"),
+    ],
+)
+def test_canonical_line_markets_require_both_sides(
+    key: str, outcomes: tuple[Outcome, ...], required: str
+):
+    with pytest.raises(ValueError, match=required):
+        Market(key, "full_game", 2.5, outcomes)
 
 
 def test_market_requires_a_nonempty_tuple_of_typed_unique_outcomes():
@@ -103,7 +140,12 @@ def test_market_requires_a_nonempty_tuple_of_typed_unique_outcomes():
     with pytest.raises(TypeError, match="Outcome"):
         Market("h2h", "full_game", None, (object(),))  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="unique"):
-        Market("h2h", "full_game", None, (_outcome(), _outcome(name="Club América")))
+        Market(
+            "h2h",
+            "full_game",
+            None,
+            (_outcome("home"), _outcome(" HOME ", "Club América")),
+        )
 
 
 @pytest.mark.parametrize("field", ["key", "period"])

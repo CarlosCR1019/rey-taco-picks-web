@@ -23,6 +23,10 @@ def _required_text(value: object, field: str) -> str:
     return normalized
 
 
+def _canonical_key(value: object, field: str) -> str:
+    return _required_text(value, field).casefold()
+
+
 def _finite_float(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
         raise TypeError(f"{field} must be numeric")
@@ -52,12 +56,14 @@ def _validate_aware_datetime(value: object, field: str) -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class Outcome:
+    """A named quote whose key is whitespace-trimmed and case-insensitive."""
+
     key: str
     name: str
     price: float
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "key", _required_text(self.key, "key"))
+        object.__setattr__(self, "key", _canonical_key(self.key, "key"))
         object.__setattr__(self, "name", _required_text(self.name, "name"))
         price = _finite_float(self.price, "price")
         if not 1.01 <= price <= 50.0:
@@ -67,14 +73,23 @@ class Outcome:
 
 @dataclass(frozen=True, slots=True)
 class Market:
+    """A canonical market and its observed outcomes.
+
+    ``totals`` uses ``line`` as the shared over/under threshold and must carry
+    at least ``over`` and ``under`` outcomes. ``spreads`` uses ``line`` as the
+    home handicap; adapters validate that the away handicap is its arithmetic
+    negation, and the market must carry at least ``home`` and ``away``. A zero
+    line is valid for both. Other market keys may omit a line.
+    """
+
     key: str
     period: str
     line: float | None
     outcomes: tuple[Outcome, ...]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "key", _required_text(self.key, "key"))
-        object.__setattr__(self, "period", _required_text(self.period, "period"))
+        object.__setattr__(self, "key", _canonical_key(self.key, "key"))
+        object.__setattr__(self, "period", _canonical_key(self.period, "period"))
         if self.line is not None:
             object.__setattr__(self, "line", _finite_float(self.line, "line"))
         if not isinstance(self.outcomes, tuple):
@@ -87,8 +102,21 @@ class Market:
         if len(keys) != len(set(keys)):
             raise ValueError("outcome keys must be unique within a market")
 
+        required_outcomes = {
+            "totals": ("over", "under"),
+            "spreads": ("home", "away"),
+        }
+        required = required_outcomes.get(self.key)
+        if required is not None:
+            if self.line is None:
+                raise ValueError(f"{self.key} line is required")
+            missing = set(required).difference(keys)
+            if missing:
+                expected = " and ".join(required)
+                raise ValueError(f"{self.key} outcomes must include {expected}")
+
     def outcome(self, key: str) -> Outcome:
-        normalized_key = _required_text(key, "outcome key")
+        normalized_key = _canonical_key(key, "outcome key")
         for outcome in self.outcomes:
             if outcome.key == normalized_key:
                 return outcome

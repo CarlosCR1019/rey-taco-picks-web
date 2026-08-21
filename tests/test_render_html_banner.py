@@ -22,7 +22,8 @@ def _pick(*, has_value: bool) -> dict[str, object]:
 def test_limited_data_banner_does_not_claim_value():
     html = build_cards_html([_pick(has_value=False)])
 
-    assert "65% respaldo de datos" in html
+    assert "Respaldo de datos: 65%" in html
+    assert "Respaldo de datos: 65% respaldo de datos" not in html
     assert "Datos limitados" in html
     assert "Señal de valor" not in html
     assert "+EV" not in html

@@ -7,14 +7,9 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from datetime import datetime
 
+from backend.evidence_messaging import format_evidence_support
+
 sys.stdout.reconfigure(encoding='utf-8')
-
-
-def _data_support_text(value):
-    text = str(value or "Datos no disponibles").strip()
-    if "respaldo de datos" in text.casefold():
-        return text
-    return f"{text} respaldo de datos" if text.endswith("%") else text
 
 
 def build_cards_html(picks):
@@ -38,7 +33,7 @@ def build_cards_html(picks):
         selection = escape(str(pick.get("pick", "Selección")))
         price = escape(str(pick.get("cuota", "—")))
         schedule = escape(str(pick.get("horario", "Por confirmar")))
-        support = escape(_data_support_text(pick.get("confianza")))
+        support = escape(format_evidence_support(pick.get("confianza")))
         evidence_label = escape(str(pick.get("riesgo", "Datos limitados")))
         value_signal = (
             '<span class="value-signal">Señal de valor comparada</span>'

@@ -8,6 +8,7 @@ import time
 from typing import Callable, Iterable, Literal, Mapping, Protocol
 import urllib.request
 
+from backend.evidence_messaging import format_evidence_support
 from backend.publishing_policy import public_payload
 
 
@@ -177,6 +178,7 @@ def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> st
     selection = _field(pick, ("pick",), "Pick no especificado", 800)
     price = _field(pick, ("cuota", "price", "odds"), "No especificado", 300)
     confidence = _field(pick, ("confianza", "confidence"), "No especificada", 300)
+    support = format_evidence_support(confidence)
 
     lines = [f"Evento: {event}"]
     if schedule:
@@ -185,7 +187,7 @@ def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> st
         [
             f"Pick: {selection}",
             f"Precio: {price}",
-            f"Respaldo de datos: {confidence}",
+            support,
         ]
     )
     notice = (

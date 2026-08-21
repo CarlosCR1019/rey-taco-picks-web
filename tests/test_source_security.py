@@ -81,6 +81,7 @@ class SourceSecurityTests(unittest.TestCase):
             "backend/temp_banner.html",
             "backend/social_banner.py",
             "backend/social_poster.py",
+            "send_telegram_status_report.py",
         ):
             with self.subTest(relative=relative):
                 contents = (ROOT / relative).read_text(encoding="utf-8")
@@ -88,7 +89,7 @@ class SourceSecurityTests(unittest.TestCase):
         social_banner = (ROOT / "backend/social_banner.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("Respaldo de datos:", social_banner)
+        self.assertIn("format_evidence_support", social_banner)
         self.assertNotIn(" Confianza", social_banner)
 
     def test_live_tracker_cannot_grade_or_finalize_picks(self):

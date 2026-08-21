@@ -19,7 +19,7 @@ def pick(**overrides):
         "horario": "2026-08-21 20:00",
         "pick": "Lobos +0.5",
         "cuota": "+110",
-        "confianza": "72%",
+        "confianza": "65% respaldo de datos",
         "razonamiento": "La línea ofrece valor según la forma reciente.",
         "visibility": "premium",
     }
@@ -60,7 +60,8 @@ class TelegramPublisherTests(unittest.TestCase):
     def test_pick_block_labels_score_as_data_support_not_confidence(self):
         message = chunk_messages([pick()])[0]
 
-        self.assertIn("Respaldo de datos: 72%", message)
+        self.assertIn("Respaldo de datos: 65%", message)
+        self.assertNotIn("Respaldo de datos: 65% respaldo de datos", message)
         self.assertNotIn("Confianza:", message)
 
     def test_chunks_are_bounded_and_overlong_rationale_is_truncated_as_one_block(self):

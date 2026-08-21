@@ -6,6 +6,8 @@ import urllib.request
 import urllib.parse
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
+from backend.evidence_messaging import format_evidence_support
+
 sys.stdout.reconfigure(encoding='utf-8')
 
 def descargar_fondo_ia(prompt=None):
@@ -120,7 +122,7 @@ def generar_banner_redes(picks=None, output_path="banner_hoy.png", usar_ia=True)
         
         # Respaldo observable de datos (no probabilidad de ganar)
         conf = p.get('confianza', 'Datos no disponibles')
-        draw.text((card_x + card_width - 35, cy + 25), f"Respaldo de datos: {conf}", fill="#22C55E", font=font_card_meta, anchor="ra")
+        draw.text((card_x + card_width - 35, cy + 25), format_evidence_support(conf), fill="#22C55E", font=font_card_meta, anchor="ra")
 
         # Partido
         partido = p.get('partido', 'Partido Destacado')

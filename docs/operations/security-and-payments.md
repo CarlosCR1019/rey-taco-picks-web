@@ -35,6 +35,36 @@ The Supabase anonymous key is public by design. VIP secrecy depends on deploying
 
 ## Controlled scraper rollout
 
+### Verified market scope
+
+The structured pipeline supports only markets for which it can preserve the
+source event, market, selection, observation time, bookmaker, and exact decimal
+price from collection through publication:
+
+- Full-game moneyline/H2H.
+- Full-game totals.
+- Full-game spreads, including baseball run lines.
+- Same-day parlays assembled only from individually verified legs whose
+  physical events are distinct and not correlated by the pipeline rules.
+
+The pipeline rejects partial periods, halves, quarters, unsupported player
+props, incomplete corner markets, ambiguous team totals, and every other market
+without a dedicated normalizer, validator, and result grader. Missing or
+ambiguous evidence must produce no candidate; it must never be replaced with a
+synthetic selection or price.
+
+`confianza` is displayed as **Respaldo de datos**. It is a bounded operational
+score derived from source agreement, price dispersion, freshness, and market
+completeness; it is not a probability of winning. `tiene_valor` indicates only
+that a qualifying comparison between independent source/bookmaker quotes exists.
+It does not claim positive expected value or guarantee profit.
+
+The repository contains the schema-v2/source-audit migration, but it is still
+pending on the real target until an operator confirms the linked Supabase
+project and backup and applies it there. No SQL in these migration files was
+executed against a local or remote database as part of this implementation and
+verification work.
+
 ### Current state and hard stops
 
 This documentation task did **not** apply any migration to a remote Supabase
@@ -108,13 +138,20 @@ supabase migration list
 supabase db push --dry-run
 ```
 
-The pending set must include
-`supabase/migrations/20260820233000_scraper_run_ledger.sql`; it creates the run
-ledger, atomic publisher, delivery recorder, and read-only schema preflight. The
-earlier secure-membership migration that creates/protects `public_picks` must
-also be applied in order. `supabase db push` applies every pending migration, not
-just the named file. Only after reviewing that set, confirming the linked project
-and backup, and verifying the production service-role key, apply it:
+The pending set must include, in this order:
+
+1. `supabase/migrations/20260820220000_secure_membership.sql`, which creates and
+   protects `public_picks` and membership data.
+2. `supabase/migrations/20260820233000_scraper_run_ledger.sql`, which creates the
+   run ledger, atomic publisher, delivery recorder, and the intermediate
+   fail-closed schema probe.
+3. `supabase/migrations/20260820234500_pick_source_audit.sql`, which adds the
+   immutable source-audit fields, replaces the publisher contract, and promotes
+   `scraper_schema_status()` to schema version `2` with `source_audit = true`.
+
+`supabase db push` applies every pending migration, not just a named file. Only
+after reviewing that complete set, confirming the linked project and backup, and
+verifying the production service-role key, apply it:
 
 ```powershell
 supabase db push
@@ -136,15 +173,26 @@ all Telegram requests:
 python backend/scraper.py --dry-run
 ```
 
-Exit `0` means that at least one event and one verified candidate were found. A
-non-zero result is a stop condition; interpret it using the exit-code table
-below. Because sources are live, no events/candidates is an honest failed smoke
-test, not permission to publish old picks.
+On a successful source pass the summary has this exact shape (counts vary with
+live data):
+
+```text
+dry_run=true events=<normalized-events> candidates=<verified-picks> persistence=skipped telegram=skipped
+```
+
+Exit `0` means that at least one normalized event and one verified candidate
+were found. Exit `3` (`NO_EVENTS`) or `4` (`NO_CANDIDATES`) is an honest
+fail-closed live-data result and must not be converted into a fallback pick. Any
+other non-zero result is a configuration, dependency, external-service, or
+unexpected failure to investigate using sanitized logs. In every case, compare
+the tracked hashes/status of `frontend/public/picks.json` and `dist/picks.json`
+before and after the smoke: dry-run must leave both unchanged and must report no
+persistence or Telegram delivery.
 
 Run the complete local gate from the repository root:
 
 ```powershell
-python -m pyflakes backend/scraper.py backend/scraper_config.py backend/pick_publisher.py backend/telegram_publisher.py
+python -m pyflakes backend/scraper.py backend/scraper_domain.py backend/playdoit_source.py backend/odds_source.py backend/pick_selection.py backend/pick_publisher.py backend/telegram_publisher.py
 python -m pytest tests -q
 npm --prefix frontend test
 npm --prefix frontend run typecheck
@@ -338,7 +386,7 @@ On any invariant, privacy, persistence, verifier, or delivery failure:
 ## Local verification
 
 ```powershell
-python -m pyflakes backend/scraper.py backend/scraper_config.py backend/pick_publisher.py backend/telegram_publisher.py
+python -m pyflakes backend/scraper.py backend/scraper_domain.py backend/playdoit_source.py backend/odds_source.py backend/pick_selection.py backend/pick_publisher.py backend/telegram_publisher.py
 python -m pytest tests -q
 npm --prefix frontend test
 npm --prefix frontend run typecheck

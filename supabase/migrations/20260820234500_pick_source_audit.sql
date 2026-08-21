@@ -8,6 +8,56 @@ alter table public.picks
     add column if not exists source_observed_at timestamptz,
     add column if not exists source_audit_version smallint;
 
+-- Existing rows predate the audit contract. Keep settled history intact, but
+-- fail closed for any unaudited pending row that could still be displayed.
+update public.pick_batches as legacy_batches
+set active = false
+where legacy_batches.active
+  and exists (
+      select 1
+      from public.picks as legacy_picks
+      where legacy_picks.batch_id = legacy_batches.id
+        and legacy_picks.active
+        and (
+            nullif(btrim(legacy_picks.source), '') is null
+            or nullif(btrim(legacy_picks.source_event_id), '') is null
+            or nullif(btrim(legacy_picks.source_market_key), '') is null
+            or nullif(btrim(legacy_picks.source_selection_key), '') is null
+            or legacy_picks.source_observed_at is null
+            or length(btrim(legacy_picks.source)) not between 1 and 100
+            or length(btrim(legacy_picks.source_event_id)) not between 1 and 500
+            or length(btrim(legacy_picks.source_market_key)) not between 1 and 1000
+            or length(btrim(legacy_picks.source_selection_key)) not between 1 and 500
+            or legacy_picks.source_observed_at > now()
+        )
+  );
+
+update public.picks as legacy_picks
+set active = false,
+    visibility = case
+        when legacy_picks.estado = 'pendiente' then 'premium'
+        else legacy_picks.visibility
+    end
+where (
+        legacy_picks.active
+        or (
+            legacy_picks.estado = 'pendiente'
+            and legacy_picks.visibility = 'public'
+        )
+    )
+  and (
+      nullif(btrim(legacy_picks.source), '') is null
+      or nullif(btrim(legacy_picks.source_event_id), '') is null
+      or nullif(btrim(legacy_picks.source_market_key), '') is null
+      or nullif(btrim(legacy_picks.source_selection_key), '') is null
+      or legacy_picks.source_observed_at is null
+      or length(btrim(legacy_picks.source)) not between 1 and 100
+      or length(btrim(legacy_picks.source_event_id)) not between 1 and 500
+      or length(btrim(legacy_picks.source_market_key)) not between 1 and 1000
+      or length(btrim(legacy_picks.source_selection_key)) not between 1 and 500
+      or legacy_picks.source_observed_at > now()
+  );
+
 alter table public.picks
     alter column source_audit_version set default 1;
 
@@ -47,6 +97,9 @@ language plpgsql
 set search_path = public, pg_temp
 as $$
 begin
+    if new.visibility = 'public' then
+        new.razonamiento := null;
+    end if;
     if tg_op = 'INSERT' then
         new.source_audit_version := 1;
     elsif old.source_audit_version = 1 then
@@ -104,6 +157,106 @@ begin
 end
 $$;
 
+do $$
+declare
+    definitions_match boolean;
+begin
+    if exists (
+        select 1
+        from pg_constraint
+        where conrelid = 'public.picks'::regclass
+          and conname = 'picks_source_audit_expected_20260820234500_check'
+    ) then
+        raise exception 'temporary source audit definition constraint already exists';
+    end if;
+
+    -- Compare PostgreSQL's parsed expression trees, not formatted SQL text.
+    -- This rejects a homonymous constraint with an extra TRUE/NULL bypass.
+    alter table public.picks
+        add constraint picks_source_audit_expected_20260820234500_check
+        check (
+            source_audit_version is null
+            or (
+                source_audit_version = 1
+                and source is not null
+                and source_event_id is not null
+                and source_market_key is not null
+                and source_selection_key is not null
+                and source_observed_at is not null
+                and length(btrim(source)) between 1 and 100
+                and length(btrim(source_event_id)) between 1 and 500
+                and length(btrim(source_market_key)) between 1 and 1000
+                and length(btrim(source_selection_key)) between 1 and 500
+            )
+        ) not valid;
+
+    select installed_audit_constraint.conbin::text =
+           expected_audit_constraint.conbin::text
+    into definitions_match
+    from pg_constraint as installed_audit_constraint
+    join pg_constraint as expected_audit_constraint
+      on expected_audit_constraint.conrelid = installed_audit_constraint.conrelid
+     and expected_audit_constraint.conname =
+         'picks_source_audit_expected_20260820234500_check'
+    where installed_audit_constraint.conrelid = 'public.picks'::regclass
+      and installed_audit_constraint.contype = 'c'
+      and installed_audit_constraint.conname = 'picks_source_audit_complete_check';
+
+    alter table public.picks
+        drop constraint picks_source_audit_expected_20260820234500_check;
+
+    if not exists (
+        select 1
+        from pg_constraint as installed_audit_constraint
+        where installed_audit_constraint.conrelid = 'public.picks'::regclass
+          and installed_audit_constraint.contype = 'c'
+          and installed_audit_constraint.conname = 'picks_source_audit_complete_check'
+          and position(
+              'source_audit_version is null'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'source_audit_version = 1'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'source is not null'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'source_event_id is not null'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'source_market_key is not null'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'source_selection_key is not null'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'source_observed_at is not null'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'length(btrim(source)) >= 1'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'length(btrim(source)) <= 100'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+    ) or definitions_match is distinct from true then
+        raise exception 'picks_source_audit_complete_check has unexpected definition';
+    end if;
+end
+$$;
+
+-- CREATE OR REPLACE VIEW cannot remove an existing output column during an
+-- upgrade, so replace the legacy view transactionally before dropping rationale.
+drop view if exists public.public_picks;
+
 create or replace view public.public_picks
 with (security_invoker = true)
 as
@@ -114,7 +267,6 @@ select
     pick,
     cuota,
     confianza,
-    razonamiento,
     fecha_generacion,
     fecha_evento,
     horario,
@@ -133,6 +285,11 @@ select
     source_observed_at
 from public.picks
 where visibility = 'public';
+
+revoke all on public.public_picks from public, anon, authenticated;
+grant select on public.public_picks to anon, authenticated;
+
+alter table public.picks enable row level security;
 
 -- Replace the RPC after the columns exist so upgrades and fresh installations
 -- both deserialize and insert the same complete source-audit contract.
@@ -315,7 +472,10 @@ begin
         (requested_rows.populated).pick,
         (requested_rows.populated).cuota,
         (requested_rows.populated).confianza,
-        (requested_rows.populated).razonamiento,
+        case
+            when (requested_rows.populated).visibility = 'public' then null
+            else (requested_rows.populated).razonamiento
+        end,
         (requested_rows.populated).marcador,
         'pendiente',
         coalesce((requested_rows.populated).es_parlay, false),
@@ -366,39 +526,142 @@ set search_path = public, pg_temp
 as $$
     select jsonb_build_object(
         'version', 2,
-        'public_picks', to_regclass('public.public_picks') is not null,
+        'public_picks',
+            exists (
+                select 1
+                from pg_class as public_view
+                join pg_namespace as public_view_schema
+                  on public_view_schema.oid = public_view.relnamespace
+                where public_view_schema.nspname = 'public'
+                  and public_view.relname = 'public_picks'
+                  and public_view.relkind = 'v'
+                  and coalesce(public_view.reloptions, '{}'::text[])
+                      @> array['security_invoker=true']
+                  and position(
+                      'visibility = ''public'''
+                      in lower(pg_get_viewdef(public_view.oid, true))
+                  ) > 0
+                  and position(
+                      ' or '
+                      in lower(pg_get_viewdef(public_view.oid, true))
+                  ) = 0
+                  and position(
+                      ' union '
+                      in lower(pg_get_viewdef(public_view.oid, true))
+                  ) = 0
+                  and position(
+                      'razonamiento'
+                      in lower(pg_get_viewdef(public_view.oid, true))
+                  ) = 0
+            )
+            and has_table_privilege(
+                'anon', 'public.public_picks', 'SELECT'
+            )
+            and has_table_privilege(
+                'authenticated', 'public.public_picks', 'SELECT'
+            ),
         'publish_pick_batch',
-            to_regprocedure('public.publish_pick_batch(text,text,jsonb)') is not null,
+            exists (
+                select 1
+                from pg_proc as publish_rpc
+                join pg_namespace as publish_schema
+                  on publish_schema.oid = publish_rpc.pronamespace
+                join pg_language as publish_language
+                  on publish_language.oid = publish_rpc.prolang
+                where publish_rpc.oid = to_regprocedure(
+                    'public.publish_pick_batch(text,text,jsonb)'
+                )
+                  and publish_schema.nspname = 'public'
+                  and publish_rpc.prosecdef
+                  and publish_rpc.prorettype = 'jsonb'::regtype
+                  and publish_language.lanname = 'plpgsql'
+                  and coalesce(publish_rpc.proconfig, '{}'::text[])
+                      @> array['search_path=public, pg_temp']
+                  and not exists (
+                      select 1
+                      from aclexplode(
+                          coalesce(
+                              publish_rpc.proacl,
+                              acldefault('f', publish_rpc.proowner)
+                          )
+                      ) as publish_acl
+                      left join pg_roles as publish_role
+                        on publish_role.oid = publish_acl.grantee
+                      where publish_acl.privilege_type = 'EXECUTE'
+                        and (
+                            publish_acl.grantee = 0
+                            or publish_role.rolname in (
+                                'anon', 'authenticated'
+                            )
+                        )
+                  )
+                  and exists (
+                      select 1
+                      from aclexplode(
+                          coalesce(
+                              publish_rpc.proacl,
+                              acldefault('f', publish_rpc.proowner)
+                          )
+                      ) as service_acl
+                      join pg_roles as service_role
+                        on service_role.oid = service_acl.grantee
+                      where service_acl.privilege_type = 'EXECUTE'
+                        and service_role.rolname = 'service_role'
+                  )
+                  and position(
+                      'pg_advisory_xact_lock'
+                      in lower(pg_get_functiondef(publish_rpc.oid))
+                  ) > 0
+                  and position(
+                      'source_observed_at'
+                      in lower(pg_get_functiondef(publish_rpc.oid))
+                  ) > 0
+                  and position(
+                      'visibility = ''public'' then null'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(publish_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
+                      'insert into public.picks'
+                      in lower(pg_get_functiondef(publish_rpc.oid))
+                  ) > 0
+            ),
         'source_audit',
             exists (
                 select 1 from information_schema.columns
                 where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source'
+                  and column_name = 'source' and data_type = 'text'
             )
             and exists (
                 select 1 from information_schema.columns
                 where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source_event_id'
+                  and column_name = 'source_event_id' and data_type = 'text'
             )
             and exists (
                 select 1 from information_schema.columns
                 where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source_market_key'
+                  and column_name = 'source_market_key' and data_type = 'text'
             )
             and exists (
                 select 1 from information_schema.columns
                 where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source_selection_key'
+                  and column_name = 'source_selection_key' and data_type = 'text'
             )
             and exists (
                 select 1 from information_schema.columns
                 where table_schema = 'public' and table_name = 'picks'
                   and column_name = 'source_observed_at'
+                  and data_type = 'timestamp with time zone'
             )
             and exists (
                 select 1 from information_schema.columns
                 where table_schema = 'public' and table_name = 'picks'
                   and column_name = 'source_audit_version'
+                  and data_type = 'smallint'
             )
             and exists (
                 select 1
@@ -455,6 +718,14 @@ as $$
                       'new.source_observed_at is distinct from old.source_observed_at'
                       in lower(pg_get_functiondef(audit_trigger.tgfoid))
                   ) > 0
+                  and position(
+                      'new.visibility = ''public'''
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'new.razonamiento := null'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
             )
             and exists (
                 select 1
@@ -490,6 +761,103 @@ as $$
                       'source_observed_at is not null'
                       in lower(pg_get_constraintdef(audit_constraint.oid))
                   ) > 0
+            )
+            and exists (
+                select 1
+                from pg_class as picks_table
+                join pg_namespace as picks_schema
+                  on picks_schema.oid = picks_table.relnamespace
+                where picks_schema.nspname = 'public'
+                  and picks_table.relname = 'picks'
+                  and picks_table.relkind = 'r'
+                  and picks_table.relrowsecurity
+            )
+            and exists (
+                select 1
+                from pg_policies
+                where schemaname = 'public'
+                  and tablename = 'picks'
+                  and policyname = 'picks_public_read'
+                  and cmd = 'SELECT'
+                  and 'anon' = any(roles)
+                  and position('active' in lower(qual)) > 0
+                  and position('visibility' in lower(qual)) > 0
+            )
+            and exists (
+                select 1
+                from pg_policies
+                where schemaname = 'public'
+                  and tablename = 'picks'
+                  and policyname = 'picks_member_read'
+                  and cmd = 'SELECT'
+                  and 'authenticated' = any(roles)
+                  and position('active' in lower(qual)) > 0
+                  and position('is_active_subscriber' in lower(qual)) > 0
+            )
+            and exists (
+                select 1
+                from pg_policies
+                where schemaname = 'public'
+                  and tablename = 'picks'
+                  and policyname = 'picks_admin_select'
+                  and cmd = 'SELECT'
+                  and 'authenticated' = any(roles)
+                  and position('is_admin' in lower(qual)) > 0
+            )
+            and exists (
+                select 1
+                from pg_policies
+                where schemaname = 'public'
+                  and tablename = 'picks'
+                  and policyname = 'picks_admin_insert'
+                  and cmd = 'INSERT'
+                  and 'authenticated' = any(roles)
+                  and position('is_admin' in lower(with_check)) > 0
+            )
+            and exists (
+                select 1
+                from pg_policies
+                where schemaname = 'public'
+                  and tablename = 'picks'
+                  and policyname = 'picks_admin_update'
+                  and cmd = 'UPDATE'
+                  and 'authenticated' = any(roles)
+                  and position('is_admin' in lower(qual)) > 0
+                  and position('is_admin' in lower(with_check)) > 0
+            )
+            and exists (
+                select 1
+                from pg_policies
+                where schemaname = 'public'
+                  and tablename = 'picks'
+                  and policyname = 'picks_admin_delete'
+                  and cmd = 'DELETE'
+                  and 'authenticated' = any(roles)
+                  and position('is_admin' in lower(qual)) > 0
+            )
+            and (
+                select count(*)
+                from pg_class as ledger_table
+                join pg_namespace as ledger_schema
+                  on ledger_schema.oid = ledger_table.relnamespace
+                where ledger_schema.nspname = 'public'
+                  and ledger_table.relname in (
+                      'scraper_runs', 'pick_batches'
+                  )
+                  and ledger_table.relkind = 'r'
+                  and ledger_table.relrowsecurity
+            ) = 2
+            and not has_table_privilege(
+                'anon', 'public.scraper_runs', 'SELECT'
+            )
+            and not has_table_privilege(
+                'authenticated', 'public.scraper_runs', 'SELECT'
+            )
+            and not has_table_privilege(
+                'anon', 'public.pick_batches', 'SELECT'
+            )
+            and not has_table_privilege(
+                'authenticated', 'public.pick_batches', 'SELECT'
             )
     );
 $$;

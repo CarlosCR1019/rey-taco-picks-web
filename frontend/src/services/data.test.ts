@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { chooseFreePick, escapeHtml, loadHistory, loadPublicPicks, normalizePick } from './data';
+import {
+  chooseFreePick,
+  escapeHtml,
+  LEGACY_PUBLIC_PICK_FIELDS,
+  loadHistory,
+  loadPublicPicks,
+  normalizePick,
+  PUBLIC_PICK_FIELDS,
+} from './data';
 
 const rows = [
   { id: 1, categoria: 'MLB', partido: 'A vs B', pick: 'Más de 8.5', cuota: '1.90', estado: 'pendiente', es_parlay: true },
@@ -66,5 +74,10 @@ describe('public pick data', () => {
 
     expect(await loadPublicPicks(client)).toEqual([]);
     expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it('never requests private reasoning from a public relation', () => {
+    expect(PUBLIC_PICK_FIELDS.split(',')).not.toContain('razonamiento');
+    expect(LEGACY_PUBLIC_PICK_FIELDS.split(',')).not.toContain('razonamiento');
   });
 });

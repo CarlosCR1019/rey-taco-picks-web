@@ -56,7 +56,6 @@ select
     pick,
     cuota,
     confianza,
-    razonamiento,
     fecha_generacion,
     fecha_evento,
     horario,
@@ -259,7 +258,10 @@ begin
         (requested_rows.populated).pick,
         (requested_rows.populated).cuota,
         (requested_rows.populated).confianza,
-        (requested_rows.populated).razonamiento,
+        case
+            when (requested_rows.populated).visibility = 'public' then null
+            else (requested_rows.populated).razonamiento
+        end,
         (requested_rows.populated).marcador,
         'pendiente',
         coalesce((requested_rows.populated).es_parlay, false),

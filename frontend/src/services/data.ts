@@ -47,11 +47,11 @@ export function chooseFreePick(rows: Array<Record<string, unknown>>): PickRow[] 
   return row ? [{ ...normalizePick(row), visibility: 'public' }] : [];
 }
 
-const SAFE_FIELDS = 'id,categoria,partido,pick,cuota,confianza,razonamiento,fecha_generacion,fecha_evento,horario,estado,es_parlay,visibility';
-const LEGACY_SAFE_FIELDS = 'id,categoria,partido,pick,cuota,confianza,razonamiento,fecha_generacion,estado,es_parlay';
+export const PUBLIC_PICK_FIELDS = 'id,categoria,partido,pick,cuota,confianza,fecha_generacion,fecha_evento,horario,estado,es_parlay,visibility';
+export const LEGACY_PUBLIC_PICK_FIELDS = 'id,categoria,partido,pick,cuota,confianza,fecha_generacion,estado,es_parlay';
 
 export async function loadPublicPicks(client: SupabaseClient): Promise<PickRow[]> {
-  const response = await client.from('public_picks').select(SAFE_FIELDS).eq('estado', 'pendiente').order('id', { ascending: false }).limit(1);
+  const response = await client.from('public_picks').select(PUBLIC_PICK_FIELDS).eq('estado', 'pendiente').order('id', { ascending: false }).limit(1);
   if (!response.error) return (response.data ?? []).map(normalizePick);
 
   return loadLocalPublicPicks();
@@ -66,13 +66,13 @@ export async function loadLocalPublicPicks(): Promise<PickRow[]> {
 
 export async function loadHistory(client: SupabaseClient): Promise<PickRow[]> {
   const response = await client.from('public_picks')
-    .select(SAFE_FIELDS)
+    .select(PUBLIC_PICK_FIELDS)
     .in('estado', ['ganado', 'perdido', 'pendiente', 'void', 'revision_pendiente'])
     .order('id', { ascending: false });
   if (!response.error) return (response.data ?? []).map(normalizePick);
 
   const legacy = await client.from('picks')
-    .select(LEGACY_SAFE_FIELDS)
+    .select(LEGACY_PUBLIC_PICK_FIELDS)
     .in('estado', ['ganado', 'perdido', 'void', 'revision_pendiente'])
     .order('id', { ascending: false });
   return legacy.error ? [] : (legacy.data ?? []).map(normalizePick);

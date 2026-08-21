@@ -458,6 +458,140 @@ class SupabaseContractTests(unittest.TestCase):
                 )
             )
 
+    def test_source_audit_upgrade_hides_active_unaudited_legacy_rows_before_v2(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        batch_demotion = text.index("update public.pick_batches as legacy_batches")
+        pick_demotion = text.index("update public.picks as legacy_picks")
+        version_default = text.index("alter column source_audit_version set default 1")
+        probe = text.index("create or replace function public.scraper_schema_status()")
+
+        self.assertLess(batch_demotion, pick_demotion)
+        self.assertLess(pick_demotion, version_default)
+        self.assertLess(pick_demotion, probe)
+        demotion = text[batch_demotion:version_default]
+        self.assertIn("legacy_batches.active", demotion)
+        self.assertIn("update public.picks as legacy_picks set active = false", demotion)
+        self.assertIn("then 'premium'", demotion)
+        self.assertIn("estado = 'pendiente'", demotion)
+        for field in (
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+            "source_observed_at",
+        ):
+            self.assertIn(f"legacy_picks.{field}", demotion)
+        self.assertIn(
+            "length(btrim(legacy_picks.source_market_key)) not between 1 and 1000",
+            demotion,
+        )
+        self.assertIn("legacy_picks.source_observed_at > now()", demotion)
+
+    def test_database_redacts_public_reasoning_in_every_rpc_and_view(self):
+        for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):
+            text = " ".join(migration.read_text(encoding="utf-8").lower().split())
+            view_start = text.index("create or replace view public.public_picks")
+            function_start = text.index(
+                "create or replace function public.publish_pick_batch", view_start
+            )
+            view = text[view_start:function_start]
+            function = text[function_start:]
+
+            self.assertNotIn("razonamiento", view)
+            self.assertIn(
+                "case when (requested_rows.populated).visibility = 'public' "
+                "then null else (requested_rows.populated).razonamiento end",
+                function,
+            )
+
+        final = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        self.assertIn("if new.visibility = 'public' then new.razonamiento := null", final)
+
+    def test_final_probe_checks_exact_types_secure_view_rpc_rls_and_acl(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        start = text.index("create or replace function public.scraper_schema_status()")
+        end = text.index("$$;", start)
+        probe = text[start:end]
+
+        for field in (
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+        ):
+            self.assertIn(f"column_name = '{field}' and data_type = 'text'", probe)
+        self.assertIn(
+            "column_name = 'source_observed_at' and data_type = 'timestamp with time zone'",
+            probe,
+        )
+        self.assertIn(
+            "column_name = 'source_audit_version' and data_type = 'smallint'",
+            probe,
+        )
+
+        self.assertIn("public_view.relkind = 'v'", probe)
+        self.assertIn("security_invoker=true", probe)
+        self.assertIn("pg_get_viewdef", probe)
+        self.assertIn("visibility = ''public''", probe)
+        self.assertIn("' or '", probe)
+        self.assertIn("' union '", probe)
+        self.assertIn("position( 'razonamiento'", probe)
+        self.assertIn("= 0", probe)
+        self.assertIn("has_table_privilege( 'anon'", probe)
+        self.assertIn("has_table_privilege( 'authenticated'", probe)
+
+        self.assertIn("publish_rpc.prosecdef", probe)
+        self.assertIn("publish_rpc.prorettype = 'jsonb'::regtype", probe)
+        self.assertIn("publish_language.lanname = 'plpgsql'", probe)
+        self.assertIn("search_path=public, pg_temp", probe)
+        self.assertIn("from aclexplode", probe)
+        self.assertIn("publish_acl.grantee = 0", probe)
+        self.assertIn("'anon', 'authenticated'", probe)
+        self.assertIn("service_role.rolname = 'service_role'", probe)
+        self.assertIn("pg_get_functiondef", probe)
+
+        self.assertIn("picks_table.relrowsecurity", probe)
+        self.assertIn("policyname = 'picks_public_read'", probe)
+        self.assertIn("policyname = 'picks_member_read'", probe)
+        for policy in (
+            "picks_admin_select",
+            "picks_admin_insert",
+            "picks_admin_update",
+            "picks_admin_delete",
+        ):
+            self.assertIn(f"policyname = '{policy}'", probe)
+        self.assertIn("ledger_table.relrowsecurity", probe)
+        self.assertIn("ledger_table.relname in ( 'scraper_runs', 'pick_batches' )", probe)
+
+    def test_migration_fails_closed_on_wrong_homonymous_audit_constraint(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        creation = text.index("add constraint picks_source_audit_complete_check")
+        validation = text.index("from pg_constraint as installed_audit_constraint")
+        failure = text.index(
+            "raise exception 'picks_source_audit_complete_check has unexpected definition'"
+        )
+        probe = text.index("create or replace function public.scraper_schema_status()")
+
+        self.assertLess(creation, validation)
+        self.assertLess(validation, failure)
+        self.assertLess(failure, probe)
+        checked = text[validation:failure]
+        self.assertIn("installed_audit_constraint.conrelid = 'public.picks'::regclass", checked)
+        self.assertIn("installed_audit_constraint.contype = 'c'", checked)
+        self.assertIn("pg_get_constraintdef", checked)
+        self.assertIn(
+            "installed_audit_constraint.conbin::text = expected_audit_constraint.conbin::text",
+            text,
+        )
+        self.assertIn(
+            "add constraint picks_source_audit_expected_20260820234500_check",
+            text,
+        )
+        self.assertIn(
+            "drop constraint picks_source_audit_expected_20260820234500_check",
+            text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

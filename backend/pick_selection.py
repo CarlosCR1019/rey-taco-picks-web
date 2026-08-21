@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from decimal import Decimal
 import json
 import math
@@ -28,7 +28,6 @@ SUPPORTED_SELECTIONS = {
     "spreads": frozenset({"home", "away"}),
 }
 MEXICO = ZoneInfo("America/Mexico_City")
-PHYSICAL_EVENT_KICKOFF_TOLERANCE = timedelta(minutes=5)
 
 
 def _required_text(value: object, field: str) -> str:
@@ -256,8 +255,15 @@ def _is_individually_valid(candidate: object) -> bool:
 
 
 def _normalized_competitor(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value.casefold())
-    return " ".join(normalized.split())
+    """Fold accents/case/space; preserve non-mark alphanumerics and punctuation."""
+
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_marks = "".join(
+        character
+        for character in decomposed
+        if not unicodedata.category(character).startswith("M")
+    )
+    return " ".join(without_marks.casefold().split())
 
 
 def _physical_competitor_pair(candidate: CandidatePick) -> tuple[str, str]:
@@ -271,15 +277,14 @@ def _physical_competitor_pair(candidate: CandidatePick) -> tuple[str, str]:
 
 
 def _same_physical_event(first: CandidatePick, second: CandidatePick) -> bool:
-    """Fail closed on cross-source kickoff drift of five minutes or less."""
+    """Fail closed on an unordered competitor pair on one Mexico date."""
 
     if _physical_competitor_pair(first) != _physical_competitor_pair(second):
         return False
-    kickoff_delta = abs(
-        first.starts_at.astimezone(timezone.utc)
-        - second.starts_at.astimezone(timezone.utc)
+    return (
+        first.starts_at.astimezone(MEXICO).date()
+        == second.starts_at.astimezone(MEXICO).date()
     )
-    return kickoff_delta <= PHYSICAL_EVENT_KICKOFF_TOLERANCE
 
 
 def build_same_day_parlay(

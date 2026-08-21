@@ -7,6 +7,7 @@ import pytest
 from backend.pick_selection import (
     CandidatePick,
     _candidate_id,
+    _same_physical_event,
     build_candidates,
     build_same_day_parlay,
 )
@@ -328,7 +329,7 @@ def test_event_identity_includes_source_when_source_event_ids_match():
     assert build_same_day_parlay([first, second]) == (first, second)
 
 
-def test_parlay_rejects_same_physical_event_observed_by_different_sources():
+def test_parlay_normalizes_composed_and_decomposed_competitor_names():
     starts_at = OBSERVED + timedelta(hours=8)
     playdoit = build_candidates(
         [
@@ -412,7 +413,7 @@ def test_parlay_rejects_same_physical_event_with_one_minute_clock_drift():
     assert build_same_day_parlay([first, delayed]) is None
 
 
-def test_parlay_allows_same_competitors_beyond_five_minute_tolerance():
+def test_parlay_rejects_same_competitors_six_minutes_apart():
     starts_at = OBSERVED + timedelta(hours=8)
     first = build_candidates(
         [
@@ -437,7 +438,90 @@ def test_parlay_allows_same_competitors_beyond_five_minute_tolerance():
         ]
     )[0]
 
-    assert build_same_day_parlay([first, later_match]) == (first, later_match)
+    assert build_same_day_parlay([first, later_match]) is None
+
+
+def test_parlay_rejects_same_day_doubleheader_without_trusted_event_mapping():
+    first_start = OBSERVED + timedelta(hours=4)
+    first = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="doubleheader-1",
+                starts_at=first_start,
+                home_team="Dodgers",
+                away_team="Padres",
+            )
+        ]
+    )[0]
+    second = build_candidates(
+        [
+            event_with(
+                source="the_odds_api",
+                source_event_id="doubleheader-2",
+                starts_at=first_start + timedelta(hours=3),
+                home_team="Padres",
+                away_team="Dodgers",
+            )
+        ]
+    )[0]
+
+    assert build_same_day_parlay([first, second]) is None
+
+
+def test_parlay_competitor_identity_is_accent_insensitive():
+    starts_at = OBSERVED + timedelta(hours=8)
+    accented = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="accented",
+                starts_at=starts_at,
+                home_team="Club América",
+                away_team="Atlético San Luis",
+            )
+        ]
+    )[0]
+    ascii_name = build_candidates(
+        [
+            event_with(
+                source="the_odds_api",
+                source_event_id="ascii",
+                starts_at=starts_at,
+                home_team="CLUB AMERICA",
+                away_team="Atletico San Luis",
+            )
+        ]
+    )[0]
+
+    assert build_same_day_parlay([accented, ascii_name]) is None
+
+
+def test_same_competitor_pair_on_next_mexico_date_is_a_distinct_physical_event():
+    first = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="day-one",
+                starts_at=OBSERVED + timedelta(hours=8),
+                home_team="Club América",
+                away_team="Tigres UANL",
+            )
+        ]
+    )[0]
+    next_day = build_candidates(
+        [
+            event_with(
+                source="the_odds_api",
+                source_event_id="day-two",
+                starts_at=OBSERVED + timedelta(days=1, hours=8),
+                home_team="Tigres UANL",
+                away_team="Club America",
+            )
+        ]
+    )[0]
+
+    assert _same_physical_event(first, next_day) is False
 
 
 def test_parlay_is_only_an_explicit_leg_bundle_without_synthesized_quote():

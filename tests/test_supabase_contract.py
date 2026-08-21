@@ -71,6 +71,11 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("create table if not exists public.scraper_runs", text)
         self.assertIn("run_key text not null unique", text)
         self.assertIn("status in ('running', 'published', 'partial', 'failed')", text)
+        self.assertIn("source_hash text not null", text)
+        self.assertIn("delivery_status jsonb not null default '{}'::jsonb", text)
+        self.assertIn("error_message text", text)
+        self.assertIn("created_at timestamptz not null default now()", text)
+        self.assertIn("finished_at timestamptz", text)
         self.assertIn("create table if not exists public.pick_batches", text)
         self.assertIn("run_id uuid not null unique references public.scraper_runs(id)", text)
         self.assertIn("create unique index if not exists pick_batches_one_active_idx", text)
@@ -87,11 +92,18 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("jsonb_array_length(requested_picks) = 0", text)
         self.assertIn("count(*) filter (where value->>'visibility' = 'public')", text)
         self.assertIn("public_pick_count <> 1", text)
+        self.assertIn("public_parlay_count <> 0", text)
         self.assertIn("value->>'visibility' = 'public'", text)
         self.assertIn("coalesce((value->>'es_parlay')::boolean, false)", text)
         self.assertIn("on conflict (run_key) do nothing", text)
         self.assertIn("for update", text)
         self.assertIn("claimed_run.status in ('published', 'partial')", text)
+        self.assertIn("'run_id', claimed_run.id", text)
+        self.assertIn(
+            "'batch_id', ( select id from public.pick_batches where run_id = claimed_run.id )",
+            text,
+        )
+        self.assertIn("where run_id = claimed_run.id", text)
         self.assertIn("'delivery_status', claimed_run.delivery_status", text)
         self.assertIn("'created', false", text)
 
@@ -117,6 +129,10 @@ class SupabaseContractTests(unittest.TestCase):
         text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
         self.assertIn("create or replace function public.record_scraper_delivery", text)
         self.assertIn("jsonb_set", text)
+        self.assertIn("array[requested_destination]", text)
+        self.assertIn("'success', requested_success", text)
+        self.assertIn("'error', left(coalesce(requested_error, ''), 200)", text)
+        self.assertIn("'updated_at', now()", text)
         self.assertIn("status = case when requested_success then status else 'partial' end", text)
         self.assertIn("alter table public.scraper_runs enable row level security", text)
         self.assertIn("alter table public.pick_batches enable row level security", text)
@@ -131,6 +147,11 @@ class SupabaseContractTests(unittest.TestCase):
             self.assertIn(f"grant execute on function {signature} to service_role", text)
         self.assertNotIn("grant select on table public.scraper_runs to anon", text)
         self.assertNotIn("grant select on table public.pick_batches to authenticated", text)
+
+    def test_scraper_run_ledger_migration_is_transactional(self):
+        text = RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().strip()
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
 
 
 if __name__ == "__main__":

@@ -3,9 +3,14 @@ import json
 import time
 import sys
 import re
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
-from selenium.webdriver.common.by import By
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import undetected_chromedriver as uc
 import urllib.request
 from groq import Groq
@@ -13,8 +18,14 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 try:
     from backend.publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
+    from backend.pick_publisher import SupabaseBatchRepository, publish_batch, source_hash_for
+    from backend.scraper_config import load_settings
+    from backend.telegram_publisher import TelegramDestination, TelegramHttpTransport, deliver_batch
 except ImportError:  # So `python backend/scraper.py` also resolves the helper.
     from publishing_policy import assign_visibility, event_labels_share_date, public_payload, scheduled_event_date
+    from pick_publisher import SupabaseBatchRepository, publish_batch, source_hash_for
+    from scraper_config import load_settings
+    from telegram_publisher import TelegramDestination, TelegramHttpTransport, deliver_batch
 
 # Forzar codificación UTF-8
 sys.stdout.reconfigure(encoding='utf-8')
@@ -527,8 +538,7 @@ def obtener_eventos_odds_api():
     ]
     eventos_api = []
     
-    from datetime import datetime, timezone, timedelta
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(ZoneInfo("UTC"))
     min_time_utc = now_utc + timedelta(minutes=15) # Mínimo 15 minutos en el futuro
     max_time_utc = now_utc + timedelta(hours=36)
     
@@ -1010,7 +1020,7 @@ def fase4_inmersion(driver, objetivos, partidos_data):
                 base['mercados_profundos'] = "\n".join(base['mercados_reales'])[:1200]
                 print(f"      🎯 Usando {len(base['mercados_reales'])} mercados verificados del satélite.")
             else:
-                print(f"      ⚠️ No se pudo entrar al partido, usando cuotas de superficie.")
+                print("      ⚠️ No se pudo entrar al partido, usando cuotas de superficie.")
             datos_profundos.append(base)
     
     print(f"\n   📊 Inmersión completada: {len(datos_profundos)} partidos analizados a fondo.")
@@ -1303,7 +1313,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             p['cuota'] = normalizar_cuota_decimal(p.get('cuota', '1.85'))
             
             if not p.get('razonamiento') or len(p.get('razonamiento', '')) < 10:
-                p['razonamiento'] = f"Consenso IA: Ventaja matemática +EV detectada con alta probabilidad según métricas de Playdoit."
+                p['razonamiento'] = "Consenso IA: Ventaja matemática +EV detectada con alta probabilidad según métricas de Playdoit."
 
             picks_validados.append(p)
 
@@ -1373,7 +1383,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                     "pick": f"Más de {linea} {unidad}",
                     "cuota": f"{c_val:.2f}",
                     "confianza": "90%",
-                    "razonamiento": f"Consenso Quant: Ventaja estadística en ritmo ofensivo y promedio histórico proyectado en Playdoit.",
+                    "razonamiento": "Consenso Quant: Ventaja estadística en ritmo ofensivo y promedio histórico proyectado en Playdoit.",
                     "es_parlay": False,
                     "tiene_valor": True,
                     "odds_mercado": f"{max(1.30, c_val - 0.05):.2f}"
@@ -1396,7 +1406,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                             "pick": f"{local or partido.split(' vs ')[0]} Gana Directo",
                             "cuota": f"{c_local:.2f}",
                             "confianza": "89%",
-                            "razonamiento": f"Consenso Quant: Ventaja táctica y solvencia proyectada respaldada por cuotas de mercado.",
+                            "razonamiento": "Consenso Quant: Ventaja táctica y solvencia proyectada respaldada por cuotas de mercado.",
                             "es_parlay": False,
                             "tiene_valor": True,
                             "odds_mercado": f"{max(1.20, c_local - 0.05):.2f}"
@@ -1409,8 +1419,8 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                     pass
 
         # Garantizar SIEMPRE al menos 3 picks activos diarios (para días como viernes/lunes)
-        if len(picks_fallback) < 3 and partidos:
-            for p in partidos:
+        if len(picks_fallback) < 3 and partidos_data:
+            for p in partidos_data:
                 if len(picks_fallback) >= 3:
                     break
                 partido_nom = p.get('partido', '')
@@ -1474,388 +1484,124 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
 # ============================================================
 #  FASE 7: GUARDADO Y NOTIFICACIONES
 # ============================================================
-def fase7_guardar_y_notificar(picks):
-    require_publish_backend()
+def fase7_guardar_y_notificar(
+    picks,
+    *,
+    repository=None,
+    settings=None,
+    transport=None,
+    run_key=None,
+):
+    """Publish one atomic batch, then deliver each Telegram destination independently."""
     print("\n" + "="*60)
     print("💾  FASE 7: GUARDANDO Y NOTIFICANDO")
     print("="*60)
-    
+
     if not picks:
         print("   ❌ No hay picks para guardar.")
-        return
-    
+        return None, {}
+
+    active_settings = settings or load_settings(dry_run=False)
+    if repository is None:
+        require_publish_backend()
+        repository = SupabaseBatchRepository(supabase)
+
     hoy = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
-    
-    # Agregar metadatos
-    base_id = int(time.time())
-    columnas_validas = {
-        'id', 'categoria', 'partido', 'pick', 'cuota', 'confianza', 'razonamiento',
-        'marcador', 'estado', 'es_parlay', 'liga', 'mercado', 'riesgo',
-        'resultado_apuesta', 'ganancia_simulada', 'fecha_generacion', 'fecha_evento',
-        'horario', 'odds_mercado', 'tiene_valor'
+    allowed_columns = {
+        'categoria', 'partido', 'pick', 'cuota', 'confianza',
+        'razonamiento', 'marcador', 'estado', 'es_parlay', 'liga', 'mercado',
+        'riesgo', 'resultado_apuesta', 'ganancia_simulada', 'fecha_generacion',
+        'fecha_evento', 'horario', 'odds_mercado', 'tiene_valor', 'visibility',
     }
-    
-    picks = assign_visibility(picks)
-    columnas_validas.add('visibility')
+
+    visible_picks = assign_visibility(picks)
     clean_picks = []
-    for idx, pick in enumerate(picks):
-        pick['id'] = base_id + idx
-        pick['fecha_generacion'] = hoy
-        pick['fecha_evento'] = scheduled_event_date(pick.get('horario'), hoy)
-        pick['estado'] = 'pendiente'
-        pick['liga'] = pick.get('categoria', 'Fútbol Internacional')
-        if 'ganancia_simulada' not in pick:
-            pick['ganancia_simulada'] = 0
-        clean_item = {k: v for k, v in pick.items() if k in columnas_validas}
-        clean_picks.append(clean_item)
-    
-    if supabase:
-        try:
-            print(f"   💾 Subiendo {len(clean_picks)} picks frescos a Supabase...")
-            retire_previous_public_pending_pick()
-            # Limpiar pendientes anteriores
-            try:
-                supabase.table("picks").delete().eq("estado", "pendiente").execute()
-            except Exception:
-                pass
-            supabase.table("picks").insert(clean_picks).execute()
-            print("   ✅ Picks subidos exitosamente a Supabase.")
-        except Exception as e:
-            raise RuntimeError(f"Publicación cancelada; Supabase rechazó los picks: {e}") from e
-    else:
-        print("   ⚠️ No hay conexión a Supabase, guardando solo en local.")
-        
-    _guardar_local(picks)
-    _enviar_telegram(picks)
+    for pick in visible_picks:
+        prepared = dict(pick)
+        prepared['fecha_generacion'] = hoy
+        prepared['fecha_evento'] = scheduled_event_date(prepared.get('horario'), hoy)
+        prepared['estado'] = 'pendiente'
+        prepared['liga'] = prepared.get('liga') or prepared.get(
+            'categoria', 'Fútbol Internacional'
+        )
+        prepared.setdefault('ganancia_simulada', 0)
+        clean_picks.append(
+            {key: value for key, value in prepared.items() if key in allowed_columns}
+        )
 
-def _guardar_local(picks):
-    try:
-        ruta = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'public', 'picks.json')
-        os.makedirs(os.path.dirname(ruta), exist_ok=True)
-        with open(ruta, 'w', encoding='utf-8') as f:
-            json.dump(picks, f, indent=2, ensure_ascii=False)
-        print(f"   📁 Picks guardados en local: {ruta}")
-    except Exception as e:
-        print(f"   ⚠️ Error guardando local: {e}")
+    # Public storage never receives premium rows or the public pick's rationale.
+    persisted_picks = []
+    for pick in clean_picks:
+        persisted = dict(pick)
+        if persisted.get('visibility') == 'public':
+            persisted.pop('razonamiento', None)
+        persisted_picks.append(persisted)
 
-def _enviar_telegram(picks):
-    try:
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        vip_channel_id = os.getenv("TELEGRAM_VIP_CHANNEL_ID") or "-1003845930328"
-        free_channel_id = os.getenv("TELEGRAM_FREE_CHANNEL_ID") or "-1004387927424"
-        
-        if not token or not chat_id:
-            print("   ⚠️ No hay credenciales de Telegram configuradas.")
-            return
+    picks = persisted_picks
+    free_picks = public_payload(picks)
+    if len(free_picks) != 1 or free_picks[0].get('es_parlay'):
+        raise ValueError("La publicación requiere exactamente un pick público no parlay.")
 
-        # 1. Enviar Resumen Oficial a Telegram Privado (Carlos)
-        msg_privado = "🌮 *REY TACO PICKS - CARTERA OFICIAL PLAYDOIT* 👑\n\n"
-        for p in picks:
-            parlay = " 🔗 *PARLAY*" if p.get('es_parlay') else ""
-            valor = " 💎 *VALOR*" if p.get('tiene_valor') else ""
-            horario = f" 🕒 `{p.get('horario')}`" if p.get('horario') else ""
-            razon = f"\n   🧠 _¿Por qué?_ {p.get('razonamiento')}" if p.get('razonamiento') else ""
-            msg_privado += f"• *[{p.get('categoria')}]{parlay}{valor}*\n  🏟️ {p.get('partido')}{horario}\n  👉 *Pick:* `{p.get('pick')}` @ *{p.get('cuota')}*\n  📊 Confianza: *{p.get('confianza', '90%')}*{razon}\n\n"
-        
-        msg_privado += "🌐 *Ver en Web:* https://reytacopicks.com"
-        
-        reply_markup = {
-            "inline_keyboard": [
-                [{"text": "🌐 Ver en Rey Taco Picks Web", "url": "https://reytacopicks.com"}],
-                [{"text": "📲 Apostar en Playdoit", "url": "https://www.playdoit.mx/es/"}]
-            ]
-        }
-        
-        _post_telegram(token, chat_id, msg_privado, reply_markup)
-        print("   📱 ✅ Telegram (privado Carlos) enviado.")
+    active_run_key = run_key or f"scraper:{hoy}:{source_hash_for(picks)}"
+    publication = publish_batch(
+        repository,
+        picks,
+        active_run_key,
+        active_settings.public_picks_path,
+    )
+    print(f"   ✅ Lote {publication.batch_id} publicado atómicamente.")
 
-        # 2. Enviar a Canal VIP
-        if vip_channel_id:
-            msg_vip = "👑 *CARTERA EXCLUSIVA VIP - REY TACO PICKS* 🌮\n\n"
-            for p in picks:
-                parlay = " 🔗 *PARLAY VIP*" if p.get('es_parlay') else ""
-                horario = f" 🕒 `{p.get('horario')}`" if p.get('horario') else ""
-                razon = f"\n   🧠 _Análisis:_ {p.get('razonamiento')}" if p.get('razonamiento') else ""
-                msg_vip += f"💎 *[{p.get('categoria')}]{parlay}*\n🏟️ {p.get('partido')}{horario}\n🎯 *Pick:* `{p.get('pick')}` @ *{p.get('cuota')}*{razon}\n\n"
-            
-            msg_vip += "🚀 *Apostar en Playdoit:* https://www.playdoit.mx/es/\n🌐 *Plataforma:* https://reytacopicks.com"
-            _post_telegram(token, vip_channel_id, msg_vip, reply_markup)
-            print("   👑 ✅ Telegram (Canal VIP) enviado.")
+    destinations = [
+        TelegramDestination("admin", active_settings.telegram_admin_id, "all")
+        if active_settings.telegram_admin_id
+        else None,
+        TelegramDestination("vip", active_settings.telegram_vip_id, "all")
+        if active_settings.telegram_vip_id
+        else None,
+        TelegramDestination("free", active_settings.telegram_free_id, "public")
+        if active_settings.telegram_free_id
+        else None,
+    ]
+    active_destinations = [destination for destination in destinations if destination]
 
-        # 3. Enviar al Canal FREE (Picks Directos)
-        if free_channel_id:
-            free_picks = public_payload(picks)
-            for i, p in enumerate(free_picks):
-                msg_free = f"📢 *PICK GRATUITO #{i+1} DEL DÍA* 🌮👑\n\n"
-                msg_free += f"🏟️ *Partido:* {p.get('partido')}\n"
-                if p.get('horario'): msg_free += f"🕒 *Horario:* `{p.get('horario')}`\n"
-                msg_free += f"🎯 *Pick:* `{p.get('pick')}`\n"
-                msg_free += f"💰 *Cuota:* `{p.get('cuota')}`\n"
-                msg_free += f"📊 *Confianza:* {p.get('confianza', '90%')}\n\n"
-                if p.get('razonamiento'):
-                    msg_free += f"🧠 *Análisis:* {p.get('razonamiento')}\n\n"
-                msg_free += "🔒 _Accede a todos los picks y al Parlay IA en:_\n👉 https://reytacopicks.com"
-                
-                _post_telegram(token, free_channel_id, msg_free, reply_markup)
-                print(f"   📢 ✅ Telegram (Canal FREE - Pick #{i+1}) enviado: {p.get('partido')}")
-                time.sleep(1)
+    if not active_destinations:
+        print("   ℹ️ No hay destinos de Telegram configurados.")
+        return publication, {}
 
-    except Exception as e:
-        print(f"   ⚠️ Error en envío a Telegram: {e}")
+    if transport is None:
+        if not active_settings.telegram_token:
+            print("   ⚠️ No hay token de Telegram configurado; se omitió la entrega.")
+            return publication, {}
+        transport = TelegramHttpTransport(active_settings.telegram_token)
 
-def _post_telegram(token, chat_id, text, reply_markup=None):
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True
-        }
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-            
-        data = json.dumps(payload).encode('utf-8')
-        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.getcode() == 200
-        except Exception:
-            # Fallback seguro sin Markdown si fallan caracteres especiales
-            payload.pop("parse_mode", None)
-            data2 = json.dumps(payload).encode('utf-8')
-            req2 = urllib.request.Request(url, data=data2, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req2, timeout=10) as resp2:
-                return resp2.getcode() == 200
-    except Exception as e:
-        print(f"      ❌ Falló post a {chat_id}: {e}")
-        return False
+    completed = frozenset(
+        name
+        for name, status in publication.delivery_status.items()
+        if status is True
+        or (isinstance(status, dict) and status.get('success') is True)
+    )
+    deliveries = deliver_batch(
+        clean_picks,
+        active_destinations,
+        transport,
+        completed=completed,
+    )
 
-def _enviar_reporte_estado():
-    try:
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        
-        if not token or not chat_id:
-            return
+    if publication.run_id is None:
+        raise RuntimeError("El publicador no devolvió un identificador de corrida.")
+    for destination, result in deliveries.items():
+        if result.skipped:
+            continue
+        repository.record_delivery(
+            publication.run_id,
+            destination,
+            result.success,
+            result.error,
+        )
+        outcome = "✅" if result.success else "❌"
+        print(f"   {outcome} Entrega Telegram {destination}.")
 
-        activos = []
-        if supabase:
-            try:
-                res = supabase.table("picks").select("*").eq("estado", "pendiente").order("id", desc=True).limit(10).execute()
-                activos = res.data or []
-            except Exception:
-                pass
-
-        hora_actual = time.strftime('%I:%M %p CDMX')
-        msg = f"👑 REY TACO PICKS • REPORTE OPERATIVO PRIVADO ({hora_actual}) 👑\n\n"
-        msg += "🟢 Escáner de Playdoit completado con éxito.\n"
-        msg += f"📊 {len(activos)} jugadas +EV activas en cartera sin cambios bruscos de líneas.\n\n"
-
-        for p in activos[:6]:
-            valor = " 💎" if p.get('tiene_valor') else ""
-            parlay = "🔗 " if p.get('es_parlay') else "🎯 "
-            msg += f"{parlay}{p.get('partido')} ➔ {p.get('pick')} @ Cuota {p.get('cuota')}{valor}\n"
-
-        msg += f"\n🌐 Dashboard y cuotas en tiempo real:\n👉 https://reytacopicks.com"
-
-        url_tg = f"https://api.telegram.org/bot{token}/sendMessage"
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "📲 Apostar en Playdoit", "url": "https://www.playdoit.mx/es/"},
-                    {"text": "🌐 Entrar a reytacopicks.com", "url": "https://reytacopicks.com/"}
-                ]
-            ]
-        }
-
-        data = json.dumps({"chat_id": chat_id, "text": msg, "reply_markup": keyboard}).encode('utf-8')
-        req = urllib.request.Request(url_tg, data=data, headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req) as resp:
-            print("   📱 ✅ Reporte de monitoreo enviado EXCLUSIVAMENTE al chat privado de Carlos.")
-    except Exception as e:
-        print(f"   ⚠️ Error enviando reporte de estado privado: {e}")
-
-# ============================================================
-#  FASE 7: GUARDADO Y NOTIFICACIONES
-# ============================================================
-def fase7_guardar_y_notificar(picks):
-    require_publish_backend()
-    print("\n" + "="*60)
-    print("💾  FASE 7: GUARDANDO Y NOTIFICANDO")
-    print("="*60)
-    
-    if not picks:
-        print("   ℹ️ No hay nuevos picks en esta corrida. Enviando reporte de estado y monitoreo a Telegram...")
-        _enviar_reporte_estado()
-        return
-    
-    hoy = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
-    
-    # Agregar metadatos
-    base_id = int(time.time())
-    for idx, pick in enumerate(picks):
-        pick['id'] = base_id + idx
-        pick['fecha_generacion'] = hoy
-        pick['fecha_evento'] = scheduled_event_date(pick.get('horario'), hoy)
-        pick['estado'] = 'pendiente'
-        if 'ganancia_simulada' not in pick:
-            pick['ganancia_simulada'] = 0
-    
-    ALLOWED_COLUMNS = {
-        'id', 'categoria', 'partido', 'pick', 'cuota', 'confianza', 
-        'razonamiento', 'es_parlay', 'tiene_valor', 'estado', 
-        'fecha_generacion', 'fecha_evento', 'horario', 'odds_mercado', 'ganancia_simulada'
-    }
-    picks = assign_visibility(picks)
-    ALLOWED_COLUMNS.add('visibility')
-    clean_picks = [{k: v for k, v in p.items() if k in ALLOWED_COLUMNS} for p in picks]
-    
-    if supabase:
-        try:
-            print(f"   💾 Subiendo {len(clean_picks)} picks frescos a Supabase...")
-            retire_previous_public_pending_pick()
-            supabase.table("picks").insert(clean_picks).execute()
-            print("   ✅ Picks subidos exitosamente.")
-        except Exception as e:
-            raise RuntimeError(f"Publicación cancelada; Supabase rechazó los picks: {e}") from e
-        _guardar_local(picks)
-    else:
-        _guardar_local(picks)
-    
-    # Telegram
-    _enviar_telegram(picks)
-
-def _guardar_local(picks):
-    output_path = os.path.join("..", "frontend", "public", "picks.json")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(public_payload(picks), f, indent=4, ensure_ascii=False)
-    print(f"   📁 Picks guardados en local: {output_path}")
-
-def formatear_pick_canal(p, numero=1, total=1):
-    valor = " 💎 VALOR +EV" if p.get('tiene_valor') else ""
-    es_parlay = p.get('es_parlay')
-    categoria = p.get('categoria', 'Deportes')
-    partido = p.get('partido', '')
-    pick_text = p.get('pick', '')
-    cuota = p.get('cuota', '')
-    confianza = p.get('confianza', '')
-    razonamiento = p.get('razonamiento', '')
-    odds_mkt = f" (Mercado: {p.get('odds_mercado')})" if p.get('odds_mercado') else ""
-    horario_str = f"🕒 Horario: {p.get('horario', 'Hoy')}\n" if p.get('horario') else "🕒 Horario: Hoy (CDMX)\n"
-    
-    if es_parlay:
-        header = f"👑 REY TACO PICKS 👑\n🔗 COMBINADA / PARLAY DESTACADO [{numero}/{total}]"
-    elif "esquina" in categoria.lower() or "córner" in categoria.lower():
-        header = f"👑 REY TACO PICKS 👑\n⛳ ANÁLISIS DE TIROS DE ESQUINA [{numero}/{total}]"
-    elif "béisbol" in categoria.lower() or "mlb" in categoria.lower():
-        header = f"👑 REY TACO PICKS 👑\n⚾ ANÁLISIS MLB / BÉISBOL [{numero}/{total}]"
-    elif "americano" in categoria.lower() or "nfl" in categoria.lower():
-        header = f"👑 REY TACO PICKS 👑\n🏈 ANÁLISIS NFL / AMERICANO [{numero}/{total}]"
-    else:
-        header = f"👑 REY TACO PICKS 👑\n⚽ ANÁLISIS DEL DÍA [{numero}/{total}]"
-        
-    msg = f"{header}\n\n"
-    msg += f"🏟️ Evento: {partido}\n"
-    msg += horario_str
-    msg += f"🎯 Selección: {pick_text}\n"
-    msg += f"📊 Cuota: {cuota}{odds_mkt}{valor}\n"
-    msg += f"🔥 Confianza: {confianza}\n\n"
-    
-    if razonamiento:
-        msg += f"🧠 Análisis Alpha (IA):\n{razonamiento}\n\n"
-        
-    msg += "🌐 Desbloquea la cartera completa y calculadora en vivo:\n👉 https://reytacopicks.com"
-    return msg
-
-def _enviar_telegram(picks):
-    try:
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        vip_channel_id = os.getenv("TELEGRAM_VIP_CHANNEL_ID") or os.getenv("TELEGRAM_CHANNEL_ID")
-        free_channel_id = os.getenv("TELEGRAM_FREE_CHANNEL_ID")
-        
-        if not token:
-            return
-
-        # 1. Enviar el reporte COMPLETO con todos los picks a Carlos (Privado)
-        mensaje_completo = "👑 REY TACO PICKS VIP (CARTERA OFICIAL) 👑\n\n"
-        for p in picks:
-            valor = " 💎VALOR +EV" if p.get('tiene_valor') else ""
-            parlay = "🔗 PARLAY: " if p.get('es_parlay') else ""
-            horario = f"  🕒 {p.get('horario', 'Hoy')}\n" if p.get('horario') else ""
-            razonamiento = f"  🧠 ¿Por qué este pick?: {p.get('razonamiento', 'Ventaja estadística +EV confirmada.')}\n" if p.get('razonamiento') else ""
-            
-            mensaje_completo += f"{parlay}[{p.get('categoria', 'Mercado')}]\n"
-            mensaje_completo += f"  🏟️ {p.get('partido', '')}\n"
-            mensaje_completo += horario
-            mensaje_completo += f"  🎯 Pick: {p.get('pick', '')} @ {p.get('cuota', '')}{valor}\n"
-            mensaje_completo += f"  🔥 Confianza: {p.get('confianza', '85%')}\n"
-            mensaje_completo += razonamiento + "\n"
-        
-        mensaje_completo += "🌐 Cartera completa en vivo: https://reytacopicks.com"
-
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-
-        keyboard_vip = {
-            "inline_keyboard": [
-                [
-                    {"text": "📲 Apostar en Playdoit", "url": "https://www.playdoit.mx/es/"},
-                    {"text": "🌐 Dashboard en Vivo", "url": "https://reytacopicks.com/"}
-                ]
-            ]
-        }
-
-        keyboard_free = {
-            "inline_keyboard": [
-                [
-                    {"text": "👑 Pase VIP ($299 MXN)", "url": "https://wa.me/525639331102?text=Hola,%20quiero%20el%20Pase%20VIP%20de%20Rey%20Taco%20Picks"},
-                    {"text": "📲 Apostar en Playdoit", "url": "https://www.playdoit.mx/es/"}
-                ],
-                [
-                    {"text": "🌐 Ver Todos los Picks en la Web", "url": "https://reytacopicks.com/"}
-                ]
-            ]
-        }
-
-        # Envío a Carlos
-        if chat_id:
-            data = json.dumps({"chat_id": chat_id, "text": mensaje_completo, "reply_markup": keyboard_vip}).encode('utf-8')
-            req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req) as resp:
-                if resp.getcode() == 200:
-                    print("   📱 ✅ Telegram (privado Carlos) enviado con botones interactivos.")
-
-        # 2. Envío INMEDIATO al CANAL VIP
-        if vip_channel_id:
-            data_vip = json.dumps({"chat_id": vip_channel_id, "text": mensaje_completo, "reply_markup": keyboard_vip}).encode('utf-8')
-            req_vip = urllib.request.Request(url, data=data_vip, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req_vip) as resp_vip:
-                if resp_vip.getcode() == 200:
-                    print("   👑 ✅ Telegram (Canal VIP) enviado con botones interactivos.")
-
-        # 3. Envío al CANAL FREE (Pick Estrella Inmediato + Cola Espaciada)
-        free_picks = public_payload(picks)
-        if free_channel_id and free_picks:
-            # A) Pick #1 Gratuito
-            free_pick = free_picks[0]
-            pick_1_msg = formatear_pick_canal(free_pick, numero=1, total=1)
-            data_free = json.dumps({"chat_id": free_channel_id, "text": pick_1_msg, "reply_markup": keyboard_free}).encode('utf-8')
-            req_free = urllib.request.Request(url, data=data_free, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req_free) as resp_free:
-                if resp_free.getcode() == 200:
-                    print(f"   📢 ✅ Telegram (Canal FREE - Pick #1) enviado con botones: {free_pick.get('partido')}")
-
-            # B) Clear any legacy queue so no premium pick is sent later.
-            queue_file = os.path.join(os.path.dirname(__file__), "channel_queue.json")
-            with open(queue_file, "w", encoding="utf-8") as f:
-                json.dump([], f, indent=2, ensure_ascii=False)
-            print("   🔒 Cola gratuita limpia; los picks premium permanecen en VIP.")
-
-    except Exception as e:
-        print(f"   📱 ❌ Error Telegram: {e}")
+    return publication, deliveries
 
 # ============================================================
 #  MAIN: ORQUESTADOR DE FASES

@@ -13,6 +13,7 @@ from backend.publishing_policy import public_payload
 
 MAX_MESSAGE_LENGTH = 4_000
 _SUPPORTED_DESTINATIONS = frozenset({"admin", "vip", "free"})
+_DELIVERY_ERROR = "delivery_failed"
 
 
 @dataclass(frozen=True)
@@ -142,10 +143,10 @@ def deliver_batch(
             for message in messages:
                 transport(destination, message)
                 sent_count += 1
-        except Exception as error:
+        except Exception:
             results[destination.name] = DeliveryResult(
                 success=False,
-                error=f"{type(error).__name__}: delivery failed",
+                error=_DELIVERY_ERROR,
                 message_count=sent_count,
             )
         else:
@@ -178,7 +179,7 @@ def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> st
     selection = _field(pick, ("pick",), "Pick no especificado", 800)
     price = _field(pick, ("cuota", "price", "odds"), "No especificado", 300)
     confidence = _field(pick, ("confianza", "confidence"), "No especificada", 300)
-    rationale = _field(pick, ("razon", "rationale", "analysis"), "No especificada", MAX_MESSAGE_LENGTH)
+    rationale = _field(pick, ("razonamiento", "razon", "rationale", "analysis"), "No especificada", MAX_MESSAGE_LENGTH)
 
     lines = [f"Evento: {event}"]
     if schedule:

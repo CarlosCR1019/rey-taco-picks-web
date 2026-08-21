@@ -19,7 +19,7 @@ def pick(**overrides):
         "pick": "Lobos +0.5",
         "cuota": "+110",
         "confianza": "72%",
-        "razon": "La línea ofrece valor según la forma reciente.",
+        "razonamiento": "La línea ofrece valor según la forma reciente.",
         "visibility": "premium",
     }
     row.update(overrides)
@@ -58,7 +58,7 @@ class FakeResponse:
 class TelegramPublisherTests(unittest.TestCase):
     def test_chunks_are_bounded_and_overlong_rationale_is_truncated_as_one_block(self):
         huge_reason = "x" * 9_000
-        messages = chunk_messages([pick(razon=huge_reason), pick(partido="Pumas vs Atlas")])
+        messages = chunk_messages([pick(razonamiento=huge_reason), pick(partido="Pumas vs Atlas")])
 
         self.assertTrue(messages)
         self.assertTrue(all(len(message) <= 4_000 for message in messages))
@@ -69,12 +69,13 @@ class TelegramPublisherTests(unittest.TestCase):
         self.assertIn("Pick: Lobos +0.5", joined)
         self.assertRegex(joined, r"Rationale: x{20,}\u2026\nNota:")
         self.assertNotIn("x" * 4_001, joined)
+        self.assertNotIn("Rationale: No especificada", joined)
         self.assertIn("Evento: Pumas vs Atlas", joined)
         self.assertIn("Pick: Lobos +0.5", joined)
 
     def test_public_destination_receives_only_public_payload_while_all_destinations_receive_full_batch(self):
-        public = pick(pick="PUBLIC PICK", visibility="public", razon="Visible rationale")
-        premium = pick(pick="PREMIUM SECRET", visibility="premium", razon="Private rationale")
+        public = pick(pick="PUBLIC PICK", visibility="public", razonamiento="Visible rationale")
+        premium = pick(pick="PREMIUM SECRET", visibility="premium", razonamiento="Private rationale")
         transport = FakeTransport()
         destinations = [
             TelegramDestination("free", "free-id", "public"),
@@ -104,10 +105,28 @@ class TelegramPublisherTests(unittest.TestCase):
         results = deliver_batch([pick(visibility="public")], destinations, transport)
 
         self.assertFalse(results["admin"].success)
-        self.assertIn("ConnectionError", results["admin"].error)
+        self.assertEqual(results["admin"].error, "delivery_failed")
         self.assertTrue(results["vip"].success)
         self.assertTrue(results["free"].success)
         self.assertEqual([destination.name for destination, _ in transport.calls], ["admin", "vip", "free"])
+
+    def test_delivery_error_is_fixed_and_does_not_leak_a_malicious_exception_name(self):
+        marker = "ATTACKER_MARKER_" + "X" * 200
+        malicious_error = type(marker, (Exception,), {})
+
+        def malicious_transport(destination, text):
+            raise malicious_error()
+
+        result = deliver_batch(
+            [pick()],
+            [TelegramDestination("admin", "admin-id", "all")],
+            malicious_transport,
+        )["admin"]
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "delivery_failed")
+        self.assertLessEqual(len(result.error), 32)
+        self.assertNotIn(marker, result.error)
 
     def test_completed_destination_is_skipped_without_transport_call(self):
         transport = FakeTransport()

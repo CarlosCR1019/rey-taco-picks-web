@@ -194,7 +194,7 @@ def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> st
         else "Nota: análisis informativo; no garantiza resultados."
     )
     if public:
-        return f"{'\n'.join(lines)}\n{notice}"
+        return "\n".join([*lines, notice])
 
     rationale = _field(pick, ("razonamiento", "razon", "rationale", "analysis"), "No especificada", MAX_MESSAGE_LENGTH)
     prefix = "\n".join(lines) + "\nRationale: "

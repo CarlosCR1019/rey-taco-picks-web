@@ -1,3 +1,4 @@
+import ast
 import json
 from pathlib import Path
 import unittest
@@ -212,6 +213,16 @@ class TelegramPublisherTests(unittest.TestCase):
         self.assertNotIn("channel_queue", source)
         self.assertNotIn("timestamp_programado", source)
         self.assertNotIn("schedule_future", source)
+
+    def test_publisher_source_parses_with_python_311_grammar(self):
+        source_path = Path(__file__).resolve().parents[1] / "backend" / "telegram_publisher.py"
+
+        ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path), feature_version=(3, 11))
+
+    def test_public_return_does_not_embed_a_backslash_in_an_f_string_expression(self):
+        source = (Path(__file__).resolve().parents[1] / "backend" / "telegram_publisher.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("f\"{'\\n'.join(lines)}", source)
 
 
 if __name__ == "__main__":

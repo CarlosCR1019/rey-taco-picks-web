@@ -5,10 +5,46 @@ alter table public.picks
     add column if not exists source_event_id text,
     add column if not exists source_market_key text,
     add column if not exists source_selection_key text,
-    add column if not exists source_observed_at timestamptz;
+    add column if not exists source_observed_at timestamptz,
+    add column if not exists source_audit_version smallint;
+
+alter table public.picks
+    alter column source_audit_version set default 1;
 
 create index if not exists picks_source_event_idx
     on public.picks (source, source_event_id);
+
+create or replace function public.enforce_pick_source_audit_version()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+    if tg_op = 'INSERT' then
+        new.source_audit_version := 1;
+    elsif old.source_audit_version = 1 then
+        new.source_audit_version := 1;
+    elsif new.source_audit_version is distinct from old.source_audit_version
+       or new.source is distinct from old.source
+       or new.source_event_id is distinct from old.source_event_id
+       or new.source_market_key is distinct from old.source_market_key
+       or new.source_selection_key is distinct from old.source_selection_key
+       or new.source_observed_at is distinct from old.source_observed_at then
+        new.source_audit_version := 1;
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists picks_enforce_source_audit_version on public.picks;
+create trigger picks_enforce_source_audit_version
+    before insert or update on public.picks
+    for each row execute function public.enforce_pick_source_audit_version();
+
+revoke all on function public.enforce_pick_source_audit_version()
+    from public, anon, authenticated;
+grant execute on function public.enforce_pick_source_audit_version()
+    to service_role;
 
 do $$
 begin
@@ -18,24 +54,23 @@ begin
         where conname = 'picks_source_audit_complete_check'
           and conrelid = 'public.picks'::regclass
     ) then
-        -- Historical rows may remain entirely null; any row that starts an
-        -- audit identity must carry the whole bounded identity atomically.
+        -- The trigger keeps the NULL marker exclusive to unchanged historical
+        -- rows. Inserts and audit-changing updates are always version 1.
         alter table public.picks
             add constraint picks_source_audit_complete_check
             check (
-                (
-                    source is null
-                    and source_event_id is null
-                    and source_market_key is null
-                    and source_selection_key is null
-                    and source_observed_at is null
-                )
+                source_audit_version is null
                 or (
-                    length(btrim(source)) between 1 and 100
+                    source_audit_version = 1
+                    and source is not null
+                    and source_event_id is not null
+                    and source_market_key is not null
+                    and source_selection_key is not null
+                    and source_observed_at is not null
+                    and length(btrim(source)) between 1 and 100
                     and length(btrim(source_event_id)) between 1 and 500
                     and length(btrim(source_market_key)) between 1 and 1000
                     and length(btrim(source_selection_key)) between 1 and 500
-                    and source_observed_at is not null
                 )
             ) not valid;
     end if;
@@ -89,6 +124,8 @@ declare
     first_pick_id bigint;
     public_pick_count bigint;
     public_parlay_count bigint;
+    audit_entry jsonb;
+    observed_at_value timestamptz;
 begin
     if requested_run_key is null or btrim(requested_run_key) = '' then
         raise exception 'requested_run_key must not be empty';
@@ -125,12 +162,27 @@ begin
            or length(btrim(value->>'source_event_id')) not between 1 and 500
            or length(btrim(value->>'source_market_key')) not between 1 and 1000
            or length(btrim(value->>'source_selection_key')) not between 1 and 500
-           or coalesce(value->>'source_observed_at', '')
-                !~* '(z|[+-][0-9]{2}:[0-9]{2})$'
-           or (value->>'source_observed_at')::timestamptz is null
     ) then
         raise exception 'each requested pick must have complete source audit fields';
     end if;
+
+    for audit_entry in
+        select value from jsonb_array_elements(requested_picks) as entry(value)
+    loop
+        if (audit_entry->>'source_observed_at') !~
+           '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?(Z|[+]00:00)$' then
+            raise exception 'source_observed_at must be UTC and not in the future';
+        end if;
+        begin
+            observed_at_value := (audit_entry->>'source_observed_at')::timestamptz;
+        exception
+            when invalid_datetime_format or datetime_field_overflow then
+                raise exception 'source_observed_at must be UTC and not in the future';
+        end;
+        if observed_at_value > now() then
+            raise exception 'source_observed_at must be UTC and not in the future';
+        end if;
+    end loop;
 
     select
         count(*) filter (where value->>'visibility' = 'public'),
@@ -315,6 +367,83 @@ as $$
                 select 1 from information_schema.columns
                 where table_schema = 'public' and table_name = 'picks'
                   and column_name = 'source_observed_at'
+            )
+            and exists (
+                select 1 from information_schema.columns
+                where table_schema = 'public' and table_name = 'picks'
+                  and column_name = 'source_audit_version'
+            )
+            and to_regclass('public.picks_source_event_idx') is not null
+            and exists (
+                select 1
+                from pg_trigger as audit_trigger
+                where audit_trigger.tgrelid = 'public.picks'::regclass
+                  and not audit_trigger.tgisinternal
+                  and audit_trigger.tgenabled <> 'D'
+                  and audit_trigger.tgname = 'picks_enforce_source_audit_version'
+                  and position(
+                      'before insert or update'
+                      in lower(pg_get_triggerdef(audit_trigger.oid))
+                  ) > 0
+                  and position(
+                      'new.source_audit_version := 1'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'new.source is distinct from old.source'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'new.source_event_id is distinct from old.source_event_id'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'new.source_market_key is distinct from old.source_market_key'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'new.source_selection_key is distinct from old.source_selection_key'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'new.source_observed_at is distinct from old.source_observed_at'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+            )
+            and exists (
+                select 1
+                from pg_constraint as audit_constraint
+                where audit_constraint.conrelid = 'public.picks'::regclass
+                  and audit_constraint.contype = 'c'
+                  and audit_constraint.conname = 'picks_source_audit_complete_check'
+                  and position(
+                      'source_audit_version is null'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
+                  and position(
+                      'source_audit_version = 1'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
+                  and position(
+                      'source is not null'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
+                  and position(
+                      'source_event_id is not null'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
+                  and position(
+                      'source_market_key is not null'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
+                  and position(
+                      'source_selection_key is not null'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
+                  and position(
+                      'source_observed_at is not null'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
             )
     );
 $$;

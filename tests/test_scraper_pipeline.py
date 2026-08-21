@@ -255,3 +255,24 @@ def test_structured_pipeline_hostile_publication_response_never_claims_persisten
     assert result.pick_count == 1
     assert result.persisted is False
     assert len(publisher.calls) == 1
+
+
+def test_structured_pipeline_hostile_reference_truthiness_fails_closed(
+    event_fixture,
+):
+    class HostileReference:
+        def __bool__(self):
+            raise RuntimeError("truthiness must not be evaluated")
+
+    publisher = FakePublisher()
+
+    result = run_structured_pipeline(
+        [event_fixture],
+        _rank_first,
+        publisher,
+        dry_run=False,
+        reference_at=HostileReference(),
+    )
+
+    assert result == PipelineResult(1, 0, False, ())
+    assert publisher.calls == []

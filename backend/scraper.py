@@ -1725,8 +1725,12 @@ def run_structured_pipeline(
     if not ranked:
         return PipelineResult(event_count, 0, False, ())
 
-    reference = reference_at or datetime.now(timezone.utc)
     try:
+        reference = (
+            datetime.now(timezone.utc)
+            if reference_at is None
+            else reference_at
+        )
         source_backed_rows = []
         for ranked_pick in ranked:
             evidence = evidence_for_candidate(

@@ -91,6 +91,8 @@ declare
     first_pick_id bigint;
     public_pick_count bigint;
     public_parlay_count bigint;
+    audit_entry jsonb;
+    observed_at_value timestamptz;
 begin
     if requested_run_key is null or btrim(requested_run_key) = '' then
         raise exception 'requested_run_key must not be empty';
@@ -127,12 +129,27 @@ begin
            or length(btrim(value->>'source_event_id')) not between 1 and 500
            or length(btrim(value->>'source_market_key')) not between 1 and 1000
            or length(btrim(value->>'source_selection_key')) not between 1 and 500
-           or coalesce(value->>'source_observed_at', '')
-                !~* '(z|[+-][0-9]{2}:[0-9]{2})$'
-           or (value->>'source_observed_at')::timestamptz is null
     ) then
         raise exception 'each requested pick must have complete source audit fields';
     end if;
+
+    for audit_entry in
+        select value from jsonb_array_elements(requested_picks) as entry(value)
+    loop
+        if (audit_entry->>'source_observed_at') !~
+           '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?(Z|[+]00:00)$' then
+            raise exception 'source_observed_at must be UTC and not in the future';
+        end if;
+        begin
+            observed_at_value := (audit_entry->>'source_observed_at')::timestamptz;
+        exception
+            when invalid_datetime_format or datetime_field_overflow then
+                raise exception 'source_observed_at must be UTC and not in the future';
+        end;
+        if observed_at_value > now() then
+            raise exception 'source_observed_at must be UTC and not in the future';
+        end if;
+    end loop;
 
     select
         count(*) filter (where value->>'visibility' = 'public'),
@@ -419,36 +436,11 @@ security definer
 set search_path = public, pg_temp
 as $$
     select jsonb_build_object(
-        'version', 2,
+        'version', 1,
         'public_picks', to_regclass('public.public_picks') is not null,
         'publish_pick_batch',
             to_regprocedure('public.publish_pick_batch(text,text,jsonb)') is not null,
-        'source_audit',
-            exists (
-                select 1 from information_schema.columns
-                where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source'
-            )
-            and exists (
-                select 1 from information_schema.columns
-                where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source_event_id'
-            )
-            and exists (
-                select 1 from information_schema.columns
-                where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source_market_key'
-            )
-            and exists (
-                select 1 from information_schema.columns
-                where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source_selection_key'
-            )
-            and exists (
-                select 1 from information_schema.columns
-                where table_schema = 'public' and table_name = 'picks'
-                  and column_name = 'source_observed_at'
-            )
+        'source_audit', false
     );
 $$;
 

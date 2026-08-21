@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -181,16 +182,8 @@ class SupabaseContractTests(unittest.TestCase):
             "to_regprocedure('public.publish_pick_batch(text,text,jsonb)') is not null",
             text,
         )
-        self.assertIn("'version', 2", text)
-        self.assertIn("'source_audit'", text)
-        for field in (
-            "source",
-            "source_event_id",
-            "source_market_key",
-            "source_selection_key",
-            "source_observed_at",
-        ):
-            self.assertIn(f"column_name = '{field}'", text)
+        self.assertIn("'version', 1", text)
+        self.assertIn("'source_audit', false", text)
         self.assertIn(f"revoke all on function {signature} from public, anon, authenticated", text)
         self.assertIn(f"grant execute on function {signature} to service_role", text)
         probe_start = text.index(f"create or replace function {signature}")
@@ -253,8 +246,8 @@ class SupabaseContractTests(unittest.TestCase):
             "create index if not exists picks_source_event_idx on public.picks (source, source_event_id)",
             text,
         )
-        self.assertIn("source is null", text)
-        self.assertIn("source_event_id is null", text)
+        self.assertIn("source is not null", text)
+        self.assertIn("source_event_id is not null", text)
         self.assertIn("picks_source_audit_complete_check", text)
 
     def test_every_publishing_rpc_version_validates_audit_before_mutation(self):
@@ -269,7 +262,7 @@ class SupabaseContractTests(unittest.TestCase):
             )
             self.assertLess(audit_validation, first_mutation)
             self.assertIn("length(btrim(value->>'source')) not between 1 and 100", function)
-            self.assertIn("(value->>'source_observed_at')::timestamptz is null", function)
+            self.assertIn("observed_at_value :=", function)
             for field in (
                 "source",
                 "source_event_id",
@@ -288,6 +281,140 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("jsonb_populate_record(null::public.picks", text)
         self.assertIn("revoke all on function public.publish_pick_batch", text)
         self.assertIn("grant execute on function public.publish_pick_batch", text)
+
+    def test_source_audit_constraint_uses_only_a_protected_legacy_marker(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        start = text.index("add constraint picks_source_audit_complete_check")
+        end = text.index(") not valid;", start) + len(") not valid;")
+        constraint = text[start:end]
+
+        # No local PostgreSQL server is available in this test environment. The
+        # nullable version marker is reserved for pre-migration rows; a trigger
+        # forces every insert and any audit-changing update to version 1.
+        self.assertIn(") not valid;", constraint)
+        self.assertIn("source_audit_version is null", constraint)
+        self.assertIn("source_audit_version = 1", constraint)
+        self.assertNotIn("source is null", constraint)
+        self.assertNotIn("source_event_id is null", constraint)
+        for field in (
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+            "source_observed_at",
+        ):
+            self.assertIn(f"{field} is not null", constraint)
+        self.assertIn("length(btrim(source)) between 1 and 100", constraint)
+
+    def test_audit_version_trigger_preserves_legacy_updates_without_new_row_bypass(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+
+        self.assertIn("add column if not exists source_audit_version smallint", text)
+        self.assertIn("alter column source_audit_version set default 1", text)
+        self.assertIn(
+            "create trigger picks_enforce_source_audit_version before insert or update on public.picks",
+            text,
+        )
+        self.assertIn(
+            "revoke all on function public.enforce_pick_source_audit_version() from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.enforce_pick_source_audit_version() to service_role",
+            text,
+        )
+        self.assertIn("if tg_op = 'insert' then new.source_audit_version := 1", text)
+        self.assertIn("old.source_audit_version = 1", text)
+        for field in (
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+            "source_observed_at",
+        ):
+            self.assertIn(
+                f"new.{field} is distinct from old.{field}",
+                text,
+            )
+
+    def test_intermediate_ledger_probe_never_announces_source_audit_ready(self):
+        text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
+        start = text.index("create or replace function public.scraper_schema_status()")
+        end = text.index("$$;", start)
+        probe = text[start:end]
+
+        self.assertIn("'version', 1", probe)
+        self.assertIn("'source_audit', false", probe)
+        self.assertNotIn("'version', 2", probe)
+
+    def test_final_probe_requires_columns_strict_constraint_and_source_index(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        start = text.index("create or replace function public.scraper_schema_status()")
+        end = text.index("$$;", start)
+        probe = text[start:end]
+
+        self.assertIn("'version', 2", probe)
+        self.assertIn("to_regclass('public.picks_source_event_idx') is not null", probe)
+        self.assertIn("conname = 'picks_source_audit_complete_check'", probe)
+        self.assertIn("column_name = 'source_audit_version'", probe)
+        self.assertIn("tgname = 'picks_enforce_source_audit_version'", probe)
+        self.assertIn("pg_get_triggerdef", probe)
+        self.assertIn("pg_get_functiondef", probe)
+        self.assertIn("new.source_audit_version := 1", probe)
+        self.assertIn("pg_get_constraintdef", probe)
+        for field in (
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+            "source_observed_at",
+        ):
+            self.assertIn(f"'{field} is not null'", probe)
+        self.assertIn("'source_audit_version is null'", probe)
+        self.assertIn("'source_audit_version = 1'", probe)
+
+    def test_publishing_rpcs_require_utc_non_future_observations_before_mutation(self):
+        for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):
+            text = " ".join(migration.read_text(encoding="utf-8").lower().split())
+            start = text.index("create or replace function public.publish_pick_batch")
+            function = text[start:]
+            utc_validation = function.index("source_observed_at must be utc and not in the future")
+            first_mutation = min(
+                function.index("insert into public.scraper_runs"),
+                function.index("update public.picks"),
+            )
+
+            self.assertLess(utc_validation, first_mutation)
+            self.assertIn("(z|[+]00:00)$", function)
+            self.assertIn("observed_at_value > now()", function)
+            self.assertIn(
+                "exception when invalid_datetime_format or datetime_field_overflow",
+                function,
+            )
+            self.assertNotIn("[+-][0-9]{2}:[0-9]{2}", function[:first_mutation])
+            pattern_match = re.search(
+                r"source_observed_at'\) !~ '([^']+)'",
+                function[:first_mutation],
+            )
+            self.assertIsNotNone(pattern_match)
+            pattern = pattern_match.group(1)
+            self.assertIsNotNone(
+                re.fullmatch(pattern, "2026-08-20T16:05:00Z", re.IGNORECASE)
+            )
+            self.assertIsNotNone(
+                re.fullmatch(
+                    pattern,
+                    "2026-08-20T16:05:00+00:00",
+                    re.IGNORECASE,
+                )
+            )
+            self.assertIsNone(
+                re.fullmatch(
+                    pattern,
+                    "2026-08-20T10:05:00-06:00",
+                    re.IGNORECASE,
+                )
+            )
 
 
 if __name__ == "__main__":

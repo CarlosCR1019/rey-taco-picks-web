@@ -254,11 +254,19 @@ The following file check applies only when an operator has separately authorized
 a direct production publication from this checkout and a build/deployment of
 that resulting artifact. It is not part of, and cannot validate, the GitHub
 manual-dispatch procedure above. After the migration, secrets, backup, and full
-gate are confirmed, use a unique stable run key, require exit `0`, and build the
-root deployment artifact:
+gate are confirmed, the operator must choose one unique explicit approved key
+for this logical run, record it in the change/incident record, and reuse that
+exact string for every retry. A new key is only for a deliberately new batch,
+never for retrying a failed or partial run. Require exit `0`, then build the root
+deployment artifact:
 
 ```powershell
-$env:SCRAPER_RUN_KEY = "authorized-local-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$authorizedRunKey = 'authorized-local-CHANGE-ID-RUN-01'
+if ([string]::IsNullOrWhiteSpace($authorizedRunKey) -or
+    $authorizedRunKey.Contains('CHANGE-ID')) {
+  throw 'Replace CHANGE-ID with the approved recorded change identifier'
+}
+$env:SCRAPER_RUN_KEY = $authorizedRunKey
 python backend/scraper.py
 if ($LASTEXITCODE -ne 0) { throw "Production scraper failed: $LASTEXITCODE" }
 npm run build

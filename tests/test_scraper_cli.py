@@ -316,6 +316,52 @@ class FakeDriver:
         self.quit_calls += 1
 
 
+class Chrome:
+    """UC-like fake: upstream destructor invokes the public quit method again."""
+
+    __module__ = "undetected_chromedriver"
+
+    def __init__(self, *, fail_cleanup=False):
+        self.quit_calls = 0
+        self.fail_cleanup = fail_cleanup
+
+    def quit(self):
+        self.quit_calls += 1
+        if self.fail_cleanup:
+            raise OSError("WinError 6")
+
+    def __del__(self):
+        self.quit()
+
+
+def test_uc_cleanup_neutralizes_the_upstream_destructor_double_quit():
+    driver = Chrome()
+
+    scraper._cleanup_chrome_driver(driver)
+    driver.__del__()
+
+    assert driver.quit_calls == 1
+
+
+def test_generic_driver_cleanup_is_not_overridden():
+    driver = FakeDriver()
+
+    scraper._cleanup_chrome_driver(driver)
+
+    assert driver.quit_calls == 1
+    assert "quit" not in driver.__dict__
+
+
+def test_uc_cleanup_reports_the_first_failure_but_neutralizes_destructor():
+    driver = Chrome(fail_cleanup=True)
+
+    with pytest.raises(OSError, match="WinError 6"):
+        scraper._cleanup_chrome_driver(driver)
+    driver.__del__()
+
+    assert driver.quit_calls == 1
+
+
 def stub_successful_legacy_phases(monkeypatch, picks=None):
     selected = picks or [
         {

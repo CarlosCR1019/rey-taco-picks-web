@@ -1755,6 +1755,26 @@ def probe_secure_schema(client):
         raise ConfigError("secure Supabase scraper migration is not applied")
 
 
+def _cleanup_chrome_driver(driver):
+    """Quit once and disable undetected_chromedriver's destructor double-quit.
+
+    On Windows, the upstream Chrome.__del__ calls ``quit`` again after manual
+    cleanup and can raise ``WinError 6``. Instance replacement is deliberately
+    limited to that concrete upstream class; ordinary drivers keep their normal
+    method and the first cleanup failure still propagates.
+    """
+    driver_type = type(driver)
+    is_undetected_chrome = driver_type.__name__ == "Chrome" and (
+        driver_type.__module__ == "undetected_chromedriver"
+        or driver_type.__module__.startswith("undetected_chromedriver.")
+    )
+    try:
+        driver.quit()
+    finally:
+        if is_undetected_chrome:
+            driver.quit = lambda: None
+
+
 class LegacyPipeline:
     """Injectable adapter around the existing collection and publication phases."""
 
@@ -1830,10 +1850,7 @@ class LegacyPipeline:
             persisted = bool(publication and publication.run_id)
             return PipelineResult(len(partidos), len(picks), persisted, failed)
         finally:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            _cleanup_chrome_driver(driver)
             print("🔒 Navegador cerrado.")
 
 

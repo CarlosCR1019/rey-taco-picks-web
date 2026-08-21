@@ -349,6 +349,194 @@ def test_catalog_evidence_rejects_naive_reference_time(event_fixture):
         )
 
 
+def test_catalog_evidence_does_not_merge_same_day_doubleheader_times():
+    first_start = OBSERVED.replace(hour=12)
+    second_start = OBSERVED.replace(hour=20)
+    outcomes_a = (
+        Outcome("home", "Dodgers", 1.80),
+        Outcome("away", "Padres", 2.10),
+    )
+    outcomes_b = (
+        Outcome("home", "Dodgers", 1.83),
+        Outcome("away", "Padres", 2.08),
+    )
+    candidates = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="doubleheader-noon",
+                starts_at=first_start,
+                markets=(
+                    Market(
+                        "h2h",
+                        "full_game",
+                        None,
+                        outcomes_a,
+                        bookmaker_key="book-a",
+                    ),
+                ),
+            ),
+            event_with(
+                source="the_odds_api",
+                source_event_id="doubleheader-night",
+                starts_at=second_start,
+                markets=(
+                    Market(
+                        "h2h",
+                        "full_game",
+                        None,
+                        outcomes_b,
+                        bookmaker_key="book-b",
+                    ),
+                ),
+            ),
+        ]
+    )
+    selected = next(
+        row
+        for row in candidates
+        if row.source_event_id == "doubleheader-noon"
+        and row.selection_key == "home"
+    )
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=5),
+    )
+
+    assert evidence.source_count == 1
+    assert evidence.price_spread is None
+    assert score_evidence(evidence).has_value is False
+
+
+def test_catalog_evidence_anchors_home_selection_to_the_actual_competitor():
+    starts_at = OBSERVED + timedelta(hours=8)
+    normal = event_with(
+        source="playdoit",
+        source_event_id="normal",
+        starts_at=starts_at,
+        home_team="América",
+        away_team="Tigres",
+        sport="soccer",
+        markets=(
+            Market(
+                "h2h",
+                "full_game",
+                None,
+                (
+                    Outcome("home", "América", 1.80),
+                    Outcome("draw", "Empate", 3.20),
+                    Outcome("away", "Tigres", 2.40),
+                ),
+                bookmaker_key="book-a",
+            ),
+        ),
+    )
+    reversed_orientation = event_with(
+        source="the_odds_api",
+        source_event_id="reversed",
+        starts_at=starts_at.astimezone(timezone.utc),
+        home_team="Tigres",
+        away_team="América",
+        sport="soccer_mexico_ligamx",
+        markets=(
+            Market(
+                "h2h",
+                "full_game",
+                None,
+                (
+                    Outcome("home", "Tigres", 1.82),
+                    Outcome("draw", "Draw", 3.20),
+                    Outcome("away", "América", 2.38),
+                ),
+                bookmaker_key="book-b",
+            ),
+        ),
+    )
+    candidates = build_candidates([normal, reversed_orientation])
+    selected = next(
+        row
+        for row in candidates
+        if row.source_event_id == "normal" and row.selection_key == "home"
+    )
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=5),
+    )
+
+    # The reversed source's ``away`` outcome is América; its ``home`` outcome
+    # (Tigres) must never be treated as the selected competitor.
+    assert evidence.source_count == 2
+    assert evidence.price_spread == pytest.approx(0.58)
+    assert score_evidence(evidence).has_value is False
+
+
+def test_market_completeness_never_combines_different_observation_snapshots():
+    candidates = build_candidates(
+        [
+            event_with(
+                source="playdoit",
+                source_event_id="snapshot-event",
+                home_team="América",
+                away_team="Tigres",
+                sport="soccer",
+                markets=(
+                    Market(
+                        "h2h",
+                        "full_game",
+                        None,
+                        (
+                            Outcome("home", "América", 1.80),
+                            Outcome("draw", "Empate", 3.20),
+                            Outcome("away", "Tigres", 2.40),
+                        ),
+                        bookmaker_key="playdoit",
+                    ),
+                ),
+            ),
+        ]
+    )
+    staggered = [
+        replace(candidate, observed_at=OBSERVED + timedelta(minutes=index))
+        for index, candidate in enumerate(candidates)
+    ]
+    selected = next(row for row in staggered if row.selection_key == "home")
+
+    evidence = evidence_for_candidate(
+        selected,
+        staggered,
+        reference_at=OBSERVED + timedelta(minutes=5),
+    )
+
+    assert evidence.market_complete is False
+    assert score_evidence(evidence).has_value is False
+
+
+def test_same_originating_bookmaker_via_aggregator_is_not_independent():
+    candidates = _comparison_candidates(
+        second_source="the_odds_api",
+        second_bookmaker="book-a",
+    )
+    selected = next(
+        row
+        for row in candidates
+        if row.source == "playdoit" and row.selection_key == "home"
+    )
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=10),
+    )
+
+    assert evidence.source_count <= 1
+    assert evidence.price_spread is None
+    assert score_evidence(evidence).has_value is False
+
+
 def test_candidate_copies_exact_normalized_source_market_and_price(event_fixture):
     candidates = build_candidates([event_fixture])
     home = next(row for row in candidates if row.selection_key == "home")

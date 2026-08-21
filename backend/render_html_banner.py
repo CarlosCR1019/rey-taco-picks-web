@@ -2,11 +2,71 @@ import os
 import sys
 import json
 import time
+from html import escape
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from datetime import datetime
 
 sys.stdout.reconfigure(encoding='utf-8')
+
+
+def _data_support_text(value):
+    text = str(value or "Datos no disponibles").strip()
+    if "respaldo de datos" in text.casefold():
+        return text
+    return f"{text} respaldo de datos" if text.endswith("%") else text
+
+
+def build_cards_html(picks):
+    """Render data-support labels without inventing probability or value."""
+
+    if not picks:
+        return """
+        <div class="pick-card">
+          <div class="card-left">
+            <div class="match-title">Sin picks verificados disponibles</div>
+            <div class="pick-selection">Vuelve más tarde</div>
+          </div>
+        </div>
+        """
+
+    cards = []
+    for index, pick in enumerate(picks):
+        hot_class = "hot" if index == 0 else ""
+        category = escape(str(pick.get("categoria", "DEPORTES")).upper())
+        match = escape(str(pick.get("partido", "Partido")))
+        selection = escape(str(pick.get("pick", "Selección")))
+        price = escape(str(pick.get("cuota", "—")))
+        schedule = escape(str(pick.get("horario", "Por confirmar")))
+        support = escape(_data_support_text(pick.get("confianza")))
+        evidence_label = escape(str(pick.get("riesgo", "Datos limitados")))
+        value_signal = (
+            '<span class="value-signal">Señal de valor comparada</span>'
+            if pick.get("tiene_valor") is True
+            else ""
+        )
+        cards.append(f"""
+        <div class="pick-card {hot_class}">
+          <div class="card-left">
+            <div class="meta-tags">
+              <span class="tag-sport">{category}</span>
+              <span class="tag-time">{schedule}</span>
+            </div>
+            <div class="match-title">{match}</div>
+            <div class="pick-selection">🎯 {selection}</div>
+          </div>
+          <div class="card-right">
+            <div class="odds-box">
+              <div class="odds-label">Momio</div>
+              <div class="odds-val">{price}</div>
+            </div>
+            <span class="conf-badge">📊 {support}</span>
+            <span class="evidence-label">{evidence_label}</span>
+            {value_signal}
+          </div>
+        </div>
+        """)
+    return "".join(cards)
 
 def renderizar_banner_estudio(picks=None, output_path="banner_hoy.png"):
     """
@@ -22,43 +82,7 @@ def renderizar_banner_estudio(picks=None, output_path="banner_hoy.png"):
             picks = []
 
     free_picks = [p for p in picks if not p.get('es_parlay')][:3]
-    if not free_picks:
-        free_picks = [
-            {"categoria": "LIGA MX", "partido": "Tigres UANL vs Atlante FC", "pick": "Más de 2.5 Goles Totales", "cuota": "1.67", "confianza": "92%", "horario": "Hoy • 21:00 hrs"},
-            {"categoria": "LIGA MX", "partido": "Juarez vs America", "pick": "Más de 2.5 Goles Totales", "cuota": "1.74", "confianza": "90%", "horario": "Hoy • 19:00 hrs"},
-            {"categoria": "MLB BÉISBOL", "partido": "WAS Nationals vs TEX Rangers", "pick": "Más de 7.5 Carreras Totales", "cuota": "1.95", "confianza": "91%", "horario": "Hoy • 18:05 hrs"}
-        ]
-
-    # Construir HTML dinámico para las 3 tarjetas
-    cards_html = ""
-    for i, p in enumerate(free_picks):
-        hot_class = "hot" if i == 0 else ""
-        cat = p.get('categoria', 'DEPORTES').upper()
-        partido = p.get('partido', 'Partido')
-        pick_txt = p.get('pick', 'Selección')
-        cuota = p.get('cuota', '1.75')
-        conf = p.get('confianza', '90%')
-        horario = p.get('horario', 'Hoy')
-        
-        cards_html += f"""
-        <div class="pick-card {hot_class}">
-          <div class="card-left">
-            <div class="meta-tags">
-              <span class="tag-sport">{cat}</span>
-              <span class="tag-time">{horario}</span>
-            </div>
-            <div class="match-title">{partido}</div>
-            <div class="pick-selection">🎯 {pick_txt}</div>
-          </div>
-          <div class="card-right">
-            <div class="odds-box">
-              <div class="odds-label">Momio</div>
-              <div class="odds-val">{cuota}</div>
-            </div>
-            <span class="conf-badge">🔥 {conf} Confianza</span>
-          </div>
-        </div>
-        """
+    cards_html = build_cards_html(free_picks)
 
     fecha_actual = datetime.now().strftime("%d DE AGOSTO, %Y • CDMX")
     

@@ -56,7 +56,7 @@ function pickCard(row: PickRow): string {
         <div class="selection-row"><span>Selección</span><strong>${escapeHtml(row.pick)}</strong><b>@ ${escapeHtml(row.cuota)}</b></div>
         <p>${escapeHtml(row.razonamiento)}</p>
       `}
-      <div class="pick-footer"><span>Confianza: ${escapeHtml(row.confianza)}</span><span class="status status-${row.estado}">${statusLabel(row.estado as PickStatus)}</span></div>
+      <div class="pick-footer"><span>Respaldo de datos: ${escapeHtml(row.confianza)}</span><span class="status status-${row.estado}">${statusLabel(row.estado as PickStatus)}</span></div>
     </article>`;
 }
 

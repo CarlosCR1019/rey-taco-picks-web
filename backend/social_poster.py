@@ -1,7 +1,5 @@
 import os
 import sys
-import json
-import time
 import requests
 from dotenv import load_dotenv
 
@@ -23,7 +21,7 @@ def publicar_en_facebook_page(image_path="banner_hoy.png", mensaje=None):
     if not mensaje:
         mensaje = (
             "🌮👑 ¡PRONÓSTICOS DEPORTIVOS DE HOY CON IA! 👑🌮\n\n"
-            "Aquí tienes los 3 picks destacados del día con valor matemático (+EV) y ventaja estadística.\n\n"
+            "Aquí tienes los picks destacados del día con su respaldo de datos disponible.\n\n"
             "📊 Consulta los análisis completos, el Parlay del Día y las cuotas en vivo en nuestra plataforma:\n"
             "👉 https://reytacopicks.com\n\n"
             "#ReyTacoPicks #LigaMX #ChampionsLeague #MLB #ApuestasDeportivas #PronosticosGratis #ParlayIA"
@@ -60,7 +58,7 @@ def publicar_en_instagram(image_url, caption=None):
     if not caption:
         caption = (
             "🌮👑 PICKS DEL DÍA CON INTELIGENCIA ARTIFICIAL 👑🌮\n\n"
-            "🎯 3 Selecciones analizadas con modelos predictivos y valor matemático (+EV).\n\n"
+            "🎯 Selecciones analizadas con evidencia de mercado disponible.\n\n"
             "🔗 Revisa todos los picks gratis y el Parlay del Día en el link de la bio 👇\n"
             "👉 https://reytacopicks.com\n\n"
             "#ReyTacoPicks #ApuestasDeportivas #LigaMX #MLB #Futbol #TipsDeportivos #IA"

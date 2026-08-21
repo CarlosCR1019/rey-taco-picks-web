@@ -185,7 +185,7 @@ def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> st
         [
             f"Pick: {selection}",
             f"Precio: {price}",
-            f"Confianza: {confidence}",
+            f"Respaldo de datos: {confidence}",
         ]
     )
     notice = (

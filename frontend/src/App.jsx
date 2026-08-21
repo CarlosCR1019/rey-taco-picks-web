@@ -52,7 +52,7 @@ function App() {
                   
                   <div className="card-header">
                     <span className="sport-tag">{pick.deporte}</span>
-                    <span className="confidence-score">IA Confianza: {pick.confianza}</span>
+                    <span className="confidence-score">Respaldo de datos: {pick.confianza}</span>
                   </div>
                   
                   <div className="card-body">

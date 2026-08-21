@@ -1404,7 +1404,6 @@ def _fase6_candidate_ranking(
     candidates = _collect_verified_candidates(records)
     if not groq_api_key or not candidates:
         return []
-    evidence_reference_at = reference_at or datetime.now(timezone.utc)
 
     prompt_candidates, prompt = _bounded_prompt_candidates(candidates)
     if not prompt_candidates:
@@ -1459,6 +1458,7 @@ def _fase6_candidate_ranking(
 
     raw_ranking = _parse_strict_json_array(raw_response)
     ranked = validate_ai_ranking(raw_ranking, prompt_candidates)
+    evidence_reference_at = reference_at or datetime.now(timezone.utc)
     picks = []
     for row in ranked:
         evidence = evidence_for_candidate(

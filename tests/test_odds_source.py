@@ -558,6 +558,44 @@ def test_phase6_derives_high_support_from_full_catalog_not_ai_claims(monkeypatch
     assert picks[0]["tiene_valor"] is True
 
 
+def test_phase6_captures_one_scoring_clock_after_the_model_response(monkeypatch):
+    from backend import scraper
+
+    projected = _verified_projection()
+    candidate = projected["_verified_candidates"][0]
+
+    class AdvancingDatetime:
+        current = OBSERVED_AT + timedelta(minutes=5)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is None else cls.current.astimezone(tz)
+
+    def fake_groq(*_args, **_kwargs):
+        AdvancingDatetime.current = OBSERVED_AT + timedelta(minutes=12)
+        return json.dumps([{
+            "candidate_id": candidate.candidate_id,
+            "rationale": "El reloj avanza mientras responde el modelo externo.",
+        }])
+
+    monkeypatch.setattr(scraper, "datetime", AdvancingDatetime)
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(scraper, "ejecutar_groq_con_fallback", fake_groq)
+
+    picks = scraper.fase6_analisis_final(
+        [projected],
+        "",
+        {},
+        [projected],
+        groq_api_key="fake",
+    )
+
+    assert len(picks) == 1
+    assert picks[0]["confianza"] == "55% respaldo de datos"
+    assert picks[0]["riesgo"] == "Datos limitados"
+    assert picks[0]["tiene_valor"] is False
+
+
 def test_groq_fallback_preserves_response_schema_on_every_retry(monkeypatch):
     from backend import scraper
 

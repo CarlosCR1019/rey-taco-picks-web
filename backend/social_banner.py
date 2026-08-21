@@ -51,12 +51,6 @@ def generar_banner_redes(picks=None, output_path="banner_hoy.png", usar_ia=True)
             picks = []
 
     free_picks = [p for p in picks if not p.get('es_parlay')][:3]
-    if not free_picks:
-        free_picks = [
-            {"categoria": "Liga MX", "partido": "Tigres UANL vs Atlante FC", "pick": "Más de 2.5 Goles Totales", "cuota": "1.67", "confianza": "92%"},
-            {"categoria": "Liga MX", "partido": "Juarez vs America", "pick": "Más de 2.5 Goles Totales", "cuota": "1.74", "confianza": "90%"},
-            {"categoria": "MLB", "partido": "WAS Nationals vs TEX Rangers", "pick": "Más de 7.5 Carreras Totales", "cuota": "1.95", "confianza": "91%"}
-        ]
 
     width = 1080
     height = 1080
@@ -124,9 +118,9 @@ def generar_banner_redes(picks=None, output_path="banner_hoy.png", usar_ia=True)
         cat = p.get('categoria', 'Deportes').upper()
         draw.text((card_x + 35, cy + 25), f"⚽ [{cat}]", fill="#38BDF8", font=font_card_meta)
         
-        # Nivel de Confianza Tag (Derecha)
-        conf = p.get('confianza', '90%')
-        draw.text((card_x + card_width - 35, cy + 25), f"🔥 {conf} Confianza", fill="#22C55E", font=font_card_meta, anchor="ra")
+        # Respaldo observable de datos (no probabilidad de ganar)
+        conf = p.get('confianza', 'Datos no disponibles')
+        draw.text((card_x + card_width - 35, cy + 25), f"Respaldo de datos: {conf}", fill="#22C55E", font=font_card_meta, anchor="ra")
 
         # Partido
         partido = p.get('partido', 'Partido Destacado')
@@ -139,7 +133,8 @@ def generar_banner_redes(picks=None, output_path="banner_hoy.png", usar_ia=True)
         # Cuota y Horario
         cuota = p.get('cuota', '1.75')
         horario = p.get('horario', 'Hoy')
-        draw.text((card_x + 35, cy + 175), f"📊 Momio: {cuota}  |  🕒 {horario}  |  💎 Valor Estadístico +EV", fill="#94A3B8", font=font_card_meta)
+        value_text = "  |  💎 Señal de valor comparada" if p.get('tiene_valor') is True else ""
+        draw.text((card_x + 35, cy + 175), f"📊 Momio: {cuota}  |  🕒 {horario}{value_text}", fill="#94A3B8", font=font_card_meta)
 
     # 6. Footer & Call To Action
     footer_y = height - 90

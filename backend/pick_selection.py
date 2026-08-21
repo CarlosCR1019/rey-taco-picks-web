@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 import math
@@ -32,6 +32,7 @@ MEXICO = ZoneInfo("America/Mexico_City")
 MAX_AI_RANKED_PICKS = 12
 EVIDENCE_LABEL_LIMITED = "Datos limitados"
 EVIDENCE_LABEL_HIGH = "Respaldo alto"
+EVIDENCE_START_TOLERANCE = timedelta(minutes=5)
 
 
 def _required_text(value: object, field: str) -> str:
@@ -380,21 +381,82 @@ def _candidate_exclusivity_group(candidate: CandidatePick) -> tuple[object, ...]
     )
 
 
-def _candidate_evidence_group(candidate: CandidatePick) -> tuple[object, ...]:
-    return (*_candidate_exclusivity_group(candidate), candidate.selection_key)
+def _canonical_sport(value: str) -> str:
+    normalized = _normalized_competitor(value)
+    families = {
+        "football": "soccer",
+        "futbol": "soccer",
+    }
+    for prefix in ("soccer", "baseball", "basketball", "icehockey"):
+        if normalized == prefix or normalized.startswith(f"{prefix}_"):
+            return prefix
+    return families.get(normalized, normalized)
 
 
-def _quote_provider_identity(candidate: CandidatePick) -> tuple[str, str]:
-    return candidate.source.casefold(), candidate.bookmaker_key
+def _selection_anchor(candidate: CandidatePick) -> str:
+    if candidate.market_key in {"h2h", "spreads"}:
+        if candidate.selection_key == "home":
+            return _normalized_competitor(candidate.home_team)
+        if candidate.selection_key == "away":
+            return _normalized_competitor(candidate.away_team)
+    return candidate.selection_key
+
+
+def _selection_line(candidate: CandidatePick) -> str | None:
+    line = candidate.line
+    if (
+        candidate.market_key == "spreads"
+        and candidate.selection_key == "away"
+        and line is not None
+    ):
+        line = -line
+    return _canonical_line(line)
+
+
+def _same_evidence_selection(
+    candidate: CandidatePick,
+    quote: CandidatePick,
+) -> bool:
+    starts_delta = abs(
+        (
+            candidate.starts_at.astimezone(timezone.utc)
+            - quote.starts_at.astimezone(timezone.utc)
+        ).total_seconds()
+    )
+    return (
+        _canonical_sport(candidate.sport) == _canonical_sport(quote.sport)
+        and _normalized_competitor(candidate.league)
+        == _normalized_competitor(quote.league)
+        and _physical_competitor_pair(candidate) == _physical_competitor_pair(quote)
+        and starts_delta <= EVIDENCE_START_TOLERANCE.total_seconds()
+        and candidate.market_key == quote.market_key
+        and candidate.period == quote.period
+        and _selection_line(candidate) == _selection_line(quote)
+        and _selection_anchor(candidate) == _selection_anchor(quote)
+    )
+
+
+def _canonical_bookmaker_origin(candidate: CandidatePick) -> str:
+    decomposed = unicodedata.normalize("NFKD", candidate.bookmaker_key)
+    return "".join(
+        character.casefold()
+        for character in decomposed
+        if character.isalnum()
+        and not unicodedata.category(character).startswith("M")
+    )
 
 
 def _market_quote_identity(candidate: CandidatePick) -> tuple[object, ...]:
     return (
         candidate.source.casefold(),
         candidate.source_event_id,
-        candidate.bookmaker_key,
-        _physical_competitor_pair(candidate),
-        candidate.starts_at.astimezone(MEXICO).date(),
+        _canonical_bookmaker_origin(candidate),
+        _canonical_sport(candidate.sport),
+        _normalized_competitor(candidate.league),
+        _normalized_competitor(candidate.home_team),
+        _normalized_competitor(candidate.away_team),
+        candidate.starts_at.astimezone(timezone.utc),
+        candidate.observed_at.astimezone(timezone.utc),
         candidate.market_key,
         candidate.period,
         _canonical_line(candidate.line),
@@ -462,34 +524,55 @@ def evidence_for_candidate(
         quote for quote in catalog if quote.observed_at <= reference
     ]
 
-    comparison_group = _candidate_evidence_group(candidate)
-    by_provider: dict[tuple[str, str], list[CandidatePick]] = {}
+    by_provider: dict[str, list[CandidatePick]] = {}
     for quote in usable_catalog:
-        if _candidate_evidence_group(quote) == comparison_group:
-            by_provider.setdefault(_quote_provider_identity(quote), []).append(quote)
+        if _same_evidence_selection(candidate, quote):
+            by_provider.setdefault(
+                _canonical_bookmaker_origin(quote),
+                [],
+            ).append(quote)
 
     # Multiple same-provider event identities for one physical match are
     # ambiguous (for example, an untrusted doubleheader match) and contribute
     # no evidence instead of being selected heuristically.
-    comparable = [
-        rows[0]
-        for rows in by_provider.values()
-        if len(rows) == 1
-    ]
+    comparable = []
+    for rows in by_provider.values():
+        if len(rows) == 1:
+            comparable.append(rows[0])
+            continue
+        event_signatures = {
+            (
+                row.starts_at.astimezone(timezone.utc),
+                _selection_anchor(row),
+                _selection_line(row),
+            )
+            for row in rows
+        }
+        prices = {Decimal(str(row.price)) for row in rows}
+        if len(event_signatures) == 1 and len(prices) == 1:
+            comparable.append(min(rows, key=lambda row: row.observed_at))
     if not comparable:
         return Evidence(0, 11, None, False)
 
     market_outcomes: dict[tuple[object, ...], set[str]] = {}
     market_sports: dict[tuple[object, ...], set[str]] = {}
+    market_observations: dict[tuple[object, ...], list[datetime]] = {}
     for quote in usable_catalog:
         market_identity = _market_quote_identity(quote)
         market_outcomes.setdefault(market_identity, set()).add(quote.selection_key)
         market_sports.setdefault(market_identity, set()).add(quote.sport.casefold())
+        market_observations.setdefault(market_identity, []).append(
+            quote.observed_at
+        )
 
     market_complete = True
+    used_observations = []
     for quote in comparable:
         market_identity = _market_quote_identity(quote)
         observed_outcomes = market_outcomes.get(market_identity, set())
+        used_observations.extend(
+            market_observations.get(market_identity, [quote.observed_at])
+        )
         if (
             len(market_sports.get(market_identity, set())) != 1
             or not _required_market_outcomes(quote).issubset(observed_outcomes)
@@ -498,8 +581,8 @@ def evidence_for_candidate(
             break
 
     oldest_age_seconds = max(
-        (reference - quote.observed_at).total_seconds()
-        for quote in comparable
+        (reference - observed_at).total_seconds()
+        for observed_at in used_observations
     )
     age_minutes = math.ceil(oldest_age_seconds / 60)
 

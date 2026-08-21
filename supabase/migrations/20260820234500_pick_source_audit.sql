@@ -1,50 +1,46 @@
 begin;
 
-create extension if not exists pgcrypto;
-
-create table if not exists public.scraper_runs (
-    id uuid primary key default gen_random_uuid(),
-    run_key text not null unique,
-    status text not null default 'running'
-        check (status in ('running', 'published', 'partial', 'failed')),
-    source_hash text not null,
-    delivery_status jsonb not null default '{}'::jsonb,
-    error_message text,
-    created_at timestamptz not null default now(),
-    finished_at timestamptz
-);
-
-create table if not exists public.pick_batches (
-    id uuid primary key default gen_random_uuid(),
-    run_id uuid not null unique references public.scraper_runs(id) on delete cascade,
-    active boolean not null default false,
-    created_at timestamptz not null default now()
-);
-
-create unique index if not exists pick_batches_one_active_idx
-    on public.pick_batches ((1))
-    where active;
-
--- public_picks depends on picks.id, so recreate it around the bigint upgrade.
-drop view if exists public.public_picks;
-
 alter table public.picks
-    alter column id type bigint using id::bigint;
-
-alter table public.picks
-    add column if not exists batch_id uuid references public.pick_batches(id),
-    add column if not exists active boolean not null default false,
     add column if not exists source text,
     add column if not exists source_event_id text,
     add column if not exists source_market_key text,
     add column if not exists source_selection_key text,
     add column if not exists source_observed_at timestamptz;
 
-create index if not exists picks_active_batch_idx
-    on public.picks (batch_id, active, estado);
-
 create index if not exists picks_source_event_idx
     on public.picks (source, source_event_id);
+
+do $$
+begin
+    if not exists (
+        select 1
+        from pg_constraint
+        where conname = 'picks_source_audit_complete_check'
+          and conrelid = 'public.picks'::regclass
+    ) then
+        -- Historical rows may remain entirely null; any row that starts an
+        -- audit identity must carry the whole bounded identity atomically.
+        alter table public.picks
+            add constraint picks_source_audit_complete_check
+            check (
+                (
+                    source is null
+                    and source_event_id is null
+                    and source_market_key is null
+                    and source_selection_key is null
+                    and source_observed_at is null
+                )
+                or (
+                    length(btrim(source)) between 1 and 100
+                    and length(btrim(source_event_id)) between 1 and 500
+                    and length(btrim(source_market_key)) between 1 and 1000
+                    and length(btrim(source_selection_key)) between 1 and 500
+                    and source_observed_at is not null
+                )
+            ) not valid;
+    end if;
+end
+$$;
 
 create or replace view public.public_picks
 with (security_invoker = true)
@@ -76,6 +72,8 @@ select
 from public.picks
 where visibility = 'public';
 
+-- Replace the RPC after the columns exist so upgrades and fresh installations
+-- both deserialize and insert the same complete source-audit contract.
 create or replace function public.publish_pick_batch(
     requested_run_key text,
     requested_source_hash text,
@@ -147,8 +145,6 @@ begin
         raise exception 'requested_picks must contain exactly one public non-parlay pick';
     end if;
 
-    -- The active batch is a global singleton, so serialize all publications,
-    -- including publications that use different run keys.
     perform pg_advisory_xact_lock(20260820233000);
 
     insert into public.scraper_runs (run_key, source_hash)
@@ -178,8 +174,6 @@ begin
         );
     end if;
 
-    -- Demote all legacy and current public pending picks before inserting the
-    -- replacement so picks_one_public_pending_idx cannot reject the batch.
     update public.picks
     set visibility = 'premium'
     where estado = 'pendiente' and visibility = 'public';
@@ -279,138 +273,11 @@ begin
 end;
 $$;
 
-create or replace function public.get_visible_picks()
-returns setof public.picks
-language sql
-stable
-security definer
-set search_path = public, pg_temp
-as $$
-    select p.*
-    from public.picks p
-    where (
-        p.estado = 'pendiente' and p.active
-        and (
-            p.visibility = 'public'
-            or public.is_active_subscriber(auth.uid())
-        )
-    ) or (
-        p.estado <> 'pendiente' and p.visibility = 'public'
-    );
-$$;
+revoke all on function public.publish_pick_batch(text, text, jsonb)
+    from public, anon, authenticated;
+grant execute on function public.publish_pick_batch(text, text, jsonb)
+    to service_role;
 
-create or replace function public.record_scraper_delivery(
-    requested_run_id uuid,
-    requested_destination text,
-    requested_success boolean,
-    requested_error text default ''
-) returns void
-language plpgsql
-security definer
-set search_path = public, pg_temp
-as $$
-begin
-    if requested_success is null then
-        raise exception 'requested_success must not be null';
-    end if;
-
-    if requested_destination is null
-       or requested_destination not in ('admin', 'vip', 'free') then
-        raise exception 'requested_destination must be admin, vip, or free';
-    end if;
-
-    with updated as (
-        select
-            id,
-            jsonb_set(
-                delivery_status,
-                array[requested_destination],
-                jsonb_build_object(
-                    'success', requested_success,
-                    'error', left(coalesce(requested_error, ''), 200),
-                    'updated_at', now()
-                ),
-                true
-            ) as next_delivery_status
-        from public.scraper_runs
-        where id = requested_run_id
-          and status in ('published', 'partial')
-        for update
-    )
-    update public.scraper_runs as runs
-    set delivery_status = updated.next_delivery_status,
-        status = case
-            when not exists (
-                select 1
-                from jsonb_each(updated.next_delivery_status)
-                    as delivery(destination, details)
-                where details->>'success' is distinct from 'true'
-            ) then 'published' else 'partial'
-        end
-    from updated
-    where runs.id = updated.id;
-
-    if not found then
-        raise exception 'unknown or unpublished scraper run %', requested_run_id;
-    end if;
-end;
-$$;
-
-alter table public.scraper_runs enable row level security;
-alter table public.pick_batches enable row level security;
-
-drop policy if exists picks_public_read on public.picks;
-drop policy if exists picks_member_read on public.picks;
-drop policy if exists picks_subscriber_read on public.picks;
-
-create policy picks_public_read on public.picks
-    for select to anon
-    using (
-        (estado = 'pendiente' and active and visibility = 'public')
-        or (estado <> 'pendiente' and visibility = 'public')
-    );
-
-create policy picks_member_read on public.picks
-    for select to authenticated
-    using (
-        (
-            estado = 'pendiente'
-            and active
-            and (
-                visibility = 'public'
-                or public.is_active_subscriber(auth.uid())
-            )
-        )
-        or (estado <> 'pendiente' and visibility = 'public')
-    );
-
--- A FOR ALL policy also grants SELECT to ordinary authenticated users through
--- policy OR-composition. Keep each admin operation explicitly role-checked.
-drop policy if exists picks_admin_write on public.picks;
-drop policy if exists picks_admin_select on public.picks;
-drop policy if exists picks_admin_insert on public.picks;
-drop policy if exists picks_admin_update on public.picks;
-drop policy if exists picks_admin_delete on public.picks;
-
-create policy picks_admin_select on public.picks
-    for select to authenticated
-    using (public.is_admin(auth.uid()));
-
-create policy picks_admin_insert on public.picks
-    for insert to authenticated
-    with check (public.is_admin(auth.uid()));
-
-create policy picks_admin_update on public.picks
-    for update to authenticated
-    using (public.is_admin(auth.uid()))
-    with check (public.is_admin(auth.uid()));
-
-create policy picks_admin_delete on public.picks
-    for delete to authenticated
-    using (public.is_admin(auth.uid()));
-
--- Read-only deployment preflight. The scraper calls this before opening Chrome;
--- unlike publish_pick_batch, it cannot claim a run or mutate a batch.
 create or replace function public.scraper_schema_status()
 returns jsonb
 language sql
@@ -452,21 +319,9 @@ as $$
     );
 $$;
 
-revoke all on table public.scraper_runs from public, anon, authenticated;
-revoke all on table public.pick_batches from public, anon, authenticated;
-grant all on table public.scraper_runs to service_role;
-grant all on table public.pick_batches to service_role;
-grant select on public.public_picks to anon, authenticated;
-
-revoke all on function public.publish_pick_batch(text, text, jsonb) from public, anon, authenticated;
-revoke all on function public.record_scraper_delivery(uuid, text, boolean, text) from public, anon, authenticated;
-grant execute on function public.publish_pick_batch(text, text, jsonb) to service_role;
-grant execute on function public.record_scraper_delivery(uuid, text, boolean, text) to service_role;
-
-revoke all on function public.scraper_schema_status() from public, anon, authenticated;
-grant execute on function public.scraper_schema_status() to service_role;
-
-revoke all on function public.get_visible_picks() from public;
-grant execute on function public.get_visible_picks() to anon, authenticated;
+revoke all on function public.scraper_schema_status()
+    from public, anon, authenticated;
+grant execute on function public.scraper_schema_status()
+    to service_role;
 
 commit;

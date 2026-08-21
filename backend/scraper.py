@@ -12,6 +12,7 @@ import sys
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -43,6 +44,7 @@ from backend.pick_selection import (
     MAX_AI_RANKED_PICKS,
     RankedPick,
     _candidate_exclusivity_group,
+    _canonical_line,
     _is_individually_valid,
     build_candidates,
     evidence_for_candidate,
@@ -1385,6 +1387,11 @@ def _legacy_ranked_pick_projection(
         "selection_name": candidate.selection_name,
         "pick": candidate.selection_name,
         "cuota": candidate.price,
+        "source_market_key": _source_market_audit_key(candidate),
+        "source_selection_key": candidate.selection_key,
+        "source_observed_at": candidate.observed_at.astimezone(
+            timezone.utc
+        ).isoformat().replace("+00:00", "Z"),
         "razonamiento": ranked_pick.rationale,
         "confianza": f"{evidence_score.percent}% respaldo de datos",
         "riesgo": evidence_score.label,
@@ -1528,6 +1535,8 @@ def fase7_guardar_y_notificar(
         'razonamiento', 'marcador', 'estado', 'es_parlay', 'liga', 'mercado',
         'riesgo', 'resultado_apuesta', 'ganancia_simulada', 'fecha_generacion',
         'fecha_evento', 'horario', 'odds_mercado', 'tiene_valor', 'visibility',
+        'source', 'source_event_id', 'source_market_key',
+        'source_selection_key', 'source_observed_at',
     }
 
     visible_picks = assign_visibility(picks)
@@ -1668,6 +1677,7 @@ class PipelineResult:
     pick_count: int
     persisted: bool
     failed_deliveries: tuple[str, ...]
+    picks: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self):
         _check_pipeline_result_fields(
@@ -1679,6 +1689,218 @@ class PipelineResult:
         object.__setattr__(
             self, "failed_deliveries", tuple(self.failed_deliveries)
         )
+        object.__setattr__(self, "picks", _freeze_pipeline_picks(self.picks))
+
+
+def run_structured_pipeline(
+    events,
+    ranker,
+    publisher,
+    *,
+    dry_run,
+    reference_at=None,
+):
+    """Rank and publish only facts copied from normalized sportsbook evidence."""
+
+    try:
+        normalized_events = list(events)
+    except Exception:
+        return PipelineResult(0, 0, False, ())
+    event_count = len(normalized_events)
+    if type(dry_run) is not bool:
+        return PipelineResult(event_count, 0, False, ())
+
+    try:
+        candidates = build_candidates(normalized_events)
+    except Exception:
+        return PipelineResult(event_count, 0, False, ())
+    if not candidates:
+        return PipelineResult(event_count, 0, False, ())
+
+    try:
+        raw_ranking = ranker(tuple(candidates))
+    except Exception:
+        return PipelineResult(event_count, 0, False, ())
+    ranked = validate_ai_ranking(raw_ranking, candidates)
+    if not ranked:
+        return PipelineResult(event_count, 0, False, ())
+
+    reference = reference_at or datetime.now(timezone.utc)
+    try:
+        source_backed_rows = []
+        for ranked_pick in ranked:
+            evidence = evidence_for_candidate(
+                ranked_pick.candidate,
+                candidates,
+                reference_at=reference,
+            )
+            if evidence.source_count == 0:
+                return PipelineResult(event_count, 0, False, ())
+            score = score_evidence(evidence)
+            row = _source_backed_pick_row(ranked_pick, score, reference)
+            if not _valid_source_audit_row(row):
+                return PipelineResult(event_count, 0, False, ())
+            source_backed_rows.append(row)
+        visible_rows = assign_visibility(source_backed_rows)
+        for visible_row in visible_rows:
+            if visible_row.get("visibility") == "public":
+                visible_row.pop("razonamiento", None)
+    except Exception:
+        return PipelineResult(event_count, 0, False, ())
+
+    if not _valid_visible_source_rows(visible_rows):
+        return PipelineResult(event_count, 0, False, ())
+
+    frozen_rows = _freeze_pipeline_picks(visible_rows)
+    publisher_rows = [dict(row) for row in frozen_rows]
+    try:
+        publication = publisher.publish(publisher_rows, dry_run=dry_run)
+    except Exception:
+        return PipelineResult(
+            event_count,
+            len(frozen_rows),
+            False,
+            (),
+            frozen_rows,
+        )
+
+    try:
+        persisted = False if dry_run else _publication_was_persisted(publication)
+    except Exception:
+        persisted = False
+    return PipelineResult(
+        event_count,
+        len(frozen_rows),
+        persisted,
+        (),
+        frozen_rows,
+    )
+
+
+def _source_market_audit_key(candidate: CandidatePick) -> str:
+    identity = [
+        candidate.bookmaker_key,
+        candidate.market_key,
+        candidate.period,
+        _canonical_line(candidate.line),
+    ]
+    return "market:v1:" + json.dumps(
+        identity,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _source_backed_pick_row(
+    ranked_pick: RankedPick,
+    evidence_score: EvidenceScore,
+    reference_at: datetime,
+) -> dict[str, object]:
+    candidate = ranked_pick.candidate
+    row = _legacy_ranked_pick_projection(ranked_pick, evidence_score)
+    row.update(
+        {
+            "source": candidate.source,
+            "source_event_id": candidate.source_event_id,
+            "source_market_key": _source_market_audit_key(candidate),
+            "source_selection_key": candidate.selection_key,
+            "source_observed_at": candidate.observed_at.astimezone(
+                timezone.utc
+            ).isoformat().replace("+00:00", "Z"),
+            "fecha_generacion": reference_at.astimezone(
+                ZoneInfo("America/Mexico_City")
+            ).date().isoformat(),
+            "fecha_evento": candidate.starts_at.astimezone(
+                ZoneInfo("America/Mexico_City")
+            ).date().isoformat(),
+            "estado": "pendiente",
+            "ganancia_simulada": 0,
+        }
+    )
+    return row
+
+
+def _valid_source_audit_row(row: object) -> bool:
+    if not isinstance(row, Mapping):
+        return False
+    text_limits = {
+        "source": 100,
+        "source_event_id": 500,
+        "source_market_key": 1000,
+        "source_selection_key": 500,
+        "source_observed_at": 100,
+    }
+    for field, maximum_length in text_limits.items():
+        value = row.get(field)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.strip()) > maximum_length
+        ):
+            return False
+    observed_at = row.get("source_observed_at")
+    try:
+        parsed_observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if parsed_observed_at.tzinfo is None or parsed_observed_at.utcoffset() is None:
+        return False
+    price = row.get("cuota")
+    return (
+        type(row.get("tiene_valor")) is bool
+        and isinstance(row.get("confianza"), str)
+        and isinstance(row.get("riesgo"), str)
+        and isinstance(price, (int, float))
+        and not isinstance(price, bool)
+        and math.isfinite(float(price))
+        and 1.01 <= float(price) <= 50.0
+    )
+
+
+def _valid_visible_source_rows(rows: object) -> bool:
+    if not isinstance(rows, list) or not rows:
+        return False
+    if not all(_valid_source_audit_row(row) for row in rows):
+        return False
+    public_rows = [row for row in rows if row.get("visibility") == "public"]
+    return (
+        len(public_rows) == 1
+        and public_rows[0].get("es_parlay") is False
+        and all(row.get("visibility") in {"public", "premium"} for row in rows)
+    )
+
+
+def _freeze_pipeline_picks(picks: object) -> tuple[Mapping[str, object], ...]:
+    if isinstance(picks, (str, bytes)) or not isinstance(picks, Sequence):
+        raise ValueError("invalid pipeline picks")
+    frozen = []
+    for pick in picks:
+        if not isinstance(pick, Mapping):
+            raise ValueError("invalid pipeline picks")
+        copied = {}
+        for key, value in pick.items():
+            if not isinstance(key, str) or not isinstance(
+                value,
+                (str, int, float, bool, type(None)),
+            ):
+                raise ValueError("invalid pipeline picks")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("invalid pipeline picks")
+            copied[key] = value
+        frozen.append(MappingProxyType(copied))
+    return tuple(frozen)
+
+
+def _publication_was_persisted(publication: object) -> bool:
+    if getattr(publication, "dry_run", False) is True:
+        return False
+    if getattr(publication, "created", False) is True:
+        return True
+    for field in ("run_id", "batch_id"):
+        value = getattr(publication, field, None)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
 
 
 def _check_pipeline_result_fields(
@@ -1752,9 +1974,10 @@ def probe_secure_schema(client):
     if (
         status is None
         or type(status.get("version")) is not int
-        or status.get("version") != 1
+        or status.get("version") != 2
         or status.get("public_picks") is not True
         or status.get("publish_pick_batch") is not True
+        or status.get("source_audit") is not True
     ):
         raise ConfigError("secure Supabase scraper migration is not applied")
 

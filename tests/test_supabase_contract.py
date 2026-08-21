@@ -9,6 +9,7 @@ SQL = (
     / "20260820220000_secure_membership.sql"
 )
 RUN_LEDGER_SQL = SQL.parent / "20260820233000_scraper_run_ledger.sql"
+SOURCE_AUDIT_SQL = SQL.parent / "20260820234500_pick_source_audit.sql"
 
 
 class SupabaseContractTests(unittest.TestCase):
@@ -180,6 +181,16 @@ class SupabaseContractTests(unittest.TestCase):
             "to_regprocedure('public.publish_pick_batch(text,text,jsonb)') is not null",
             text,
         )
+        self.assertIn("'version', 2", text)
+        self.assertIn("'source_audit'", text)
+        for field in (
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+            "source_observed_at",
+        ):
+            self.assertIn(f"column_name = '{field}'", text)
         self.assertIn(f"revoke all on function {signature} from public, anon, authenticated", text)
         self.assertIn(f"grant execute on function {signature} to service_role", text)
         probe_start = text.index(f"create or replace function {signature}")
@@ -225,6 +236,58 @@ class SupabaseContractTests(unittest.TestCase):
         text = RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().strip()
         self.assertTrue(text.startswith("begin;"))
         self.assertTrue(text.endswith("commit;"))
+
+    def test_picks_store_source_market_audit_fields_idempotently(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        for field in (
+            "source",
+            "source_event_id",
+            "source_market_key",
+            "source_selection_key",
+            "source_observed_at",
+        ):
+            self.assertIn(f"add column if not exists {field}", text)
+        self.assertIn(
+            "create index if not exists picks_source_event_idx on public.picks (source, source_event_id)",
+            text,
+        )
+        self.assertIn("source is null", text)
+        self.assertIn("source_event_id is null", text)
+        self.assertIn("picks_source_audit_complete_check", text)
+
+    def test_every_publishing_rpc_version_validates_audit_before_mutation(self):
+        for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):
+            text = " ".join(migration.read_text(encoding="utf-8").lower().split())
+            function_start = text.index("create or replace function public.publish_pick_batch")
+            function = text[function_start:]
+            audit_validation = function.index("each requested pick must have complete source audit fields")
+            first_mutation = min(
+                function.index("insert into public.scraper_runs"),
+                function.index("update public.picks"),
+            )
+            self.assertLess(audit_validation, first_mutation)
+            self.assertIn("length(btrim(value->>'source')) not between 1 and 100", function)
+            self.assertIn("(value->>'source_observed_at')::timestamptz is null", function)
+            for field in (
+                "source",
+                "source_event_id",
+                "source_market_key",
+                "source_selection_key",
+                "source_observed_at",
+            ):
+                self.assertIn(f"(requested_rows.populated).{field}", function)
+            self.assertIn("(source, source_event_id)", text)
+
+    def test_source_audit_upgrade_replaces_rpc_after_columns_exist(self):
+        text = " ".join(SOURCE_AUDIT_SQL.read_text(encoding="utf-8").lower().split())
+        columns = text.index("add column if not exists source text")
+        function = text.index("create or replace function public.publish_pick_batch")
+        self.assertLess(columns, function)
+        self.assertIn("jsonb_populate_record(null::public.picks", text)
+        self.assertIn("revoke all on function public.publish_pick_batch", text)
+        self.assertIn("grant execute on function public.publish_pick_batch", text)
 
 
 if __name__ == "__main__":

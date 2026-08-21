@@ -239,7 +239,12 @@ class FakeSupabase:
 
 def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
     client = FakeSupabase(
-        {"public_picks": True, "publish_pick_batch": True, "version": 1}
+        {
+            "public_picks": True,
+            "publish_pick_batch": True,
+            "source_audit": True,
+            "version": 2,
+        }
     )
     driver_calls = []
     pipeline = scraper.build_pipeline(
@@ -263,6 +268,12 @@ def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
         {"public_picks": True, "publish_pick_batch": True, "version": "1"},
         {"public_picks": True, "publish_pick_batch": True, "version": 0},
         {"public_picks": True, "publish_pick_batch": True, "version": 2},
+        {
+            "public_picks": True,
+            "publish_pick_batch": True,
+            "source_audit": False,
+            "version": 2,
+        },
         {"public_picks": False, "publish_pick_batch": True, "version": 1},
         {"public_picks": True, "publish_pick_batch": False, "version": 1},
     ],

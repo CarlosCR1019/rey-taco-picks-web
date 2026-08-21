@@ -9,8 +9,10 @@ from supabase import create_client, Client
 
 try:
     from backend.payment_review import classify_receipt
+    from backend.membership_admin import is_active_subscription, spei_subscription_record
 except ModuleNotFoundError:  # Allows `python backend/ticket_listener.py`.
     from payment_review import classify_receipt
+    from membership_admin import is_active_subscription, spei_subscription_record
 
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
@@ -135,15 +137,17 @@ def verificar_usuario_vip(telegram_id=None, username=None):
     if not supabase:
         return False
     try:
+        profile = None
         if telegram_id:
-            res = supabase.table("profiles").select("is_premium").eq("telegram_id", str(telegram_id)).execute()
-            if res.data and res.data[0].get("is_premium"):
-                return True
-        if username:
+            res = supabase.table("profiles").select("id").eq("telegram_id", str(telegram_id)).limit(1).execute()
+            profile = res.data[0] if res.data else None
+        if not profile and username:
             clean_user = username.replace("@", "").strip().lower()
-            res = supabase.table("profiles").select("is_premium").eq("telegram_username", clean_user).execute()
-            if res.data and res.data[0].get("is_premium"):
-                return True
+            res = supabase.table("profiles").select("id").eq("telegram_username", clean_user).limit(1).execute()
+            profile = res.data[0] if res.data else None
+        if profile:
+            sub = supabase.table("subscriptions").select("status,current_period_end").eq("user_id", profile["id"]).order("current_period_end", desc=True).limit(1).execute()
+            return bool(sub.data and is_active_subscription(sub.data[0]))
     except Exception as e:
         print(f"Error verificando usuario VIP en Supabase: {e}")
     return False
@@ -418,22 +422,30 @@ def main():
                             target_email = partes[1].strip()
                             if supabase:
                                 try:
-                                    supabase.table("profiles").update({"is_premium": True}).eq("email", target_email).execute()
-                                    responder(chat_id, f"✅ ¡ACCESO VIP ACTIVADO en web para {target_email}!")
+                                    profile = supabase.table("profiles").select("id").eq("email", target_email).limit(1).execute()
+                                    if not profile.data:
+                                        responder(chat_id, f"⚠️ No existe una cuenta para {target_email}.")
+                                        continue
+                                    user_id = profile.data[0]["id"]
+                                    current = supabase.table("subscriptions").select("current_period_end").eq("user_id", user_id).eq("provider", "spei").limit(1).execute()
+                                    existing_end = current.data[0].get("current_period_end") if current.data else None
+                                    record = spei_subscription_record(user_id, existing_end)
+                                    supabase.table("subscriptions").upsert(record, on_conflict="provider,provider_subscription_id").execute()
+                                    responder(chat_id, f"✅ Membresía SPEI activa por 30 días para {target_email}.")
                                 except Exception as e:
                                     responder(chat_id, f"⚠️ Error: {e}")
                     elif texto == '/usuarios':
                         if supabase:
                             try:
-                                res = supabase.table("profiles").select("email, is_premium").limit(20).execute()
+                                res = supabase.table("subscriptions").select("user_id,status,current_period_end,provider").order("current_period_end", desc=True).limit(20).execute()
                                 if res.data:
-                                    msg_users = "📋 USUARIOS REGISTRADOS:\n\n"
+                                    msg_users = "📋 MEMBRESÍAS RECIENTES:\n\n"
                                     for u in res.data:
-                                        vip_icon = "👑 VIP" if u.get('is_premium') else "⚪ Free"
-                                        msg_users += f"• {u.get('email', 'Sin correo')} ➔ {vip_icon}\n"
+                                        vip_icon = "👑 Activa" if is_active_subscription(u) else "⚪ Inactiva"
+                                        msg_users += f"• {u.get('user_id')} · {u.get('provider')} ➔ {vip_icon}\n"
                                     responder(chat_id, msg_users)
                                 else:
-                                    responder(chat_id, "No hay usuarios registrados aún.")
+                                    responder(chat_id, "No hay membresías registradas aún.")
                             except Exception as e:
                                 responder(chat_id, f"Error: {e}")
                     elif texto == '/tickets':

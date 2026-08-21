@@ -10,6 +10,10 @@ import urllib.request
 from groq import Groq
 from dotenv import load_dotenv
 from supabase import create_client, Client
+try:
+    from backend.publishing_policy import assign_visibility, public_payload
+except ImportError:  # So `python backend/scraper.py` also resolves the helper.
+    from publishing_policy import assign_visibility, public_payload
 
 # Forzar codificación UTF-8
 sys.stdout.reconfigure(encoding='utf-8')
@@ -1461,6 +1465,8 @@ def fase7_guardar_y_notificar(picks):
         'resultado_apuesta', 'ganancia_simulada', 'fecha_generacion', 'odds_mercado', 'tiene_valor'
     }
     
+    picks = assign_visibility(picks)
+    columnas_validas.add('visibility')
     clean_picks = []
     for idx, pick in enumerate(picks):
         pick['id'] = base_id + idx
@@ -1667,6 +1673,8 @@ def fase7_guardar_y_notificar(picks):
         'razonamiento', 'es_parlay', 'tiene_valor', 'estado', 
         'fecha_generacion', 'odds_mercado', 'ganancia_simulada'
     }
+    picks = assign_visibility(picks)
+    ALLOWED_COLUMNS.add('visibility')
     clean_picks = [{k: v for k, v in p.items() if k in ALLOWED_COLUMNS} for p in picks]
     
     if supabase:
@@ -1687,7 +1695,7 @@ def _guardar_local(picks):
     output_path = os.path.join("..", "frontend", "public", "picks.json")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(picks, f, indent=4, ensure_ascii=False)
+        json.dump(public_payload(picks), f, indent=4, ensure_ascii=False)
     print(f"   📁 Picks guardados en local: {output_path}")
 
 def formatear_pick_canal(p, numero=1, total=1):

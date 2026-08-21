@@ -119,12 +119,19 @@ create policy profiles_select_own on public.profiles
 drop policy if exists picks_public_read on public.picks;
 create policy picks_public_read on public.picks
     for select to anon, authenticated
-    using (visibility = 'public');
+    using (
+        visibility = 'public'
+        or estado in ('ganado', 'perdido', 'void', 'revision_pendiente')
+    );
 
 drop policy if exists picks_subscriber_read on public.picks;
 create policy picks_subscriber_read on public.picks
     for select to authenticated
-    using (visibility = 'public' or public.is_active_subscriber(auth.uid()));
+    using (
+        visibility = 'public'
+        or estado in ('ganado', 'perdido', 'void', 'revision_pendiente')
+        or public.is_active_subscriber(auth.uid())
+    );
 
 drop policy if exists picks_admin_write on public.picks;
 create policy picks_admin_write on public.picks

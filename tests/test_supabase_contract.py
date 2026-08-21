@@ -17,6 +17,7 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("public_picks", text)
         self.assertIn("is_active_subscriber", text)
         self.assertIn("get_visible_picks", text)
+        self.assertIn("estado in ('ganado', 'perdido', 'void', 'revision_pendiente')", text)
         self.assertNotIn("using (true)", text)
 
     def test_premium_access_requires_an_unexpired_subscription(self):

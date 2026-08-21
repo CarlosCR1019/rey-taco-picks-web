@@ -190,6 +190,12 @@ Do not start a second dispatch while it is active. Confirm the verifier succeeds
 first; the scraper depends on it, and social posting must run only after scraper
 success.
 
+The generated `frontend/public/picks.json` exists only in the ephemeral GitHub
+runner. The current workflow neither uploads it as an artifact nor deploys it,
+so a file in the operator's existing local checkout is **not** evidence of what
+that GitHub run generated. Validate the controlled workflow run through the live
+database invariants and the messages actually received in Telegram.
+
 Use the Supabase SQL editor with an administrator session for these read-only
 checks. They reveal counts and delivery metadata, not premium pick text:
 
@@ -209,7 +215,12 @@ select
   count(*) filter (
     where active and estado = 'pendiente'
       and visibility = 'public'
-  ) as active_public_total
+  ) as active_public_total,
+  count(*) filter (
+    where active and estado = 'pendiente'
+      and visibility = 'public'
+      and nullif(btrim(coalesce(razonamiento, '')), '') is not null
+  ) as active_public_with_reasoning
 from public.picks;
 
 select
@@ -226,28 +237,64 @@ limit 1;
 ```
 
 The required results are `active_batches = 1`,
-`active_public_non_parlay = 1`, `active_public_total = 1`, and success `true` for
-each configured destination. `active_pending` may be greater than one because it
-includes the private active picks in the same batch.
+`active_public_non_parlay = 1`, `active_public_total = 1`,
+`active_public_with_reasoning = 0`, and success `true` for each configured
+destination. `active_pending` may be greater than one because it includes the
+private active picks in the same batch.
 
-Before deploying the generated public artifact, verify it contains exactly one
-public, non-parlay row and no rationale field:
+Inspect the actual received messages: free Telegram must contain only the live
+public database pick and no rationale/premium selection; administrator and VIP
+must receive the full active-batch payload. Do not infer delivery from an HTTP
+exit alone—match the messages to the latest run and confirm the recorded
+statuses above.
+
+#### Separate direct local production artifact check
+
+The following file check applies only when an operator has separately authorized
+a direct production publication from this checkout and a build/deployment of
+that resulting artifact. It is not part of, and cannot validate, the GitHub
+manual-dispatch procedure above. After the migration, secrets, backup, and full
+gate are confirmed, use a unique stable run key, require exit `0`, and build the
+root deployment artifact:
 
 ```powershell
-$publicPicks = @(Get-Content frontend/public/picks.json -Raw | ConvertFrom-Json)
-if ($publicPicks.Count -ne 1) { throw "Expected exactly one public pick" }
-if ($publicPicks[0].visibility -ne "public" -or $publicPicks[0].es_parlay) {
-  throw "Public pick invariant failed"
-}
-if ($publicPicks[0].PSObject.Properties.Name -contains "razonamiento") {
-  throw "Public artifact contains premium rationale"
+$env:SCRAPER_RUN_KEY = "authorized-local-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+python backend/scraper.py
+if ($LASTEXITCODE -ne 0) { throw "Production scraper failed: $LASTEXITCODE" }
+npm run build
+
+foreach ($path in @('frontend/public/picks.json', 'dist/picks.json')) {
+  $publicPicks = @(Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+  if ($publicPicks.Count -ne 1) { throw "$path must contain one public pick" }
+  if ($publicPicks[0].visibility -ne 'public' -or $publicPicks[0].es_parlay) {
+    throw "$path public pick invariant failed"
+  }
+  if ($publicPicks[0].PSObject.Properties.Name -contains 'razonamiento') {
+    throw "$path contains premium rationale"
+  }
 }
 ```
 
-Inspect the actual received messages: free Telegram must contain only that public
-pick and no rationale/premium selection; administrator and VIP must receive the
-full active-batch payload. Do not infer delivery from an HTTP exit alone—match
-the messages to the latest run and confirm the recorded statuses above.
+The repository deliberately tracks both source fallbacks as neutral empty arrays:
+`frontend/public/picks.json` and `dist/picks.json` contain `[]`. A direct
+production publication changes the first file, and `npm run build` copies it to
+the second. After the authorized artifact has been deployed, restore both files
+to `[]` **before committing or rerunning the source-security/full test gate**.
+These PowerShell commands write deterministic UTF-8 without a byte-order mark,
+including on Windows PowerShell versions whose `Set-Content -Encoding utf8`
+would add a BOM:
+
+```powershell
+$utf8NoBom = [Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText(
+  (Resolve-Path -LiteralPath 'frontend/public/picks.json'), '[]', $utf8NoBom
+)
+[IO.File]::WriteAllText(
+  (Resolve-Path -LiteralPath 'dist/picks.json'), '[]', $utf8NoBom
+)
+python -m pytest tests/test_source_security.py::SourceSecurityTests::test_tracked_public_fallback_is_empty_and_cannot_leak_pick_details -q
+if ($LASTEXITCODE -ne 0) { throw "Source-security fallback check failed" }
+```
 
 ### 6. Observation and rollback
 

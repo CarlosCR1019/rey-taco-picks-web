@@ -11,6 +11,10 @@ on:
     - cron: '0 5 * * *'    # 11:00 PM México
   workflow_dispatch:        # Permite ejecutarlo manualmente desde GitHub 24/7
 
+concurrency:
+  group: rey-taco-scraper
+  cancel-in-progress: false
+
 jobs:
   verificar:
     # Si es la ejecución de las 11:00 PM, auditar y calificar los partidos del día
@@ -33,7 +37,7 @@ jobs:
       - name: Verify Results
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -46,10 +50,14 @@ jobs:
 
   scraper:
     # Se ejecuta a las 10:00 AM, 4:00 PM y 11:00 PM (para KBO y madrugada)
+    needs: verificar
+    # Las corridas regulares continúan cuando la verificación se omite; la corrida
+    # nocturna y la manual solo continúan cuando la verificación termina bien.
+    if: >-
+      always() &&
+      (needs.verificar.result == 'success' || needs.verificar.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # A las 11:00 PM, esperar a que termine la verificación antes de publicar los nuevos picks
-    if: always()
 
     steps:
       - name: Checkout code
@@ -73,7 +81,7 @@ jobs:
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -85,7 +93,7 @@ jobs:
           python scraper.py
 
       - name: Auto-Post Social Media Banner (Facebook & Instagram)
-        if: always()
+        if: success()
         env:
           FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}

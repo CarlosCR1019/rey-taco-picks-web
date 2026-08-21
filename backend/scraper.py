@@ -1761,12 +1761,17 @@ def run_structured_pipeline(
             not isinstance(reference, datetime)
             or reference.tzinfo is None
             or reference.utcoffset() is None
-            or any(
-                candidate.starts_at.astimezone(timezone.utc)
-                <= reference.astimezone(timezone.utc)
-                for candidate in candidates
-            )
         ):
+            return PipelineResult(event_count, 0, False, ())
+        candidates = [
+            candidate
+            for candidate in candidates
+            if (
+                candidate.starts_at.astimezone(timezone.utc)
+                > reference.astimezone(timezone.utc)
+            )
+        ]
+        if not candidates:
             return PipelineResult(event_count, 0, False, ())
     except Exception:
         return PipelineResult(event_count, 0, False, ())

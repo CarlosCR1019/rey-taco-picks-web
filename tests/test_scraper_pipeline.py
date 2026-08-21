@@ -240,6 +240,35 @@ def test_structured_pipeline_rejects_an_event_that_has_already_started(event_fix
     assert publisher.calls == []
 
 
+def test_structured_pipeline_discards_stale_candidates_but_keeps_future_slate(
+    event_fixture,
+):
+    stale_event = replace(
+        event_fixture,
+        source_event_id="stale-event",
+        starts_at=REFERENCE_AT,
+    )
+    publisher = FakePublisher()
+    ranked_catalogs = []
+
+    def rank_future(candidates):
+        ranked_catalogs.append(candidates)
+        return _rank_first(candidates)
+
+    result = run_structured_pipeline(
+        [stale_event, event_fixture],
+        rank_future,
+        publisher,
+        dry_run=False,
+        reference_at=REFERENCE_AT,
+    )
+
+    assert result.event_count == 2
+    assert result.pick_count == 1
+    assert len(ranked_catalogs) == 1
+    assert {candidate.source_event_id for candidate in ranked_catalogs[0]} == {"event-1"}
+
+
 def test_structured_pipeline_rejects_oversized_source_audit_before_publish(
     event_fixture,
 ):

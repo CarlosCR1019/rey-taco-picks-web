@@ -291,6 +291,7 @@ begin
             ) as next_delivery_status
         from public.scraper_runs
         where id = requested_run_id
+          and status in ('published', 'partial')
         for update
     )
     update public.scraper_runs as runs
@@ -307,7 +308,7 @@ begin
     where runs.id = updated.id;
 
     if not found then
-        raise exception 'unknown scraper run %', requested_run_id;
+        raise exception 'unknown or unpublished scraper run %', requested_run_id;
     end if;
 end;
 $$;
@@ -340,12 +341,17 @@ create policy picks_member_read on public.picks
         or (estado <> 'pendiente' and visibility = 'public')
     );
 
--- A FOR ALL policy also grants SELECT, which would bypass the lifecycle
--- predicates above. Keep admin mutations write-only instead.
+-- A FOR ALL policy also grants SELECT to ordinary authenticated users through
+-- policy OR-composition. Keep each admin operation explicitly role-checked.
 drop policy if exists picks_admin_write on public.picks;
+drop policy if exists picks_admin_select on public.picks;
 drop policy if exists picks_admin_insert on public.picks;
 drop policy if exists picks_admin_update on public.picks;
 drop policy if exists picks_admin_delete on public.picks;
+
+create policy picks_admin_select on public.picks
+    for select to authenticated
+    using (public.is_admin(auth.uid()));
 
 create policy picks_admin_insert on public.picks
     for insert to authenticated

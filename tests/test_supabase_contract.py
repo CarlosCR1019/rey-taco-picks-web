@@ -152,6 +152,11 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("jsonb_each(updated.next_delivery_status)", text)
         self.assertIn("details->>'success' is distinct from 'true'", text)
         self.assertIn("then 'published' else 'partial'", text)
+        self.assertIn(
+            "where id = requested_run_id and status in ('published', 'partial') for update",
+            text,
+        )
+        self.assertIn("unknown or unpublished scraper run %", text)
         self.assertIn("alter table public.scraper_runs enable row level security", text)
         self.assertIn("alter table public.pick_batches enable row level security", text)
         for table in ("scraper_runs", "pick_batches"):
@@ -188,6 +193,12 @@ class SupabaseContractTests(unittest.TestCase):
 
         self.assertIn("drop policy if exists picks_admin_write on public.picks", text)
         self.assertNotIn("create policy picks_admin_write", text)
+        self.assertIn("drop policy if exists picks_admin_select on public.picks", text)
+        self.assertIn("create policy picks_admin_select", text)
+        self.assertIn(
+            "create policy picks_admin_select on public.picks for select to authenticated using (public.is_admin(auth.uid()))",
+            text,
+        )
         self.assertIn("create policy picks_admin_insert", text)
         self.assertIn("create policy picks_admin_update", text)
         self.assertIn("create policy picks_admin_delete", text)

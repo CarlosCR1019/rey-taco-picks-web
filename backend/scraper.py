@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import undetected_chromedriver as uc
+import undetected_chromedriver as uc  # type: ignore[import-untyped]
 import urllib.request
 from groq import Groq
 from supabase import create_client
@@ -58,8 +58,9 @@ from backend.scraper_config import ConfigError, ScraperSettings, load_settings
 from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
 
 # Forzar codificación UTF-8
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+_reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+if callable(_reconfigure_stdout):
+    _reconfigure_stdout(encoding="utf-8")
 
 # Legacy phase helpers retain optional module defaults for backwards-compatible
 # direct calls. The command path injects values loaded by scraper_config instead

@@ -11,13 +11,20 @@ SCRIPT = ROOT / "send_telegram_status_report.py"
 
 
 class _FakeQuery:
+    def __init__(self, rows=None):
+        self.rows = list(rows or [])
+        self.calls = []
+
     def table(self, *_args, **_kwargs):
+        self.calls.append(("table", _args))
         return self
 
     def select(self, *_args, **_kwargs):
+        self.calls.append(("select", _args))
         return self
 
     def eq(self, *_args, **_kwargs):
+        self.calls.append(("eq", _args))
         return self
 
     def order(self, *_args, **_kwargs):
@@ -27,7 +34,7 @@ class _FakeQuery:
         return self
 
     def execute(self):
-        return SimpleNamespace(data=[])
+        return SimpleNamespace(data=self.rows)
 
 
 def _load_report_module_without_network():
@@ -120,3 +127,57 @@ def test_status_report_shows_value_signal_only_on_explicit_true_row():
     assert "Respaldo de datos: 65%" in false_line
     assert "Señal de valor comparada" in true_line
     assert "Respaldo de datos: 85%" in true_line
+
+
+def test_status_query_requires_active_pending_rows():
+    module = _load_report_module_without_network()
+    database = _FakeQuery()
+
+    assert module._active_picks(database) == []
+    assert ("eq", ("active", True)) in database.calls
+    assert ("eq", ("estado", "pendiente")) in database.calls
+
+
+def test_main_sends_full_active_batch_to_private_vip_and_only_public_to_free():
+    module = _load_report_module_without_network()
+    rows = [
+        {
+            "partido": "América vs Tigres",
+            "pick": "PUBLIC PICK",
+            "cuota": 1.8,
+            "confianza": "65%",
+            "visibility": "public",
+            "razonamiento": "PUBLIC RATIONALE MUST NOT LEAK",
+        },
+        {
+            "partido": "Pumas vs Atlas",
+            "pick": "PREMIUM SECRET",
+            "cuota": 2.1,
+            "confianza": "85%",
+            "visibility": "premium",
+            "razonamiento": "PREMIUM RATIONALE",
+        },
+    ]
+    database = _FakeQuery(rows)
+    sent = []
+    module.create_client = lambda *_args: database
+    module._send_message = lambda _token, chat_id, message: sent.append(
+        (chat_id, message)
+    ) or 200
+
+    with patch.dict(os.environ, {
+        "SUPABASE_URL": "https://example.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "service-role",
+        "TELEGRAM_BOT_TOKEN": "bot-token",
+        "TELEGRAM_CHAT_ID": "admin-chat",
+        "TELEGRAM_VIP_CHANNEL_ID": "vip-chat",
+        "TELEGRAM_FREE_CHANNEL_ID": "free-chat",
+    }, clear=True):
+        assert module.main() == 0
+
+    messages = dict(sent)
+    assert "PREMIUM SECRET" in messages["admin-chat"]
+    assert "PREMIUM SECRET" in messages["vip-chat"]
+    assert "PREMIUM SECRET" not in messages["free-chat"]
+    assert "PUBLIC PICK" in messages["free-chat"]
+    assert "RATIONALE" not in messages["free-chat"]

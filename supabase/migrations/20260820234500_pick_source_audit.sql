@@ -117,9 +117,17 @@ begin
     end if;
     if tg_op = 'INSERT' then
         new.source_audit_version := 1;
-    elsif new.estado = 'pendiente' and new.active then
-        new.source_audit_version := 1;
     elsif old.source_audit_version = 1 then
+        if new.source_audit_version is distinct from 1
+           or new.source is distinct from old.source
+           or new.source_event_id is distinct from old.source_event_id
+           or new.source_market_key is distinct from old.source_market_key
+           or new.source_selection_key is distinct from old.source_selection_key
+           or new.source_observed_at is distinct from old.source_observed_at then
+            raise exception 'published source audit is immutable';
+        end if;
+        new.source_audit_version := 1;
+    elsif new.estado = 'pendiente' and new.active then
         new.source_audit_version := 1;
     elsif new.source_audit_version is distinct from old.source_audit_version
        or new.source is distinct from old.source
@@ -815,6 +823,14 @@ as $$
                   ) > 0
                   and position(
                       'new.source is distinct from old.source'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'published source audit is immutable'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
+                      'new.source_audit_version is distinct from 1'
                       in lower(pg_get_functiondef(audit_trigger.tgfoid))
                   ) > 0
                   and position(

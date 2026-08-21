@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import backend.scraper as scraper
+from backend.pick_publisher import PERSISTED_PICK_COLUMNS
 from backend.scraper import ExitCode, LegacyPipeline, PipelineResult, run_main
 from backend.scraper_config import ScraperSettings
 
@@ -382,6 +383,11 @@ def stub_successful_legacy_phases(monkeypatch, picks=None):
             "confianza": "85%",
             "razonamiento": "Análisis privado",
             "es_parlay": False,
+            "source": "the-odds-api",
+            "source_event_id": "event-pumas-atlas",
+            "source_market_key": "h2h|full_time|",
+            "source_selection_key": "home",
+            "source_observed_at": "2026-08-20T20:00:00Z",
         }
     ]
     monkeypatch.setattr(scraper, "fase1_escaneo_superficie", lambda _driver, **_kw: ["event"])
@@ -430,12 +436,20 @@ def test_real_phase7_persistence_failure_maps_to_exit_5_without_leaking(
 
 
 class DeliveryRecordFailureRepository:
-    def publish(self, _run_key, _source_hash, _picks):
+    def publish(self, _run_key, _source_hash, picks):
+        stored = []
+        for index, pick in enumerate(picks, start=1):
+            row = {column: pick.get(column) for column in PERSISTED_PICK_COLUMNS}
+            row["id"] = index
+            if row["visibility"] == "public":
+                row["razonamiento"] = None
+            stored.append(row)
         return {
             "run_id": "run-1",
             "batch_id": "batch-1",
             "created": True,
             "delivery_status": {},
+            "picks": stored,
         }
 
     def record_delivery(self, *_args, **_kwargs):

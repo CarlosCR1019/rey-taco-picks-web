@@ -1,14 +1,20 @@
 import os
 import sys
 import json
-import time
 import urllib.request
 import urllib.parse
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
 from backend.evidence_messaging import format_evidence_support
+from backend.spanish_dates import cdmx_banner_date
 
-sys.stdout.reconfigure(encoding='utf-8')
+_reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+if callable(_reconfigure_stdout):
+    _reconfigure_stdout(encoding="utf-8")
+
+
+def banner_date_label(generated_at=None):
+    return cdmx_banner_date(generated_at)
 
 def descargar_fondo_ia(prompt=None):
     """
@@ -39,7 +45,13 @@ def descargar_fondo_ia(prompt=None):
         print(f"   ℹ️ Usando fondo oscuro de respaldo: {e}")
     return None
 
-def generar_banner_redes(picks=None, output_path="banner_hoy.png", usar_ia=True):
+def generar_banner_redes(
+    picks=None,
+    output_path="banner_hoy.png",
+    usar_ia=True,
+    *,
+    generated_at=None,
+):
     """
     Genera un banner gráfico profesional de 1080x1080 px para Instagram / Facebook
     combinando fondos generados por Inteligencia Artificial con tipografía de alto impacto.
@@ -97,7 +109,7 @@ def generar_banner_redes(picks=None, output_path="banner_hoy.png", usar_ia=True)
 
     # 4. Header
     draw.text((width // 2, 70), "🌮👑 REY TACO PICKS 👑🌮", fill="#D4AF37", font=font_title, anchor="mt")
-    fecha_str = time.strftime('%d de Agosto, %Y • CDMX')
+    fecha_str = banner_date_label(generated_at)
     draw.text((width // 2, 135), f"PRONÓSTICOS DEPORTIVOS IA • {fecha_str.upper()}", fill="#CBD5E1", font=font_subtitle, anchor="mt")
 
     # 5. Tarjetas de los 3 Picks
@@ -141,7 +153,7 @@ def generar_banner_redes(picks=None, output_path="banner_hoy.png", usar_ia=True)
     # 6. Footer & Call To Action
     footer_y = height - 90
     draw.rectangle([(30, footer_y - 25), (width - 30, height - 30)], fill="#020617", outline="#D4AF37", width=1)
-    draw.text((width // 2, footer_y - 12), "🌐 DESBLOQUEA PARLAYS IA Y ANÁLISIS EN: reytacopicks.com", fill="#FACC15", font=font_footer, anchor="mt")
+    draw.text((width // 2, footer_y - 12), "🌐 DESBLOQUEA ANÁLISIS PREMIUM EN: reytacopicks.com", fill="#FACC15", font=font_footer, anchor="mt")
 
     # Guardar
     img.save(output_path, "PNG", quality=95)

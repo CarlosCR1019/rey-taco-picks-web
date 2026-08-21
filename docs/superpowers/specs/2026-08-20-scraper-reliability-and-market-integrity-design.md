@@ -150,7 +150,9 @@ Deterministic code first creates candidates only from supported verified markets
 - Moneyline/three-way result.
 - Full-game totals.
 - Full-game spread or run line.
-- Same-day parlays composed only of individually valid legs.
+- Same-day legs may be grouped for validation experiments, but production does
+  not publish a parlay without an independently observed combined price and the
+  complete source-audit identity for that parlay.
 
 Unsupported partial periods, player props, corners without complete market data, and ambiguous team totals are skipped until an explicit validator exists.
 
@@ -158,7 +160,9 @@ Unsupported partial periods, player props, corners without complete market data,
 
 AI receives stable candidate identifiers and supporting facts. It may rank candidates and produce a concise rationale. The final validator accepts only identifiers from the candidate catalog and copies all factual market fields from the deterministic candidate, never from AI text.
 
-If every model fails, the deterministic ranker may publish only when the minimum evidence threshold is met. Otherwise the run exits without publishing. The undefined fallback path using `partidos` is removed.
+If every model fails or returns an invalid candidate identifier, the run exits
+without publishing. There is no deterministic or free-form fallback that
+invents a ranking from `partidos`.
 
 ### Confidence and value language
 

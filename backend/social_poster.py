@@ -3,7 +3,9 @@ import sys
 import requests
 from dotenv import load_dotenv
 
-sys.stdout.reconfigure(encoding='utf-8')
+_reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+if callable(_reconfigure_stdout):
+    _reconfigure_stdout(encoding="utf-8")
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN", "").strip()
@@ -22,9 +24,9 @@ def publicar_en_facebook_page(image_path="banner_hoy.png", mensaje=None):
         mensaje = (
             "🌮👑 ¡PRONÓSTICOS DEPORTIVOS DE HOY CON IA! 👑🌮\n\n"
             "Aquí tienes los picks destacados del día con su respaldo de datos disponible.\n\n"
-            "📊 Consulta los análisis completos, el Parlay del Día y las cuotas en vivo en nuestra plataforma:\n"
+            "📊 Consulta los análisis completos y las cuotas disponibles en nuestra plataforma:\n"
             "👉 https://reytacopicks.com\n\n"
-            "#ReyTacoPicks #LigaMX #ChampionsLeague #MLB #ApuestasDeportivas #PronosticosGratis #ParlayIA"
+            "#ReyTacoPicks #LigaMX #ChampionsLeague #MLB #ApuestasDeportivas #PronosticosGratis"
         )
 
     try:
@@ -59,7 +61,7 @@ def publicar_en_instagram(image_url, caption=None):
         caption = (
             "🌮👑 PICKS DEL DÍA CON INTELIGENCIA ARTIFICIAL 👑🌮\n\n"
             "🎯 Selecciones analizadas con evidencia de mercado disponible.\n\n"
-            "🔗 Revisa todos los picks gratis y el Parlay del Día en el link de la bio 👇\n"
+            "🔗 Revisa los picks disponibles en el link de la bio 👇\n"
             "👉 https://reytacopicks.com\n\n"
             "#ReyTacoPicks #ApuestasDeportivas #LigaMX #MLB #Futbol #TipsDeportivos #IA"
         )
@@ -102,12 +104,12 @@ def ejecutar_auto_post_redes():
     print("="*60)
     
     try:
-        from render_html_banner import renderizar_banner_estudio
+        from backend.render_html_banner import renderizar_banner_estudio
         banner_file = os.path.join(os.path.dirname(__file__), "banner_hoy.png")
         renderizar_banner_estudio(output_path=banner_file)
     except Exception as e:
         print(f"Error renderizando banner estudio: {e}")
-        from social_banner import generar_banner_redes
+        from backend.social_banner import generar_banner_redes
         banner_file = os.path.join(os.path.dirname(__file__), "banner_hoy.png")
         generar_banner_redes(output_path=banner_file)
     

@@ -14,6 +14,21 @@ FORBIDDEN = (
 
 
 class SourceSecurityTests(unittest.TestCase):
+    def test_runbook_documents_baseline_persisted_retry_and_no_live_parlay_claim(self):
+        runbook = (ROOT / "docs/operations/security-and-payments.md").read_text(
+            encoding="utf-8"
+        ).lower()
+
+        self.assertIn("20260820210000_base_profiles_picks.sql", runbook)
+        self.assertIn("filas ya persistidas", runbook)
+        self.assertIn("no publica parlays en producción", runbook)
+        self.assertIn("cuota independiente", runbook)
+        self.assertIn("cinco campos de auditoría", runbook)
+        self.assertNotIn(
+            "same-day parlays assembled only from individually verified legs",
+            runbook,
+        )
+
     def test_tracked_public_fallback_is_empty_and_cannot_leak_pick_details(self):
         for relative in ("frontend/public/picks.json", "dist/picks.json"):
             with self.subTest(relative=relative):

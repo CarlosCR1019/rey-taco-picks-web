@@ -11,7 +11,9 @@ The Supabase anonymous key is public by design. VIP secrecy depends on deploying
 ## Deployment order
 
 1. Rotate any Telegram, Meta, Stripe, or Supabase service credential that has ever appeared in source history.
-2. Apply `supabase/migrations/20260820220000_secure_membership.sql` to the target Supabase project.
+2. Apply the pending migrations in timestamp order, beginning with
+   `supabase/migrations/20260820210000_base_profiles_picks.sql` and then
+   `supabase/migrations/20260820220000_secure_membership.sql`.
    Purge any legacy `backend/channel_queue.json` on the running host before restarting `telegram_dispatcher.py`.
 3. Verify an anonymous query returns only the one public pending pick and settled history. Verify a signed free account cannot read pending premium rows.
 4. Create a recurring Stripe price for `$299 MXN` and store its identifier in `STRIPE_PRICE_ID`.
@@ -44,8 +46,12 @@ price from collection through publication:
 - Full-game moneyline/H2H.
 - Full-game totals.
 - Full-game spreads, including baseball run lines.
-- Same-day parlays assembled only from individually verified legs whose
-  physical events are distinct and not correlated by the pipeline rules.
+
+The validator can group individually verified same-day legs for analysis, but
+**no publica parlays en producción**. A parlay cannot enter the production
+catalog until its combined **cuota independiente** is observed from a source and
+the parlay itself carries the **cinco campos de auditoría** required of every
+published selection. Leg prices must never be multiplied to invent that quote.
 
 The pipeline rejects partial periods, halves, quarters, unsupported player
 props, incomplete corner markets, ambiguous team totals, and every other market
@@ -84,7 +90,9 @@ publish and delivery RPCs are intentionally unavailable to anonymous clients.
 The legacy `backend/channel_queue.json` is not part of this release. There is no
 delivery queue: each Telegram destination is attempted synchronously with a
 bounded timeout, recorded independently, and skipped on a same-run retry after a
-recorded success.
+recorded success. A retry always rebuilds the public file and remaining Telegram
+messages from the **filas ya persistidas** for that run; a new scrape payload or
+hash never replaces the batch already accepted by the database.
 
 ### 1. Configure secrets before production work
 
@@ -140,12 +148,15 @@ supabase db push --dry-run
 
 The pending set must include, in this order:
 
-1. `supabase/migrations/20260820220000_secure_membership.sql`, which creates and
+1. `supabase/migrations/20260820210000_base_profiles_picks.sql`, which creates
+   the additive `profiles`/`picks` baseline required by a fresh project and
+   safely fills missing base columns on an existing installation.
+2. `supabase/migrations/20260820220000_secure_membership.sql`, which creates and
    protects `public_picks` and membership data.
-2. `supabase/migrations/20260820233000_scraper_run_ledger.sql`, which creates the
+3. `supabase/migrations/20260820233000_scraper_run_ledger.sql`, which creates the
    run ledger, atomic publisher, delivery recorder, and the intermediate
    fail-closed schema probe.
-3. `supabase/migrations/20260820234500_pick_source_audit.sql`, which adds the
+4. `supabase/migrations/20260820234500_pick_source_audit.sql`, which adds the
    immutable source-audit fields, replaces the publisher contract, and promotes
    `scraper_schema_status()` to schema version `2` with `source_audit = true`.
 

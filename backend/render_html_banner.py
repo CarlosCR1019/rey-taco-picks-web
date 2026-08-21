@@ -3,13 +3,19 @@ import sys
 import json
 import time
 from html import escape
-import undetected_chromedriver as uc
+import undetected_chromedriver as uc  # type: ignore[import-untyped]
 from selenium.webdriver.common.by import By
-from datetime import datetime
 
 from backend.evidence_messaging import format_evidence_support
+from backend.spanish_dates import cdmx_banner_date
 
-sys.stdout.reconfigure(encoding='utf-8')
+_reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+if callable(_reconfigure_stdout):
+    _reconfigure_stdout(encoding="utf-8")
+
+
+def banner_date_label(generated_at=None):
+    return cdmx_banner_date(generated_at)
 
 
 def build_cards_html(picks):
@@ -63,7 +69,12 @@ def build_cards_html(picks):
         """)
     return "".join(cards)
 
-def renderizar_banner_estudio(picks=None, output_path="banner_hoy.png"):
+def renderizar_banner_estudio(
+    picks=None,
+    output_path="banner_hoy.png",
+    *,
+    generated_at=None,
+):
     """
     Renderiza un banner gráfico HD (1080x1080) con calidad de estudio EA Sports / ESPN
     capturando el elemento #banner-root para un encuadre perfecto.
@@ -79,7 +90,7 @@ def renderizar_banner_estudio(picks=None, output_path="banner_hoy.png"):
     free_picks = [p for p in picks if not p.get('es_parlay')][:3]
     cards_html = build_cards_html(free_picks)
 
-    fecha_actual = datetime.now().strftime("%d DE AGOSTO, %Y • CDMX")
+    fecha_actual = banner_date_label(generated_at)
     
     template_path = os.path.join(os.path.dirname(__file__), "banner_template.html")
     with open(template_path, "r", encoding="utf-8") as f:

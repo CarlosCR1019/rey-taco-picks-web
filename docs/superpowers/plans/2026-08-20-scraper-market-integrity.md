@@ -762,7 +762,7 @@ git commit -m "feat: publish source-backed pick candidates"
 
 - [ ] **Step 1: Document supported and rejected markets**
 
-Document full-game moneyline, totals, spreads/run lines, and same-day parlays as supported. Document partial periods, unsupported player props, incomplete corners, and ambiguous team totals as rejected until a specific validator and grader exist.
+Document full-game moneyline, totals, and spreads/run lines as production-supported. Document same-day parlay leg grouping as validator-only: production must reject it until the combined quote and complete source audit are independently observed. Document partial periods, unsupported player props, incomplete corners, and ambiguous team totals as rejected until a specific validator and grader exist.
 
 - [ ] **Step 2: Run all automated checks**
 

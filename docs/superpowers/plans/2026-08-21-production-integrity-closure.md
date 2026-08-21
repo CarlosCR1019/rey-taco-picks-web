@@ -166,4 +166,3 @@ Run: `python -m pytest -q`, `npm test`, `npm run build`, `deno test` when availa
 Expected: all available checks PASS; Deno absence is reported rather than hidden.
 
 Commit: `fix: close production integration gaps`
-

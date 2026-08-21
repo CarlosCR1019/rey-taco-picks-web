@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from backend.evidence_messaging import format_evidence_support
+from backend.publishing_policy import public_payload
 
 
 REPORT_LIMIT = 10
@@ -64,12 +65,22 @@ def _active_picks(database) -> list[Mapping[str, object]]:
     response = (
         database.table("picks")
         .select("*")
+        .eq("active", True)
         .eq("estado", "pendiente")
         .order("id", desc=True)
         .limit(REPORT_LIMIT)
         .execute()
     )
     return list(response.data or [])
+
+
+def _public_status_rows(
+    active_picks: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    rows = public_payload(active_picks)
+    for row in rows:
+        row.pop("razonamiento", None)
+    return rows
 
 
 def _send_message(token: str, chat_id: str, message: str) -> int:
@@ -91,23 +102,28 @@ def main() -> int:
     service_key = str(os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
     token = str(os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     destinations = [
-        ("Privado", os.getenv("TELEGRAM_CHAT_ID")),
+        ("Privado", os.getenv("TELEGRAM_CHAT_ID"), "all"),
         (
             "Canal VIP",
             os.getenv("TELEGRAM_VIP_CHANNEL_ID")
             or os.getenv("TELEGRAM_CHANNEL_ID"),
+            "all",
         ),
-        ("Canal Free", os.getenv("TELEGRAM_FREE_CHANNEL_ID")),
+        ("Canal Free", os.getenv("TELEGRAM_FREE_CHANNEL_ID"), "public"),
     ]
     if not url or not service_key or not token:
         print("Reporte cancelado: configuración requerida incompleta.")
         return 1
 
     database = create_client(url, service_key)
-    message = build_status_message(_active_picks(database))
-    for name, chat_id in destinations:
+    active_picks = _active_picks(database)
+    messages = {
+        "all": build_status_message(active_picks),
+        "public": build_status_message(_public_status_rows(active_picks)),
+    }
+    for name, chat_id, audience in destinations:
         if chat_id:
-            status = _send_message(token, str(chat_id), message)
+            status = _send_message(token, str(chat_id), messages[audience])
             print(f" -> {name}: {status}")
     return 0
 

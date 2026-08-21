@@ -112,7 +112,7 @@ The website issues a short-lived, single-use linking token. The bot exchanges it
 Automated grading only occurs when the source explicitly reports a final/completed event.
 
 - Team matching requires both teams to match with a conservative normalized similarity rule; one shared token is insufficient.
-- Each supported market has an explicit grading function: moneyline, totals, both teams to score, run line/spread, corners only when corner statistics exist, and parlays only after every leg is graded.
+- Each production-supported market has an explicit grading function: moneyline, totals, both teams to score, run line/spread, and corners only when corner statistics exist. The result domain can grade historical parlay legs, but the current production publisher does not accept a parlay without its own independently observed combined quote and source audit.
 - Unsupported or ambiguous markets remain `pending_review`; they never default to won.
 - Grading stores source, source event identifier, home/away scores, decision, and timestamp for auditability.
 - Unit result is `odds - 1` for a one-unit win, `-1` for a loss, `0` for void/push/pending.

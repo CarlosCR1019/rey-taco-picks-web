@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN") or "EAGMJ4QmnNEIBSWAiGqNKTYT3vuhTX4add90vX8zZARYJZBhpGKP1z4zDraTDySa6eIZBeNIEGA3Fa0kOiUEsa2IZCtQxa5dXVSwuFGcu1DWM59DoHZAc8BzFeSUY4KDZCd8NwJZCn76JE84ztS1pYGZARcLci4hyA7myzXZCrkGx9KG5fq809uJleG8Hpil7uuqBayusu9o6cTeLf92nihYFG6jCeZB0AUuPg9rLMhfzLmvC1XEE9tf8ouD6Xc"
-FB_PAGE_ID = os.getenv("FB_PAGE_ID") or "1311611272037375"
-IG_USER_ID = os.getenv("IG_USER_ID")
+FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN", "").strip()
+FB_PAGE_ID = os.getenv("FB_PAGE_ID", "").strip()
+IG_USER_ID = os.getenv("IG_USER_ID", "").strip()
 
 def publicar_en_facebook_page(image_path="banner_hoy.png", mensaje=None):
     """

@@ -283,7 +283,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
           <form id="code-form" class="auth-form">
             <div class="form-group">
               <label>Código de Activación</label>
-              <input type="text" id="vip-code-input" required placeholder="Ej. TACOVIP2026" style="text-transform: uppercase; font-weight: bold; letter-spacing: 2px;" />
+              <input type="text" id="vip-code-input" required placeholder="Ingresa tu código" autocomplete="one-time-code" style="text-transform: uppercase; font-weight: bold; letter-spacing: 2px;" />
             </div>
             <p id="code-msg" class="auth-error hidden"></p>
             <button type="submit" id="redeem-btn" class="submit-btn btn-gold">Activar Pase VIP</button>
@@ -469,22 +469,6 @@ let currentUser: any = null;
 let isSubscribed = false;
 let isLoginMode = true;
 
-// Restore session from localStorage
-try {
-  const savedUser = localStorage.getItem('rey_taco_user');
-  if (savedUser) {
-    currentUser = JSON.parse(savedUser);
-    if (currentUser.email === 'carlosds1017@gmail.com' || currentUser.is_premium) {
-      isSubscribed = true;
-    }
-  }
-} catch (e) {}
-
-// Admin auto-check: if currentUser is carlosds1017@gmail.com, grant full access
-if (currentUser?.email === 'carlosds1017@gmail.com') {
-  isSubscribed = true;
-}
-
 // Auth UI Logic
 const authModal = document.getElementById('auth-modal')!;
 const closeModalBtn = document.getElementById('close-modal')!;
@@ -571,7 +555,6 @@ loginBtn.addEventListener('click', () => {
     if (confirm(`¿Cerrar sesión de ${currentUser.email}?`)) {
       currentUser = null;
       isSubscribed = false;
-      localStorage.removeItem('rey_taco_user');
       if (supabase) supabase.auth.signOut();
       updateAuthHeaderState();
       fetchPicks();
@@ -602,33 +585,18 @@ copyClabeBtn?.addEventListener('click', () => {
   setTimeout(() => { copyClabeBtn.textContent = '📋 Copiar'; }, 2500);
 });
 
-// VIP Code Redemption
+// Promotional codes are validated on the server. Until that endpoint is
+// configured, fail closed instead of granting access in the browser.
 codeForm?.addEventListener('submit', (e) => {
   e.preventDefault();
-  const code = vipCodeInput.value.trim().toUpperCase();
-  const validCodes = ['REYTACOVIP', 'TACOVIP2026', 'CARLOSVIP', 'GOLDENPICK'];
-  
-  if (validCodes.includes(code)) {
-    isSubscribed = true;
-    currentUser = { email: currentUser?.email || 'VIP Member', is_premium: true };
-    localStorage.setItem('rey_taco_user', JSON.stringify(currentUser));
-    codeMsg.className = 'auth-success';
-    codeMsg.textContent = '🎉 ¡Código válido! Acceso VIP activado con éxito.';
-    codeMsg.classList.remove('hidden');
-    updateAuthHeaderState();
-    setTimeout(() => {
-      closeModal();
-      fetchPicks();
-    }, 1500);
-  } else {
-    codeMsg.className = 'auth-error';
-    codeMsg.textContent = '❌ Código no válido o expirado. Contacta a soporte por WhatsApp.';
-    codeMsg.classList.remove('hidden');
-  }
+  vipCodeInput.value = '';
+  codeMsg.className = 'auth-error';
+  codeMsg.textContent = 'El canje en línea está temporalmente deshabilitado. Contacta a soporte para validar tu código de forma segura.';
+  codeMsg.classList.remove('hidden');
 });
 
 function updateAdsVisibility() {
-  const isVip = isSubscribed || currentUser?.is_premium || currentUser?.email === 'carlosds1017@gmail.com';
+  const isVip = isSubscribed;
   const adContainers = document.querySelectorAll('.ad-container');
   adContainers.forEach((ad: any) => {
     if (isVip) {
@@ -640,11 +608,7 @@ function updateAdsVisibility() {
 }
 
 function updateAuthHeaderState() {
-  if (currentUser?.email === 'carlosds1017@gmail.com') {
-    loginBtn.textContent = '👑 Admin (Carlos)';
-    premiumBadge.innerHTML = '👑 Admin VIP';
-    premiumBadge.classList.add('badge-gold');
-  } else if (isSubscribed) {
+  if (isSubscribed) {
     loginBtn.textContent = `👤 ${currentUser?.email?.split('@')[0] || 'Usuario'}`;
     premiumBadge.innerHTML = '👑 VIP Activado';
     premiumBadge.classList.add('badge-gold');
@@ -660,7 +624,7 @@ function updateAuthHeaderState() {
   updateAdsVisibility();
 }
 
-// Auth Logic (Supabase + Admin Bypass)
+// Auth Logic (Supabase session only)
 authForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = emailInput.value.trim();
@@ -670,29 +634,6 @@ authForm.addEventListener('submit', async (e) => {
   submitBtn.textContent = "Procesando...";
   errorMsg.classList.add('hidden');
   successMsg.classList.add('hidden');
-
-  // Admin Login strictly requires exact password: 010319NyC
-  if (email.toLowerCase() === 'carlosds1017@gmail.com') {
-    if (password !== '010319NyC') {
-      errorMsg.textContent = '❌ Contraseña de Administrador incorrecta.';
-      errorMsg.classList.remove('hidden');
-      submitBtn.disabled = false;
-      submitBtn.textContent = isLoginMode ? 'Entrar al Sistema' : 'Crear Cuenta';
-      return;
-    }
-    currentUser = { email: 'carlosds1017@gmail.com', is_premium: true, role: 'admin' };
-    isSubscribed = true;
-    localStorage.setItem('rey_taco_user', JSON.stringify(currentUser));
-    successMsg.textContent = '👑 ¡Bienvenido, Administrador Carlos!';
-    successMsg.classList.remove('hidden');
-    updateAuthHeaderState();
-    setTimeout(() => {
-      closeModal();
-      fetchPicks();
-    }, 1000);
-    submitBtn.disabled = false;
-    return;
-  }
 
   if (!supabase) {
     errorMsg.textContent = "Error: Base de datos no conectada.";
@@ -715,7 +656,6 @@ authForm.addEventListener('submit', async (e) => {
 
       currentUser = { email: data.user.email, id: data.user.id, is_premium: isPrem };
       isSubscribed = isPrem;
-      localStorage.setItem('rey_taco_user', JSON.stringify(currentUser));
       
       successMsg.textContent = '✅ ¡Sesión iniciada con éxito!';
       successMsg.classList.remove('hidden');
@@ -729,7 +669,6 @@ authForm.addEventListener('submit', async (e) => {
       if (error) throw error;
       
       currentUser = { email: data.user?.email || email, id: data.user?.id, is_premium: false };
-      localStorage.setItem('rey_taco_user', JSON.stringify(currentUser));
       
       successMsg.textContent = '✅ Cuenta creada con éxito. Ahora puedes adquirir tu pase VIP por SPEI.';
       successMsg.classList.remove('hidden');

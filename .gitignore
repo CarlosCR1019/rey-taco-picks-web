@@ -14,6 +14,7 @@ backend/.env
 # Chrome data & offsets
 .telegram_offset
 backend/.telegram_offset
+backend/private_receipts/
 
 # OS & Logs
 .DS_Store

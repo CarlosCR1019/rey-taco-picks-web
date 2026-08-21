@@ -3,8 +3,14 @@ import json
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client, Client
+
+try:
+    from backend.payment_review import classify_receipt
+except ModuleNotFoundError:  # Allows `python backend/ticket_listener.py`.
+    from payment_review import classify_receipt
 
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
@@ -14,13 +20,18 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 VIP_CHANNEL_ID = os.getenv("TELEGRAM_VIP_CHANNEL_ID") or os.getenv("TELEGRAM_CHANNEL_ID")
-FREE_CHANNEL_ID = os.getenv("TELEGRAM_FREE_CHANNEL_ID", "-1004387927424")
-ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "5912533842"))
+FREE_CHANNEL_ID = os.getenv("TELEGRAM_FREE_CHANNEL_ID", "")
+ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_CHAT_ID") or "0")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
-TICKETS_DIR = os.path.join("..", "frontend", "public", "tickets")
-os.makedirs(TICKETS_DIR, exist_ok=True)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TICKETS_DIR = PROJECT_ROOT / "frontend" / "public" / "tickets"
+RECEIPTS_DIR = Path(
+    os.getenv("PRIVATE_RECEIPTS_DIR", PROJECT_ROOT / "backend" / "private_receipts")
+)
+TICKETS_DIR.mkdir(parents=True, exist_ok=True)
+RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
 OFFSET_FILE = os.path.join(os.path.dirname(__file__), ".telegram_offset")
 
@@ -227,11 +238,11 @@ def procesar_comprobante_cliente(update):
         
     best_photo = photos[-1]
     file_id = best_photo['file_id']
-    save_path = os.path.join(TICKETS_DIR, f"comprobante_{user_id}_{int(time.time())}.jpg")
+    save_path = RECEIPTS_DIR / f"comprobante_{user_id}_{int(time.time())}.jpg"
     
     print(f"\n💳 [COMPROBANTE RECIBIDO] de {first_name} (@{username}, ID: {user_id})")
     
-    if download_photo(file_id, save_path):
+    if download_photo(file_id, str(save_path)):
         texto_ocr = ""
         try:
             from PIL import Image
@@ -242,50 +253,36 @@ def procesar_comprobante_cliente(update):
         except Exception as e:
             print(f"   ⚠️ OCR no disponible o error: {e}")
             
-        es_valido = ("299" in texto_ocr or "012180015228133759" in texto_ocr or "taco" in texto_ocr) and ("bbva" in texto_ocr or "transferencia" in texto_ocr or "exitosa" in texto_ocr or "spei" in texto_ocr or "enviado" in texto_ocr)
-        
-        if es_valido:
-            # 1. Activar VIP en Supabase
-            if supabase:
-                try:
-                    import uuid
-                    supabase.table("profiles").upsert({
-                        "id": str(uuid.uuid4()),
-                        "telegram_id": str(user_id),
-                        "telegram_username": username.replace("@", "").lower(),
-                        "is_premium": True
-                    }, on_conflict="telegram_id").execute()
-                except Exception as e:
-                    print(f"Error upsert profile: {e}")
-            
-            # 2. Aprobar en Canal VIP
-            if VIP_CHANNEL_ID:
-                telegram_api("approveChatJoinRequest", {"chat_id": VIP_CHANNEL_ID, "user_id": user_id})
-                
-            msg_exito = (
-                f"🎉 ¡PAGO DE $299 MXN CONFIRMADO EXITOSAMENTE!\n\n"
-                f"👑 Bienvenido al servicio VIP de Rey Taco Picks, {first_name}.\n"
-                f"✅ Tu acceso al Canal VIP y a la plataforma web ha sido activado de inmediato.\n\n"
-                f"👉 Entra a la web oficial: https://reytacopicks.com"
-            )
-            responder(user_id, msg_exito)
-            
-            # 3. Notificar a Carlos
-            responder(ADMIN_CHAT_ID, 
-                f"💰 [PAGO SPEI VERIFICADO POR IA]\n\n"
-                f"👤 {first_name} (@{username})\n"
-                f"🆔 ID Telegram: `{user_id}`\n"
-                f"💵 Monto: $299.00 MXN\n"
-                f"⚡ El bot verificó el comprobante BBVA y activó su VIP en automático."
-            )
-        else:
-            # Reenviar a Carlos para aprobación con 1 clic
+        review = classify_receipt(texto_ocr)
+        if supabase:
+            try:
+                supabase.table("payment_reviews").insert({
+                    "telegram_id": str(user_id),
+                    "telegram_username": username.replace("@", "").lower(),
+                    "status": review.status,
+                    "detected_amount": review.detected_amount,
+                    "detected_bank": review.detected_bank,
+                    "receipt_filename": save_path.name,
+                }).execute()
+            except Exception as e:
+                print(f"   ⚠️ No se pudo registrar payment_reviews: {e}")
+
+        if ADMIN_CHAT_ID:
             telegram_api("sendPhoto", {
                 "chat_id": ADMIN_CHAT_ID,
                 "photo": file_id,
-                "caption": f"📩 [COMPROBANTE RECIBIDO DE CLIENTE]\n👤 {first_name} (@{username}, ID: `{user_id}`)\n\nComandos rápidos para Carlos:\n• `/aprobar {user_id}` ➔ Aprobar en Canal VIP\n• `/vip {username}@telegram.com` ➔ Activar en Web"
+                "caption": (
+                    "📩 [COMPROBANTE PENDIENTE DE REVISIÓN]\n"
+                    f"👤 {first_name} (@{username}, ID: `{user_id}`)\n"
+                    f"💵 OCR detectó $299: {'sí' if review.detected_amount else 'no'}\n"
+                    f"🏦 OCR detectó banco/SPEI: {'sí' if review.detected_bank else 'no'}\n\n"
+                    "El OCR no activa membresías. Verifica el movimiento bancario antes de aprobar."
+                ),
             })
-            responder(user_id, "📨 ¡Comprobante recibido! Nuestro sistema lo está procesando. Tu acceso VIP será activado en breve. 🌮👑")
+        responder(
+            user_id,
+            "📨 Recibimos tu comprobante. Está pendiente de revisión manual; te avisaremos cuando el pago sea confirmado.",
+        )
 
 def procesar_foto(update):
     """Procesa una foto recibida del admin."""

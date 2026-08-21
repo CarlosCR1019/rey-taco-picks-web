@@ -6,12 +6,16 @@ import pytest
 
 from backend.pick_selection import (
     CandidatePick,
+    Evidence,
+    EvidenceScore,
     MAX_AI_RANKED_PICKS,
     RankedPick,
     _candidate_id,
     _same_physical_event,
     build_candidates,
     build_same_day_parlay,
+    evidence_for_candidate,
+    score_evidence,
     validate_ai_ranking,
 )
 from backend.scraper_domain import Event, Market, Outcome
@@ -19,6 +23,83 @@ from backend.scraper_domain import Event, Market, Outcome
 
 MEXICO = ZoneInfo("America/Mexico_City")
 OBSERVED = datetime(2026, 8, 20, 10, tzinfo=MEXICO)
+
+
+def test_missing_comparison_never_claims_value():
+    score = score_evidence(Evidence(1, 5, None, True))
+
+    assert score == EvidenceScore(65, "Datos limitados", False)
+
+
+def test_fresh_agreeing_sources_produce_a_bounded_data_support_label():
+    score = score_evidence(Evidence(2, 3, 0.03, True))
+
+    assert score == EvidenceScore(85, "Respaldo alto", True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("source_count", True, TypeError),
+        ("source_count", -1, ValueError),
+        ("age_minutes", False, TypeError),
+        ("age_minutes", -1, ValueError),
+        ("price_spread", 0, TypeError),
+        ("price_spread", float("nan"), ValueError),
+        ("price_spread", float("inf"), ValueError),
+        ("price_spread", -0.01, ValueError),
+        ("market_complete", 1, TypeError),
+    ],
+)
+def test_evidence_rejects_hostile_or_out_of_range_inputs(field, value, error):
+    values = {
+        "source_count": 1,
+        "age_minutes": 5,
+        "price_spread": None,
+        "market_complete": True,
+    }
+    values[field] = value
+
+    with pytest.raises(error):
+        Evidence(**values)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("percent", True, TypeError),
+        ("percent", -1, ValueError),
+        ("percent", 86, ValueError),
+        ("label", "probabilidad alta", ValueError),
+        ("has_value", 1, TypeError),
+    ],
+)
+def test_evidence_score_rejects_hostile_or_out_of_range_inputs(
+    field,
+    value,
+    error,
+):
+    values = {
+        "percent": 65,
+        "label": "Datos limitados",
+        "has_value": False,
+    }
+    values[field] = value
+
+    with pytest.raises(error):
+        EvidenceScore(**values)
+
+
+def test_evidence_types_are_frozen_and_slotted():
+    evidence = Evidence(1, 5, None, True)
+    score = EvidenceScore(65, "Datos limitados", False)
+
+    with pytest.raises(FrozenInstanceError):
+        evidence.source_count = 2  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        score.percent = 85  # type: ignore[misc]
+    assert not hasattr(evidence, "__dict__")
+    assert not hasattr(score, "__dict__")
 
 
 def event_with(
@@ -29,16 +110,18 @@ def event_with(
     markets: tuple[Market, ...] | None = None,
     home_team: str = "Dodgers",
     away_team: str = "Padres",
+    observed_at: datetime = OBSERVED,
+    sport: str = "baseball",
 ) -> Event:
     return Event(
         source=source,
         source_event_id=source_event_id,
-        sport="baseball",
+        sport=sport,
         league="MLB",
         home_team=home_team,
         away_team=away_team,
-        starts_at=starts_at or OBSERVED + timedelta(hours=10),
-        observed_at=OBSERVED,
+        starts_at=starts_at or observed_at + timedelta(hours=10),
+        observed_at=observed_at,
         markets=markets
         or (
             Market(
@@ -53,6 +136,217 @@ def event_with(
             ),
         ),
     )
+
+
+def _comparison_candidates(
+    *,
+    observed_first: datetime = OBSERVED,
+    observed_second: datetime | None = None,
+    first_outcomes: tuple[Outcome, ...] | None = None,
+    second_outcomes: tuple[Outcome, ...] | None = None,
+    second_source: str = "the_odds_api",
+    second_bookmaker: str = "book-b",
+    sport: str = "soccer",
+) -> list[CandidatePick]:
+    observed_second = observed_second or observed_first + timedelta(minutes=2)
+    starts_at = observed_first + timedelta(hours=8)
+    default_first = (
+        Outcome("home", "América", 1.80),
+        Outcome("draw", "Empate", 3.20),
+        Outcome("away", "Tigres", 2.40),
+    )
+    default_second = (
+        Outcome("home", "América", 1.83),
+        Outcome("draw", "Empate", 3.15),
+        Outcome("away", "Tigres", 2.38),
+    )
+    events = (
+        event_with(
+            source="playdoit",
+            source_event_id="playdoit-1",
+            starts_at=starts_at,
+            home_team="América",
+            away_team="Tigres",
+            observed_at=observed_first,
+            sport=sport,
+            markets=(
+                Market(
+                    "h2h",
+                    "full_game",
+                    None,
+                    first_outcomes or default_first,
+                    bookmaker_key="book-a",
+                ),
+            ),
+        ),
+        event_with(
+            source=second_source,
+            source_event_id="odds-1",
+            starts_at=starts_at.astimezone(timezone.utc),
+            home_team="AMERICA",
+            away_team="TIGRES",
+            observed_at=observed_second,
+            sport=sport,
+            markets=(
+                Market(
+                    "h2h",
+                    "full_game",
+                    None,
+                    second_outcomes or default_second,
+                    bookmaker_key=second_bookmaker,
+                ),
+            ),
+        ),
+    )
+    return build_candidates(events)
+
+
+def test_catalog_evidence_uses_independent_fresh_matching_quotes():
+    candidates = _comparison_candidates()
+    selected = next(
+        row
+        for row in candidates
+        if row.source == "playdoit" and row.selection_key == "home"
+    )
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=10),
+    )
+
+    assert evidence.source_count == 2
+    assert evidence.age_minutes == 10
+    assert evidence.price_spread == pytest.approx(0.03)
+    assert evidence.market_complete is True
+    assert score_evidence(evidence) == EvidenceScore(85, "Respaldo alto", True)
+
+
+def test_catalog_evidence_treats_exact_five_cent_decimal_spread_as_agreement():
+    second_outcomes = (
+        Outcome("home", "América", 1.85),
+        Outcome("draw", "Empate", 3.15),
+        Outcome("away", "Tigres", 2.38),
+    )
+    candidates = _comparison_candidates(second_outcomes=second_outcomes)
+    selected = next(
+        row
+        for row in candidates
+        if row.source == "playdoit" and row.selection_key == "home"
+    )
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=10),
+    )
+
+    assert evidence.price_spread == 0.05
+    assert score_evidence(evidence) == EvidenceScore(85, "Respaldo alto", True)
+
+
+def test_catalog_evidence_does_not_treat_same_source_and_book_as_independent():
+    candidates = _comparison_candidates(
+        second_source="playdoit",
+        second_bookmaker="book-a",
+    )
+    selected = next(row for row in candidates if row.source_event_id == "playdoit-1")
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=10),
+    )
+
+    assert evidence.source_count <= 1
+    assert evidence.price_spread is None
+    assert score_evidence(evidence).has_value is False
+
+
+def test_catalog_evidence_requires_complete_market_per_quote_identity():
+    incomplete = (
+        Outcome("home", "América", 1.80),
+        Outcome("away", "Tigres", 2.40),
+    )
+    candidates = _comparison_candidates(
+        first_outcomes=incomplete,
+        second_outcomes=incomplete,
+    )
+    selected = next(
+        row
+        for row in candidates
+        if row.source == "playdoit" and row.selection_key == "home"
+    )
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=10),
+    )
+
+    assert evidence.market_complete is False
+    assert score_evidence(evidence).has_value is False
+    assert score_evidence(evidence).label == "Datos limitados"
+
+
+@pytest.mark.parametrize("soccer_alias", ["football", "fútbol", "futbol"])
+def test_catalog_evidence_requires_draw_for_all_supported_soccer_aliases(
+    soccer_alias,
+):
+    incomplete = (
+        Outcome("home", "América", 1.80),
+        Outcome("away", "Tigres", 2.40),
+    )
+    candidates = _comparison_candidates(
+        first_outcomes=incomplete,
+        second_outcomes=incomplete,
+        sport=soccer_alias,
+    )
+    selected = next(
+        row
+        for row in candidates
+        if row.source == "playdoit" and row.selection_key == "home"
+    )
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=10),
+    )
+
+    assert evidence.market_complete is False
+    assert score_evidence(evidence).has_value is False
+
+
+def test_future_observation_never_receives_freshness_or_high_support():
+    future_observation = OBSERVED + timedelta(minutes=11)
+    candidates = _comparison_candidates(observed_second=future_observation)
+    selected = next(
+        row
+        for row in candidates
+        if row.source == "playdoit" and row.selection_key == "home"
+    )
+
+    evidence = evidence_for_candidate(
+        selected,
+        candidates,
+        reference_at=OBSERVED + timedelta(minutes=10),
+    )
+
+    assert evidence.source_count == 1
+    assert evidence.price_spread is None
+    assert score_evidence(evidence) == EvidenceScore(65, "Datos limitados", False)
+
+
+def test_catalog_evidence_rejects_naive_reference_time(event_fixture):
+    candidate = build_candidates([event_fixture])[0]
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        evidence_for_candidate(
+            candidate,
+            [candidate],
+            reference_at=datetime(2026, 8, 20, 10),
+        )
 
 
 def test_candidate_copies_exact_normalized_source_market_and_price(event_fixture):

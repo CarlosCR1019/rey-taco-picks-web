@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import math
 from pathlib import Path
@@ -459,7 +459,12 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     monkeypatch.setattr(scraper, "ejecutar_groq_con_fallback", fake_groq)
 
     picks = scraper.fase6_analisis_final(
-        [projected], "memoria privada", {}, [projected], groq_api_key="fake"
+        [projected],
+        "memoria privada",
+        {},
+        [projected],
+        groq_api_key="fake",
+        reference_at=OBSERVED_AT + timedelta(minutes=5),
     )
 
     assert len(calls) == 1
@@ -496,8 +501,61 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     assert pick["cuota"] == candidate.price
     assert pick["razonamiento"] == "La selección conserva toda la evidencia observada."
     assert pick["es_parlay"] is False
-    assert "confianza" not in pick and "tiene_valor" not in pick
+    assert pick["confianza"] == "65% respaldo de datos"
+    assert pick["riesgo"] == "Datos limitados"
+    assert pick["tiene_valor"] is False
     assert "_verified_candidates" not in pick
+
+
+def test_phase6_derives_high_support_from_full_catalog_not_ai_claims(monkeypatch):
+    from backend import scraper
+
+    raw = fixture_event()
+    second_book = deepcopy(raw["bookmakers"][0])
+    second_book["key"] = "book-b"
+    h2h = next(row for row in second_book["markets"] if row["key"] == "h2h")
+    home = next(
+        row for row in h2h["outcomes"] if row["name"].casefold() == "américa"
+    )
+    home["price"] = 1.73
+    raw["bookmakers"].append(second_book)
+    projected = scraper._legacy_odds_projection(
+        normalize_odds_event(raw, OBSERVED_AT)
+    )
+    candidate = next(
+        row
+        for row in projected["_verified_candidates"]
+        if row.bookmaker_key == "book-a"
+        and row.market_key == "h2h"
+        and row.selection_key == "home"
+    )
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: json.dumps(
+            [{
+                "candidate_id": candidate.candidate_id,
+                "rationale": "La explicación no puede alterar el respaldo calculado.",
+                "confianza": "100%",
+                "tiene_valor": True,
+            }]
+        ),
+    )
+
+    picks = scraper.fase6_analisis_final(
+        [projected],
+        "",
+        {},
+        [projected],
+        groq_api_key="fake",
+        reference_at=OBSERVED_AT + timedelta(minutes=5),
+    )
+
+    assert len(picks) == 1
+    assert picks[0]["confianza"] == "85% respaldo de datos"
+    assert picks[0]["riesgo"] == "Respaldo alto"
+    assert picks[0]["tiene_valor"] is True
 
 
 def test_groq_fallback_preserves_response_schema_on_every_retry(monkeypatch):

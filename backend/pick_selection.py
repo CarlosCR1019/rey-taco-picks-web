@@ -30,6 +30,8 @@ SUPPORTED_SELECTIONS = {
 MEXICO = ZoneInfo("America/Mexico_City")
 # Bound model-controlled output before persistence and notification fan-out.
 MAX_AI_RANKED_PICKS = 12
+EVIDENCE_LABEL_LIMITED = "Datos limitados"
+EVIDENCE_LABEL_HIGH = "Respaldo alto"
 
 
 def _required_text(value: object, field: str) -> str:
@@ -60,6 +62,82 @@ def _finite_float(value: object, field: str) -> float:
     if not math.isfinite(normalized):
         raise ValueError(f"{field} must be finite")
     return normalized
+
+
+def _non_negative_int(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field} must be non-negative")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class Evidence:
+    """Documented quote signals; never a probability estimate."""
+
+    source_count: int
+    age_minutes: int
+    price_spread: float | None
+    market_complete: bool
+
+    def __post_init__(self) -> None:
+        _non_negative_int(self.source_count, "source_count")
+        _non_negative_int(self.age_minutes, "age_minutes")
+        if self.price_spread is not None:
+            if not isinstance(self.price_spread, float):
+                raise TypeError("price_spread must be a float or None")
+            if not math.isfinite(self.price_spread):
+                raise ValueError("price_spread must be finite")
+            if self.price_spread < 0:
+                raise ValueError("price_spread must be non-negative")
+        if not isinstance(self.market_complete, bool):
+            raise TypeError("market_complete must be a bool")
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceScore:
+    """Bounded data-support score, not a claimed chance of winning."""
+
+    percent: int
+    label: str
+    has_value: bool
+
+    def __post_init__(self) -> None:
+        percent = _non_negative_int(self.percent, "percent")
+        if percent > 85:
+            raise ValueError("percent must be at most 85")
+        if self.label not in {EVIDENCE_LABEL_LIMITED, EVIDENCE_LABEL_HIGH}:
+            raise ValueError("label must be a documented evidence label")
+        if not isinstance(self.has_value, bool):
+            raise TypeError("has_value must be a bool")
+        if self.has_value != (self.label == EVIDENCE_LABEL_HIGH):
+            raise ValueError("has_value and label must describe the same evidence")
+
+
+def score_evidence(evidence: Evidence) -> EvidenceScore:
+    """Score observable quote support without estimating win probability."""
+
+    if not isinstance(evidence, Evidence):
+        raise TypeError("evidence must be Evidence")
+    agrees = evidence.price_spread is not None and evidence.price_spread <= 0.05
+    fresh = evidence.age_minutes <= 10
+    strong = (
+        evidence.source_count >= 2
+        and fresh
+        and evidence.market_complete
+        and agrees
+    )
+    points = 45
+    points += 15 if evidence.source_count >= 2 else 0
+    points += 10 if fresh else 0
+    points += 10 if evidence.market_complete else 0
+    points += 5 if agrees else 0
+    return EvidenceScore(
+        percent=min(points, 85),
+        label=EVIDENCE_LABEL_HIGH if strong else EVIDENCE_LABEL_LIMITED,
+        has_value=strong,
+    )
 
 
 def _canonical_line(line: float | None) -> str | None:
@@ -299,6 +377,143 @@ def _candidate_exclusivity_group(candidate: CandidatePick) -> tuple[object, ...]
         candidate.market_key,
         candidate.period,
         _canonical_line(candidate.line),
+    )
+
+
+def _candidate_evidence_group(candidate: CandidatePick) -> tuple[object, ...]:
+    return (*_candidate_exclusivity_group(candidate), candidate.selection_key)
+
+
+def _quote_provider_identity(candidate: CandidatePick) -> tuple[str, str]:
+    return candidate.source.casefold(), candidate.bookmaker_key
+
+
+def _market_quote_identity(candidate: CandidatePick) -> tuple[object, ...]:
+    return (
+        candidate.source.casefold(),
+        candidate.source_event_id,
+        candidate.bookmaker_key,
+        _physical_competitor_pair(candidate),
+        candidate.starts_at.astimezone(MEXICO).date(),
+        candidate.market_key,
+        candidate.period,
+        _canonical_line(candidate.line),
+    )
+
+
+def _required_market_outcomes(candidate: CandidatePick) -> frozenset[str]:
+    if candidate.market_key == "h2h":
+        sport = candidate.sport.casefold()
+        if sport.startswith("soccer") or sport in {
+            "football",
+            "fútbol",
+            "futbol",
+        }:
+            return frozenset({"home", "draw", "away"})
+        return frozenset({"home", "away"})
+    if candidate.market_key == "totals":
+        return frozenset({"over", "under"})
+    return frozenset({"home", "away"})
+
+
+def _resolved_candidate_catalog(candidates: object) -> list[CandidatePick]:
+    if not isinstance(candidates, Iterable):
+        raise TypeError("candidates must be iterable")
+    selected: dict[str, CandidatePick] = {}
+    conflicts: set[str] = set()
+    try:
+        for candidate in candidates:
+            if not _is_individually_valid(candidate):
+                continue
+            candidate_id = candidate.candidate_id
+            if candidate_id in conflicts:
+                continue
+            existing = selected.get(candidate_id)
+            if existing is None:
+                selected[candidate_id] = candidate
+            elif existing != candidate:
+                selected.pop(candidate_id, None)
+                conflicts.add(candidate_id)
+    except Exception as exc:
+        raise ValueError("candidate catalog could not be read safely") from exc
+    return list(selected.values())
+
+
+def evidence_for_candidate(
+    candidate: CandidatePick,
+    candidates: object,
+    *,
+    reference_at: datetime,
+) -> Evidence:
+    """Derive conservative quote support for one exact catalog candidate.
+
+    Quotes are comparable only for the same physical event, Mexico date,
+    market, period, canonical line, and selection. Independence means a unique
+    ``(source, bookmaker_key)`` pair. The oldest observation controls freshness.
+    """
+
+    if not _is_individually_valid(candidate):
+        raise ValueError("candidate must be a valid CandidatePick")
+    reference = _aware_datetime(reference_at, "reference_at")
+    catalog = _resolved_candidate_catalog(candidates)
+    if candidate not in catalog or candidate.observed_at > reference:
+        return Evidence(0, 11, None, False)
+    usable_catalog = [
+        quote for quote in catalog if quote.observed_at <= reference
+    ]
+
+    comparison_group = _candidate_evidence_group(candidate)
+    by_provider: dict[tuple[str, str], list[CandidatePick]] = {}
+    for quote in usable_catalog:
+        if _candidate_evidence_group(quote) == comparison_group:
+            by_provider.setdefault(_quote_provider_identity(quote), []).append(quote)
+
+    # Multiple same-provider event identities for one physical match are
+    # ambiguous (for example, an untrusted doubleheader match) and contribute
+    # no evidence instead of being selected heuristically.
+    comparable = [
+        rows[0]
+        for rows in by_provider.values()
+        if len(rows) == 1
+    ]
+    if not comparable:
+        return Evidence(0, 11, None, False)
+
+    market_outcomes: dict[tuple[object, ...], set[str]] = {}
+    market_sports: dict[tuple[object, ...], set[str]] = {}
+    for quote in usable_catalog:
+        market_identity = _market_quote_identity(quote)
+        market_outcomes.setdefault(market_identity, set()).add(quote.selection_key)
+        market_sports.setdefault(market_identity, set()).add(quote.sport.casefold())
+
+    market_complete = True
+    for quote in comparable:
+        market_identity = _market_quote_identity(quote)
+        observed_outcomes = market_outcomes.get(market_identity, set())
+        if (
+            len(market_sports.get(market_identity, set())) != 1
+            or not _required_market_outcomes(quote).issubset(observed_outcomes)
+        ):
+            market_complete = False
+            break
+
+    oldest_age_seconds = max(
+        (reference - quote.observed_at).total_seconds()
+        for quote in comparable
+    )
+    age_minutes = math.ceil(oldest_age_seconds / 60)
+
+    prices = [quote.price for quote in comparable]
+    price_spread = (
+        float(Decimal(str(max(prices))) - Decimal(str(min(prices))))
+        if len(prices) >= 2
+        else None
+    )
+    return Evidence(
+        source_count=len(comparable),
+        age_minutes=age_minutes,
+        price_spread=price_spread,
+        market_complete=market_complete,
     )
 
 

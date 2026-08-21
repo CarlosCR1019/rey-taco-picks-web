@@ -10,7 +10,7 @@ import math
 import time
 import sys
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -39,11 +39,14 @@ from backend.playdoit_source import (
 from backend.pick_publisher import SupabaseBatchRepository, publish_batch
 from backend.pick_selection import (
     CandidatePick,
+    EvidenceScore,
     MAX_AI_RANKED_PICKS,
     RankedPick,
     _candidate_exclusivity_group,
     _is_individually_valid,
     build_candidates,
+    evidence_for_candidate,
+    score_evidence,
     validate_ai_ranking,
 )
 from backend.scraper_config import ConfigError, ScraperSettings, load_settings
@@ -1354,8 +1357,11 @@ def _candidate_schedule(candidate: CandidatePick) -> str:
     return start.strftime("%d/%m %H:%M hrs")
 
 
-def _legacy_ranked_pick_projection(ranked_pick: RankedPick) -> dict[str, object]:
-    """Copy all factual fields from the catalog and only rationale from AI."""
+def _legacy_ranked_pick_projection(
+    ranked_pick: RankedPick,
+    evidence_score: EvidenceScore,
+) -> dict[str, object]:
+    """Copy catalog facts plus a bounded data-support score, never win odds."""
 
     candidate = ranked_pick.candidate
     return {
@@ -1380,6 +1386,9 @@ def _legacy_ranked_pick_projection(ranked_pick: RankedPick) -> dict[str, object]
         "pick": candidate.selection_name,
         "cuota": candidate.price,
         "razonamiento": ranked_pick.rationale,
+        "confianza": f"{evidence_score.percent}% respaldo de datos",
+        "riesgo": evidence_score.label,
+        "tiene_valor": evidence_score.has_value,
         "es_parlay": False,
     }
 
@@ -1389,11 +1398,13 @@ def _fase6_candidate_ranking(
     partidos_data,
     *,
     groq_api_key,
+    reference_at=None,
 ):
     records = list(datos_profundos or ()) + list(partidos_data or ())
     candidates = _collect_verified_candidates(records)
     if not groq_api_key or not candidates:
         return []
+    evidence_reference_at = reference_at or datetime.now(timezone.utc)
 
     prompt_candidates, prompt = _bounded_prompt_candidates(candidates)
     if not prompt_candidates:
@@ -1448,7 +1459,16 @@ def _fase6_candidate_ranking(
 
     raw_ranking = _parse_strict_json_array(raw_response)
     ranked = validate_ai_ranking(raw_ranking, prompt_candidates)
-    picks = [_legacy_ranked_pick_projection(row) for row in ranked]
+    picks = []
+    for row in ranked:
+        evidence = evidence_for_candidate(
+            row.candidate,
+            candidates,
+            reference_at=evidence_reference_at,
+        )
+        picks.append(
+            _legacy_ranked_pick_projection(row, score_evidence(evidence))
+        )
     print(f"   🏆 Ranking verificado: {len(picks)} selecciones de catálogo.")
     for pick in picks:
         print(
@@ -1465,6 +1485,7 @@ def fase6_analisis_final(
     partidos_data=None,
     *,
     groq_api_key=None,
+    reference_at=None,
 ):
     if partidos_data is None:
         partidos_data = datos_profundos
@@ -1472,6 +1493,7 @@ def fase6_analisis_final(
         datos_profundos,
         partidos_data,
         groq_api_key=groq_api_key or GROQ_API_KEY,
+        reference_at=reference_at,
     )
 
 

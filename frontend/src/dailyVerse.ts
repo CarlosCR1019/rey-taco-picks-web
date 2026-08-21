@@ -46,13 +46,6 @@ export function initDailyVerseBanner(containerId: string = 'daily-verse-containe
   const container = document.getElementById(containerId);
   if (!container) return;
 
-  // Verificar si el usuario lo ocultó en esta sesión
-  const isDismissed = sessionStorage.getItem('daily_verse_dismissed') === 'true';
-  if (isDismissed) {
-    container.innerHTML = '';
-    return;
-  }
-
   // Selección diaria determinista por fecha (día del año)
   const now = new Date();
   const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / (1000 * 60 * 60 * 24));
@@ -61,7 +54,7 @@ export function initDailyVerseBanner(containerId: string = 'daily-verse-containe
   function renderVerse(idx: number) {
     const verse = BLESSING_VERSES[idx];
     container!.innerHTML = `
-      <div class="verse-banner" id="verse-banner-box">
+      <div class="verse-banner" id="verse-banner-box" role="region" aria-label="Salmo del día">
         <div class="verse-glow-bar"></div>
         <div class="verse-main-content">
           <div class="verse-header-tag">
@@ -72,14 +65,11 @@ export function initDailyVerseBanner(containerId: string = 'daily-verse-containe
           <p class="verse-quote">«${verse.text}»</p>
         </div>
         <div class="verse-toolbar">
-          <button id="btn-copy-verse" class="verse-icon-btn" title="Copiar versículo">
+          <button id="btn-copy-verse" class="verse-icon-btn" title="Copiar versículo" aria-label="Copiar versículo">
             📋
           </button>
-          <button id="btn-next-verse" class="verse-icon-btn" title="Ver otro salmo">
+          <button id="btn-next-verse" class="verse-icon-btn" title="Ver otro salmo" aria-label="Ver otro salmo">
             🔄
-          </button>
-          <button id="btn-dismiss-verse" class="verse-icon-btn close-btn" title="Cerrar">
-            &times;
           </button>
         </div>
       </div>
@@ -111,19 +101,6 @@ export function initDailyVerseBanner(containerId: string = 'daily-verse-containe
       });
     });
 
-    // Handler: Cerrar / Ocultar banner
-    document.getElementById('btn-dismiss-verse')?.addEventListener('click', () => {
-      const banner = document.getElementById('verse-banner-box');
-      if (banner) {
-        banner.style.opacity = '0';
-        banner.style.transform = 'translateY(-8px)';
-        banner.style.transition = 'all 0.25s ease';
-        sessionStorage.setItem('daily_verse_dismissed', 'true');
-        setTimeout(() => {
-          container!.innerHTML = '';
-        }, 250);
-      }
-    });
   }
 
   renderVerse(currentIndex);

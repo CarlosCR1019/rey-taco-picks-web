@@ -25,12 +25,43 @@ create unique index if not exists pick_batches_one_active_idx
     on public.pick_batches ((1))
     where active;
 
+-- public_picks depends on picks.id, so recreate it around the bigint upgrade.
+drop view if exists public.public_picks;
+
+alter table public.picks
+    alter column id type bigint using id::bigint;
+
 alter table public.picks
     add column if not exists batch_id uuid references public.pick_batches(id),
     add column if not exists active boolean not null default false;
 
 create index if not exists picks_active_batch_idx
     on public.picks (batch_id, active, estado);
+
+create or replace view public.public_picks
+with (security_invoker = true)
+as
+select
+    id,
+    categoria,
+    partido,
+    pick,
+    cuota,
+    confianza,
+    razonamiento,
+    fecha_generacion,
+    fecha_evento,
+    horario,
+    tiene_valor,
+    es_parlay,
+    estado,
+    visibility,
+    resultado_unidades,
+    resultado_fuente,
+    resultado_marcador,
+    resultado_verificado_at
+from public.picks
+where visibility = 'public';
 
 create or replace function public.publish_pick_batch(
     requested_run_key text,
@@ -96,6 +127,10 @@ begin
     from public.scraper_runs
     where run_key = requested_run_key
     for update;
+
+    if claimed_run.source_hash <> requested_source_hash then
+        raise exception 'run key % already belongs to a different source hash', requested_run_key;
+    end if;
 
     if claimed_run.status in ('published', 'partial') then
         return jsonb_build_object(
@@ -232,24 +267,44 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
+    if requested_success is null then
+        raise exception 'requested_success must not be null';
+    end if;
+
     if requested_destination is null
        or requested_destination not in ('admin', 'vip', 'free') then
         raise exception 'requested_destination must be admin, vip, or free';
     end if;
 
-    update public.scraper_runs
-    set delivery_status = jsonb_set(
-            delivery_status,
-            array[requested_destination],
-            jsonb_build_object(
-                'success', requested_success,
-                'error', left(coalesce(requested_error, ''), 200),
-                'updated_at', now()
-            ),
-            true
-        ),
-        status = case when requested_success then status else 'partial' end
-    where id = requested_run_id;
+    with updated as (
+        select
+            id,
+            jsonb_set(
+                delivery_status,
+                array[requested_destination],
+                jsonb_build_object(
+                    'success', requested_success,
+                    'error', left(coalesce(requested_error, ''), 200),
+                    'updated_at', now()
+                ),
+                true
+            ) as next_delivery_status
+        from public.scraper_runs
+        where id = requested_run_id
+        for update
+    )
+    update public.scraper_runs as runs
+    set delivery_status = updated.next_delivery_status,
+        status = case
+            when not exists (
+                select 1
+                from jsonb_each(updated.next_delivery_status)
+                    as delivery(destination, details)
+                where details->>'success' is distinct from 'true'
+            ) then 'published' else 'partial'
+        end
+    from updated
+    where runs.id = updated.id;
 
     if not found then
         raise exception 'unknown scraper run %', requested_run_id;
@@ -260,10 +315,56 @@ $$;
 alter table public.scraper_runs enable row level security;
 alter table public.pick_batches enable row level security;
 
+drop policy if exists picks_public_read on public.picks;
+drop policy if exists picks_member_read on public.picks;
+drop policy if exists picks_subscriber_read on public.picks;
+
+create policy picks_public_read on public.picks
+    for select to anon
+    using (
+        (estado = 'pendiente' and active and visibility = 'public')
+        or (estado <> 'pendiente' and visibility = 'public')
+    );
+
+create policy picks_member_read on public.picks
+    for select to authenticated
+    using (
+        (
+            estado = 'pendiente'
+            and active
+            and (
+                visibility = 'public'
+                or public.is_active_subscriber(auth.uid())
+            )
+        )
+        or (estado <> 'pendiente' and visibility = 'public')
+    );
+
+-- A FOR ALL policy also grants SELECT, which would bypass the lifecycle
+-- predicates above. Keep admin mutations write-only instead.
+drop policy if exists picks_admin_write on public.picks;
+drop policy if exists picks_admin_insert on public.picks;
+drop policy if exists picks_admin_update on public.picks;
+drop policy if exists picks_admin_delete on public.picks;
+
+create policy picks_admin_insert on public.picks
+    for insert to authenticated
+    with check (public.is_admin(auth.uid()));
+
+create policy picks_admin_update on public.picks
+    for update to authenticated
+    using (public.is_admin(auth.uid()))
+    with check (public.is_admin(auth.uid()));
+
+create policy picks_admin_delete on public.picks
+    for delete to authenticated
+    using (public.is_admin(auth.uid()));
+
 revoke all on table public.scraper_runs from public, anon, authenticated;
 revoke all on table public.pick_batches from public, anon, authenticated;
 grant all on table public.scraper_runs to service_role;
 grant all on table public.pick_batches to service_role;
+grant select on public.public_picks to anon, authenticated;
 
 revoke all on function public.publish_pick_batch(text, text, jsonb) from public, anon, authenticated;
 revoke all on function public.record_scraper_delivery(uuid, text, boolean, text) from public, anon, authenticated;

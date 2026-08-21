@@ -82,6 +82,13 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("where active", text)
         self.assertIn("add column if not exists batch_id uuid references public.pick_batches(id)", text)
         self.assertIn("add column if not exists active boolean not null default false", text)
+        self.assertIn("alter column id type bigint using id::bigint", text)
+        self.assertIn("drop view if exists public.public_picks", text)
+        self.assertIn("create or replace view public.public_picks", text)
+        self.assertLess(
+            text.index("alter column id type bigint using id::bigint"),
+            text.index("floor(extract(epoch from clock_timestamp()) * 1000000)"),
+        )
         self.assertIn("create index if not exists picks_active_batch_idx", text)
 
     def test_publishing_rpc_is_atomic_idempotent_and_validates_visibility(self):
@@ -97,6 +104,13 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("coalesce((value->>'es_parlay')::boolean, false)", text)
         self.assertIn("on conflict (run_key) do nothing", text)
         self.assertIn("for update", text)
+        lock_position = text.index("for update")
+        hash_check_position = text.index(
+            "if claimed_run.source_hash <> requested_source_hash"
+        )
+        replay_position = text.index("if claimed_run.status in ('published', 'partial')")
+        self.assertLess(lock_position, hash_check_position)
+        self.assertLess(hash_check_position, replay_position)
         self.assertIn("claimed_run.status in ('published', 'partial')", text)
         self.assertIn("'run_id', claimed_run.id", text)
         self.assertIn(
@@ -133,7 +147,11 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("'success', requested_success", text)
         self.assertIn("'error', left(coalesce(requested_error, ''), 200)", text)
         self.assertIn("'updated_at', now()", text)
-        self.assertIn("status = case when requested_success then status else 'partial' end", text)
+        self.assertIn("if requested_success is null then", text)
+        self.assertIn("next_delivery_status", text)
+        self.assertIn("jsonb_each(updated.next_delivery_status)", text)
+        self.assertIn("details->>'success' is distinct from 'true'", text)
+        self.assertIn("then 'published' else 'partial'", text)
         self.assertIn("alter table public.scraper_runs enable row level security", text)
         self.assertIn("alter table public.pick_batches enable row level security", text)
         for table in ("scraper_runs", "pick_batches"):
@@ -147,6 +165,32 @@ class SupabaseContractTests(unittest.TestCase):
             self.assertIn(f"grant execute on function {signature} to service_role", text)
         self.assertNotIn("grant select on table public.scraper_runs to anon", text)
         self.assertNotIn("grant select on table public.pick_batches to authenticated", text)
+
+    def test_direct_pick_reads_enforce_the_active_batch_lifecycle(self):
+        text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
+        self.assertIn("drop policy if exists picks_public_read on public.picks", text)
+        self.assertIn("drop policy if exists picks_member_read on public.picks", text)
+        self.assertIn("drop policy if exists picks_subscriber_read on public.picks", text)
+
+        public_start = text.index("create policy picks_public_read on public.picks")
+        member_start = text.index("create policy picks_member_read on public.picks")
+        public_policy = text[public_start:member_start]
+        member_policy = text[member_start:]
+        self.assertIn("for select to anon", public_policy)
+        self.assertIn("for select to authenticated", member_policy)
+        for policy in (public_policy, member_policy):
+            self.assertIn("estado = 'pendiente' and active", policy)
+            self.assertIn("estado <> 'pendiente' and visibility = 'public'", policy)
+        self.assertIn("visibility = 'public'", public_policy)
+        self.assertIn("public.is_active_subscriber(auth.uid())", member_policy)
+        self.assertNotIn("using (visibility = 'public')", text)
+        self.assertNotIn("create policy picks_subscriber_read", text)
+
+        self.assertIn("drop policy if exists picks_admin_write on public.picks", text)
+        self.assertNotIn("create policy picks_admin_write", text)
+        self.assertIn("create policy picks_admin_insert", text)
+        self.assertIn("create policy picks_admin_update", text)
+        self.assertIn("create policy picks_admin_delete", text)
 
     def test_scraper_run_ledger_migration_is_transactional(self):
         text = RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().strip()

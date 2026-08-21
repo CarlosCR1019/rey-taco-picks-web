@@ -1,0 +1,132 @@
+"""Immutable normalized sportsbook market objects.
+
+These types form the validation boundary between untrusted source adapters and
+the rest of the pick-selection pipeline.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+import math
+from numbers import Real
+from typing import NoReturn
+
+
+def _required_text(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field} must not be empty")
+    return normalized
+
+
+def _finite_float(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
+        raise TypeError(f"{field} must be numeric")
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise ValueError(f"{field} must be finite")
+    return normalized
+
+
+def _raise_timestamp_error(field: str, reason: str) -> NoReturn:
+    raise ValueError(f"{field} must be a timezone-aware datetime with a valid offset: {reason}")
+
+
+def _validate_aware_datetime(value: object, field: str) -> datetime:
+    if not isinstance(value, datetime):
+        raise TypeError(f"{field} must be a datetime")
+    if value.tzinfo is None:
+        _raise_timestamp_error(field, "timezone is missing")
+    try:
+        offset = value.utcoffset()
+    except (OverflowError, TypeError, ValueError) as exc:
+        _raise_timestamp_error(field, str(exc))
+    if offset is None:
+        _raise_timestamp_error(field, "UTC offset is missing")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    key: str
+    name: str
+    price: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", _required_text(self.key, "key"))
+        object.__setattr__(self, "name", _required_text(self.name, "name"))
+        price = _finite_float(self.price, "price")
+        if not 1.01 <= price <= 50.0:
+            raise ValueError("price must be decimal odds between 1.01 and 50")
+        object.__setattr__(self, "price", price)
+
+
+@dataclass(frozen=True, slots=True)
+class Market:
+    key: str
+    period: str
+    line: float | None
+    outcomes: tuple[Outcome, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", _required_text(self.key, "key"))
+        object.__setattr__(self, "period", _required_text(self.period, "period"))
+        if self.line is not None:
+            object.__setattr__(self, "line", _finite_float(self.line, "line"))
+        if not isinstance(self.outcomes, tuple):
+            raise TypeError("outcomes must be a tuple")
+        if not self.outcomes:
+            raise ValueError("outcomes must not be empty")
+        if not all(isinstance(outcome, Outcome) for outcome in self.outcomes):
+            raise TypeError("outcomes must contain only Outcome values")
+        keys = [outcome.key for outcome in self.outcomes]
+        if len(keys) != len(set(keys)):
+            raise ValueError("outcome keys must be unique within a market")
+
+    def outcome(self, key: str) -> Outcome:
+        normalized_key = _required_text(key, "outcome key")
+        for outcome in self.outcomes:
+            if outcome.key == normalized_key:
+                return outcome
+        raise KeyError(f"outcome {normalized_key!r} is not present in market {self.key!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    source: str
+    source_event_id: str
+    sport: str
+    league: str
+    home_team: str
+    away_team: str
+    starts_at: datetime
+    observed_at: datetime
+    markets: tuple[Market, ...]
+
+    def __post_init__(self) -> None:
+        for field in (
+            "source",
+            "source_event_id",
+            "sport",
+            "league",
+            "home_team",
+            "away_team",
+        ):
+            object.__setattr__(self, field, _required_text(getattr(self, field), field))
+
+        if self.home_team.casefold() == self.away_team.casefold():
+            raise ValueError("home_team and away_team must be distinct")
+
+        starts_at = _validate_aware_datetime(self.starts_at, "starts_at")
+        observed_at = _validate_aware_datetime(self.observed_at, "observed_at")
+        if starts_at <= observed_at:
+            raise ValueError("event must start in the future relative to observed_at")
+
+        if not isinstance(self.markets, tuple):
+            raise TypeError("markets must be a tuple")
+        if not all(isinstance(market, Market) for market in self.markets):
+            raise TypeError("markets must contain only Market values")

@@ -185,14 +185,18 @@ def _normalize_market(
     return None
 
 
-def _market_signature(market: Market) -> tuple[object, ...]:
+def _market_quote_identity(market: Market) -> tuple[object, ...]:
     return (
-        market.key,
         market.bookmaker_key,
+        market.key,
         market.period,
         market.line,
-        tuple((outcome.key, outcome.price) for outcome in market.outcomes),
+        tuple(outcome.key for outcome in market.outcomes),
     )
+
+
+def _market_price_signature(market: Market) -> tuple[tuple[str, float], ...]:
+    return tuple((outcome.key, outcome.price) for outcome in market.outcomes)
 
 
 def normalize_odds_event(raw: dict[str, Any], observed_at: datetime) -> Event:
@@ -207,8 +211,8 @@ def normalize_odds_event(raw: dict[str, Any], observed_at: datetime) -> Event:
     away = _required_text(raw["away_team"], "away_team")
     sport_key = _required_text(raw["sport_key"], "sport_key")
 
-    markets: list[Market] = []
-    seen: set[tuple[object, ...]] = set()
+    markets_by_identity: dict[tuple[object, ...], Market] = {}
+    conflicted_identities: set[tuple[object, ...]] = set()
     bookmakers = raw.get("bookmakers", [])
     if isinstance(bookmakers, list):
         for bookmaker in bookmakers:
@@ -229,10 +233,18 @@ def normalize_odds_event(raw: dict[str, Any], observed_at: datetime) -> Event:
                 )
                 if market is None:
                     continue
-                signature = _market_signature(market)
-                if signature not in seen:
-                    seen.add(signature)
-                    markets.append(market)
+                identity = _market_quote_identity(market)
+                if identity in conflicted_identities:
+                    continue
+                observed = markets_by_identity.get(identity)
+                if observed is None:
+                    markets_by_identity[identity] = market
+                    continue
+                if _market_price_signature(observed) != _market_price_signature(
+                    market
+                ):
+                    markets_by_identity.pop(identity)
+                    conflicted_identities.add(identity)
 
     commence_time = _required_text(raw["commence_time"], "commence_time")
     starts_at = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
@@ -245,7 +257,7 @@ def normalize_odds_event(raw: dict[str, Any], observed_at: datetime) -> Event:
         away_team=away,
         starts_at=starts_at,
         observed_at=observed_at,
-        markets=tuple(markets),
+        markets=tuple(markets_by_identity.values()),
     )
 
 

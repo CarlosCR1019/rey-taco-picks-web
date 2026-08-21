@@ -121,6 +121,33 @@ def test_exact_duplicate_market_signatures_from_one_bookmaker_are_deduplicated()
     )
 
 
+def test_conflicting_prices_for_one_bookmaker_market_identity_are_omitted():
+    raw = fixture_event()
+    conflicting = deepcopy(raw["bookmakers"][0])
+    conflicting["markets"][0]["outcomes"][0]["price"] = 2.45
+    raw["bookmakers"].append(conflicting)
+
+    event = normalize_odds_event(raw, OBSERVED_AT)
+
+    assert all(market.key != "h2h" for market in event.markets)
+    assert tuple(market.key for market in event.markets) == ("totals", "spreads")
+
+
+def test_same_bookmaker_can_preserve_distinct_market_lines():
+    raw = fixture_event()
+    second_total = deepcopy(raw["bookmakers"][0]["markets"][1])
+    for outcome in second_total["outcomes"]:
+        outcome["point"] = 3.5
+    raw["bookmakers"][0]["markets"].append(second_total)
+
+    event = normalize_odds_event(raw, OBSERVED_AT)
+
+    assert [market.line for market in event.markets if market.key == "totals"] == [
+        2.5,
+        3.5,
+    ]
+
+
 def test_distinct_bookmaker_quotes_are_preserved():
     raw = fixture_event()
     second = deepcopy(raw["bookmakers"][0])
@@ -320,6 +347,7 @@ def test_scraper_legacy_projection_uses_named_h2h_and_no_missing_market_price(
         "away": "2.40",
     }
     assert projected[0]["source_event_id"] == "event-123"
+    assert projected[0]["bookmaker_key"] == "book-a"
     assert projected[0]["cuotas_superficie"] == ["1.70", "3.30", "2.40"]
     assert all(call[1] != "soccer" for call in calls)
     assert all(call[2]["markets"] == ("h2h", "totals", "spreads") for call in calls)
@@ -330,6 +358,30 @@ def test_scraper_legacy_projection_uses_named_h2h_and_no_missing_market_price(
     )
     assert projected_without_markets[0]["cuotas_por_resultado"] == {}
     assert projected_without_markets[0]["cuotas_superficie"] == []
+    assert projected_without_markets[0]["bookmaker_key"] is None
+
+
+def test_odds_projection_retains_same_team_events_with_distinct_source_ids(
+    monkeypatch,
+):
+    from backend import scraper
+
+    first = fixture_event()
+    second = deepcopy(first)
+    second["id"] = "event-456"
+    second["commence_time"] = "2026-08-21T03:00:00Z"
+    monkeypatch.setattr(
+        scraper,
+        "fetch_odds_events",
+        lambda *_args, **_kwargs: [deepcopy(first), deepcopy(second)],
+    )
+
+    projected = scraper.obtener_eventos_odds_api("secret", observed_at=OBSERVED_AT)
+
+    assert [event["source_event_id"] for event in projected] == [
+        "event-123",
+        "event-456",
+    ]
 
 
 def test_market_comparison_uses_normalized_named_outcomes_and_concrete_sports(
@@ -403,6 +455,7 @@ def _run_legacy_ai(monkeypatch, raw_picks, *, named_prices=None):
         "cuotas_superficie": [],
         "info_texto": "",
         "source_event_id": "event-123",
+        "bookmaker_key": "book-a",
     }
     return scraper.fase6_analisis_final(
         [event], "", {}, [event], groq_api_key="fake-key"
@@ -453,6 +506,7 @@ def test_ai_price_is_ignored_and_exact_named_observation_is_copied(monkeypatch):
     assert [pick["cuota"] for pick in picks] == ["1.72", "1.72", "1.72"]
     assert all("odds_mercado" not in pick for pick in picks)
     assert all(pick["source_event_id"] == "event-123" for pick in picks)
+    assert all(pick["bookmaker_key"] == "book-a" for pick in picks)
     assert all("confianza" not in pick and "tiene_valor" not in pick for pick in picks)
 
 
@@ -462,12 +516,14 @@ def test_legacy_event_matching_requires_exact_two_team_identity_and_rejects_ambi
     events = [
         {
             "source_event_id": "america-tigres",
+            "bookmaker_key": "book-a",
             "partido": "América vs Tigres",
             "local": "América",
             "visitante": "Tigres",
         },
         {
             "source_event_id": "america-pumas",
+            "bookmaker_key": "book-a",
             "partido": "América vs Pumas",
             "local": "América",
             "visitante": "Pumas",
@@ -522,6 +578,7 @@ def test_ai_cannot_bind_price_by_matching_only_one_team(monkeypatch):
     catalog = [
         {
             "source_event_id": "america-tigres",
+            "bookmaker_key": "book-a",
             "categoria": "Liga MX",
             "partido": "América vs Tigres",
             "local": "América",
@@ -532,6 +589,7 @@ def test_ai_cannot_bind_price_by_matching_only_one_team(monkeypatch):
         },
         {
             "source_event_id": "america-pumas",
+            "bookmaker_key": "book-a",
             "categoria": "Liga MX",
             "partido": "América vs Pumas",
             "local": "América",
@@ -634,6 +692,8 @@ def test_legacy_fallback_uses_named_home_price_not_positional_surface_price(
         "cuotas_por_resultado": {"home": "1.20"},
         "cuotas_superficie": ["9.99"],
         "info_texto": "",
+        "source_event_id": "event-123",
+        "bookmaker_key": "book-a",
     }
 
     picks = scraper.fase6_analisis_final(
@@ -642,6 +702,7 @@ def test_legacy_fallback_uses_named_home_price_not_positional_surface_price(
 
     assert picks[0]["cuota"] == "1.20"
     assert picks[0]["pick"] == "América Gana Directo"
+    assert picks[0]["bookmaker_key"] == "book-a"
     assert "odds_mercado" not in picks[0]
 
 
@@ -673,6 +734,73 @@ def test_legacy_fallback_without_named_h2h_map_creates_no_moneyline_pick(
     assert picks == []
 
 
+def test_legacy_event_without_stable_source_id_is_never_publicable(monkeypatch):
+    from backend import scraper
+
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: "not-json",
+    )
+    event = {
+        "categoria": "Liga MX",
+        "partido": "América vs Tigres",
+        "local": "América",
+        "visitante": "Tigres",
+        "horario": "Mañana 23:59",
+        "cuotas_por_resultado": {"home": "1.70"},
+        "bookmaker_key": "playdoit",
+        "info_texto": "",
+    }
+
+    picks = scraper.fase6_analisis_final(
+        [event], "", {}, [event], groq_api_key="fake-key"
+    )
+
+    assert picks == []
+
+
+def test_event_dedupe_uses_schedule_without_id_and_rejects_conflicting_quotes():
+    from backend import scraper
+
+    first = {
+        "partido": "América vs Tigres",
+        "local": " América ",
+        "visitante": "Tigres",
+        "horario": "Hoy • 20:00",
+        "cuotas_superficie": ["1.70"],
+    }
+    later = {
+        **first,
+        "local": "américa",
+        "horario": "Mañana • 20:00",
+        "cuotas_superficie": ["1.80"],
+    }
+
+    assert scraper._deduplicate_event_records([first, later]) == [first, later]
+
+    conflict = {**first, "cuotas_superficie": ["9.99"]}
+    assert scraper._deduplicate_event_records([first, conflict, later]) == [later]
+
+
+def test_surface_event_projection_preserves_available_source_and_bookmaker_ids():
+    from backend import scraper
+
+    raw = {
+        "source_event_id": "playdoit-456",
+        "bookmaker_key": "playdoit",
+        "local": "América",
+        "visitante": "Tigres",
+        "cuotas": ["1.72", "3.25", "2.35"],
+    }
+
+    projected = scraper._surface_event_record(raw, "Liga MX", "Hoy • 20:00")
+
+    assert projected["source_event_id"] == "playdoit-456"
+    assert projected["bookmaker_key"] == "playdoit"
+
+
 def test_legacy_fallback_does_not_publish_totals_parlays_or_unsupported_claims(
     monkeypatch,
 ):
@@ -687,6 +815,7 @@ def test_legacy_fallback_does_not_publish_totals_parlays_or_unsupported_claims(
     events = [
         {
             "source_event_id": f"event-{index}",
+            "bookmaker_key": "book-a",
             "categoria": "Liga MX",
             "partido": f"Local {index} vs Visitante {index}",
             "local": f"Local {index}",
@@ -723,4 +852,5 @@ def test_legacy_source_has_no_executable_price_defaults_or_derived_market_odds()
         "cuotas_superficie[0]",
     )
     assert not [pattern for pattern in forbidden if pattern in text]
-    assert text.count('"cuotas_por_resultado": {}') >= 2
+    assert '"cuotas_por_resultado": {}' in text
+    assert text.count("_surface_event_record(e, cat_real, horario_limpio)") == 2

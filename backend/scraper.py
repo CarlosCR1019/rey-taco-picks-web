@@ -199,6 +199,10 @@ def _observed_h2h_selection(pick_text, event):
     named_prices = event.get("cuotas_por_resultado")
     if not isinstance(named_prices, dict):
         return None
+    source_event_id = str(event.get("source_event_id") or "").strip()
+    bookmaker_key = str(event.get("bookmaker_key") or "").strip()
+    if not source_event_id or not bookmaker_key:
+        return None
 
     home = str(event.get("local") or "").strip()
     away = str(event.get("visitante") or "").strip()
@@ -213,13 +217,13 @@ def _observed_h2h_selection(pick_text, event):
         if re.fullmatch(rf"{team_key}\s+(?:gana(?:\s+directo)?|moneyline)", text):
             price = normalizar_cuota_decimal(named_prices.get(key))
             if price is not None:
-                return canonical_pick, price
+                return canonical_pick, price, bookmaker_key
             return None
 
     if text in {"empate", "draw"}:
         price = normalizar_cuota_decimal(named_prices.get("draw"))
         if price is not None:
-            return "Empate", price
+            return "Empate", price, bookmaker_key
     return None
 
 
@@ -228,6 +232,97 @@ def _normalized_event_identity(value):
         return None
     normalized = " ".join(value.strip().casefold().split())
     return normalized or None
+
+
+def _normalized_quote_mapping(value):
+    if not isinstance(value, dict):
+        return ()
+    return tuple(
+        sorted(
+            (
+                str(key).strip().casefold(),
+                str(price).strip(),
+            )
+            for key, price in value.items()
+        )
+    )
+
+
+def _event_record_identity(event):
+    if not isinstance(event, dict):
+        return None
+    source_event_id = str(event.get('source_event_id') or '').strip()
+    if source_event_id:
+        return ('source', source_event_id)
+
+    home = _normalized_event_identity(event.get('local'))
+    away = _normalized_event_identity(event.get('visitante'))
+    schedule = _normalized_event_identity(event.get('horario'))
+    if (
+        home is None
+        or away is None
+        or schedule is None
+        or re.search(r'\d{1,2}:\d{2}', schedule) is None
+    ):
+        return None
+    return ('legacy', home, away, schedule)
+
+
+def _event_record_evidence(event):
+    return (
+        _normalized_event_identity(event.get('local')),
+        _normalized_event_identity(event.get('visitante')),
+        _normalized_event_identity(event.get('horario')),
+        _normalized_event_identity(event.get('bookmaker_key')),
+        _normalized_quote_mapping(event.get('cuotas_por_resultado')),
+        tuple(str(value).strip() for value in event.get('cuotas_superficie', ())),
+    )
+
+
+def _deduplicate_event_records(events):
+    """Keep stable event identities and omit identities with conflicting evidence."""
+
+    selected = {}
+    order = []
+    conflicts = set()
+    for event in events:
+        identity = _event_record_identity(event)
+        if identity is None or identity in conflicts:
+            continue
+        if identity not in selected:
+            selected[identity] = event
+            order.append(identity)
+            continue
+        if _event_record_evidence(selected[identity]) != _event_record_evidence(
+            event
+        ):
+            selected.pop(identity)
+            conflicts.add(identity)
+    return [selected[identity] for identity in order if identity in selected]
+
+
+def _surface_event_record(event, category, schedule):
+    """Project surface data without treating positional prices as named quotes."""
+
+    home = event['local']
+    away = event['visitante']
+    match_name = f"{home} vs {away}"
+    surface_prices = event.get('cuotas', [])
+    return {
+        "source_event_id": event.get('source_event_id'),
+        "bookmaker_key": event.get('bookmaker_key'),
+        "categoria": category,
+        "partido": match_name,
+        "local": home,
+        "visitante": away,
+        "horario": schedule,
+        "cuotas_por_resultado": {},
+        "cuotas_superficie": surface_prices[:4],
+        "info_texto": (
+            f"{category}: {match_name}. Horario: {schedule}. "
+            f"Cuotas Playdoit: {' | '.join(surface_prices)}"
+        ),
+    }
 
 
 def _match_observed_event(partido, source_event_id, events):
@@ -646,7 +741,9 @@ def _legacy_odds_projection(event):
     h2h = next((market for market in event.markets if market.key == "h2h"), None)
     named_h2h = {}
     surface_odds = []
+    bookmaker_key = None
     if h2h is not None:
+        bookmaker_key = h2h.bookmaker_key
         for key in ("home", "draw", "away"):
             try:
                 price = f"{h2h.outcome(key).price:.2f}"
@@ -678,6 +775,7 @@ def _legacy_odds_projection(event):
     match_name = f"{event.home_team} vs {event.away_team}"
     return {
         "source_event_id": event.source_event_id,
+        "bookmaker_key": bookmaker_key,
         "categoria": event.league,
         "partido": match_name,
         "local": event.home_team,
@@ -727,17 +825,13 @@ def obtener_eventos_odds_api(odds_api_key=None, *, observed_at=None):
                     continue
                 if not min_time_utc <= event.starts_at <= max_time_utc:
                     continue
-                projected = _legacy_odds_projection(event)
-                if not any(
-                    row["partido"].casefold() == projected["partido"].casefold()
-                    for row in eventos_api
-                ):
-                    eventos_api.append(projected)
+                eventos_api.append(_legacy_odds_projection(event))
         except OddsSourceError as exc:
             print(f"   ⚠️ Error en {sport_key}; {exc}")
         except Exception as exc:
             print(f"   ⚠️ Error en {sport_key}; failure={type(exc).__name__}")
             
+    eventos_api = _deduplicate_event_records(eventos_api)
     print(f"   ✅ {len(eventos_api)} partidos PRE-MATCH verificados listos con mercados reales.")
     return eventos_api
 
@@ -768,22 +862,13 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
             
         print(f"   📡 Cartelera detectada con {len(eventos_iniciales)} eventos principales.")
         for e in eventos_iniciales:
-            nombre = f"{e['local']} vs {e['visitante']}"
             es_valido_tiempo, horario_limpio = es_partido_futuro_valido(e.get('horario', 'Hoy'))
             if not es_valido_tiempo:
                 continue
             cat_real = inferir_categoria_deporte(e['local'], e['visitante'])
-            if not any(x["partido"] == nombre for x in partidos_data):
-                partidos_data.append({
-                    "categoria": cat_real,
-                    "partido": nombre,
-                    "local": e['local'],
-                    "visitante": e['visitante'],
-                    "horario": horario_limpio,
-                    "cuotas_por_resultado": {},
-                    "cuotas_superficie": e.get('cuotas', [])[:4],
-                    "info_texto": f"{cat_real}: {nombre}. Horario: {horario_limpio}. Cuotas Playdoit: {' | '.join(e.get('cuotas', []))}"
-                })
+            partidos_data.append(
+                _surface_event_record(e, cat_real, horario_limpio)
+            )
         
         # 2. Exploración de categorías específicas adicionales (Champions, Liga MX, Premier, MLB, KBO, etc.)
         categorias = [
@@ -803,24 +888,15 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
                     time.sleep(2.0)
                 nuevos = 0
                 for e in eventos:
-                    nombre = f"{e['local']} vs {e['visitante']}"
                     es_valido_tiempo, horario_limpio = es_partido_futuro_valido(e.get('horario', 'Hoy'))
                     if not es_valido_tiempo:
                         continue
                     
                     cat_real = inferir_categoria_deporte(e['local'], e['visitante'], fallback=cat)
-                    if not any(x["partido"] == nombre for x in partidos_data):
-                        partidos_data.append({
-                            "categoria": cat_real,
-                            "partido": nombre,
-                            "local": e['local'],
-                            "visitante": e['visitante'],
-                            "horario": horario_limpio,
-                            "cuotas_por_resultado": {},
-                            "cuotas_superficie": e.get('cuotas', [])[:4],
-                            "info_texto": f"{cat_real}: {nombre}. Horario: {horario_limpio}. Cuotas Playdoit: {' | '.join(e.get('cuotas', []))}"
-                        })
-                        nuevos += 1
+                    partidos_data.append(
+                        _surface_event_record(e, cat_real, horario_limpio)
+                    )
+                    nuevos += 1
                 print(f"✅ {nuevos} nuevos futuros" if nuevos else "⏭️ sin nuevos")
             else:
                 print("⚠️ no encontrada")
@@ -828,12 +904,11 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
         print(f"   ⚠️ Nota en escáner Playdoit; failure={type(e).__name__}")
     
     # Si la lista inicial en Playdoit tuviera pocos eventos o fuera entre semana (martes/miércoles)
+    partidos_data = _deduplicate_event_records(partidos_data)
     if len(partidos_data) < 4:
         print(f"\n   🌐 Cartelera en Playdoit reducida ({len(partidos_data)}). Conectando satélite The Odds API...")
         api_events = obtener_eventos_odds_api(odds_api_key)
-        for ae in api_events:
-            if not any(x["partido"].lower() == ae["partido"].lower() for x in partidos_data):
-                partidos_data.append(ae)
+        partidos_data = _deduplicate_event_records(partidos_data + api_events)
         
     print(f"\n   📊 Total eventos únicos de HOY/MAÑANA para análisis: {len(partidos_data)}")
     return partidos_data
@@ -1448,9 +1523,10 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             if observed_selection is None:
                 print(f"   🛑 DESCARTADO (Mercado o cuota sin evidencia): {p_partido}")
                 continue
-            canonical_pick, observed_price = observed_selection
+            canonical_pick, observed_price, bookmaker_key = observed_selection
             p['pick'] = canonical_pick
             p['cuota'] = observed_price
+            p['bookmaker_key'] = bookmaker_key
             p['es_parlay'] = False
             source_event_id = match_encontrado.get('source_event_id')
             if source_event_id:
@@ -1478,16 +1554,24 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
         )
 
         picks_fallback = []
-        pool_partidos = list(datos_profundos) + [
-            p for p in partidos_data
-            if not any(x.get('partido') == p.get('partido') for x in datos_profundos)
-        ]
+        pool_partidos = _deduplicate_event_records(
+            list(datos_profundos) + list(partidos_data)
+        )
         for event in pool_partidos:
             partido = event.get('partido', '')
             local = event.get('local', '')
             visitante = event.get('visitante', '')
             named_prices = event.get('cuotas_por_resultado')
-            if not partido or not local or not visitante or not isinstance(named_prices, dict):
+            source_event_id = str(event.get('source_event_id') or '').strip()
+            bookmaker_key = str(event.get('bookmaker_key') or '').strip()
+            if (
+                not partido
+                or not local
+                or not visitante
+                or not source_event_id
+                or not bookmaker_key
+                or not isinstance(named_prices, dict)
+            ):
                 continue
             precio_local = normalizar_cuota_decimal(named_prices.get('home'))
             if precio_local is None:
@@ -1508,10 +1592,10 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                 "horario": horario_limpio,
                 "pick": f"{local} Gana Directo",
                 "cuota": precio_local,
+                "bookmaker_key": bookmaker_key,
                 "es_parlay": False,
             }
-            if event.get('source_event_id'):
-                pick['source_event_id'] = event['source_event_id']
+            pick['source_event_id'] = source_event_id
             picks_fallback.append(pick)
 
         print(

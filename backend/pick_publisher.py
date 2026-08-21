@@ -84,12 +84,12 @@ def publish_batch(
     dry_run: bool = False,
 ) -> PublicationResult:
     """Publish a database batch before atomically exposing its public selection."""
-    if dry_run:
-        return PublicationResult(None, None, False, {}, dry_run=True)
     if not picks:
         raise ValueError("picks must not be empty")
     if not isinstance(run_key, str) or not run_key.strip():
         raise ValueError("run_key must not be empty")
+    if dry_run:
+        return PublicationResult(None, None, False, {}, dry_run=True)
 
     response = repository.publish(run_key, source_hash_for(picks), picks)
     result = _publication_result(response)

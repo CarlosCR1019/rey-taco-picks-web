@@ -71,6 +71,26 @@ def test_dry_run_never_calls_repository_or_writes_file(tmp_path):
     assert result.dry_run is True
 
 
+@pytest.mark.parametrize("invalid_picks, invalid_run_key", [([], "run-1"), (picks(), "  ")])
+def test_dry_run_rejects_invalid_inputs_without_side_effects(
+    invalid_picks, invalid_run_key, tmp_path
+):
+    destination = tmp_path / "picks.json"
+    repository = FakeRepository()
+
+    with pytest.raises(ValueError):
+        publish_batch(
+            repository,
+            invalid_picks,
+            invalid_run_key,
+            destination,
+            dry_run=True,
+        )
+
+    assert repository.calls == []
+    assert not destination.exists()
+
+
 def test_repository_error_preserves_existing_public_file(tmp_path):
     destination = tmp_path / "picks.json"
     destination.write_text('[{"pick":"existing"}]', encoding="utf-8")

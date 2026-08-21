@@ -2,9 +2,14 @@ import os
 import json
 import sys
 import urllib.request
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client, Client
+
+try:
+    from backend.results_domain import EventResult, grade_pick, match_event, unit_result
+except ModuleNotFoundError:  # Allows `python backend/verificar_resultados.py`.
+    from results_domain import EventResult, grade_pick, match_event, unit_result
 
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
@@ -57,6 +62,8 @@ def obtener_resultados_api():
                         score_a = float(away_c.get('score', 0) or 0)
                         
                         todos_juegos.append({
+                            'source': 'espn',
+                            'source_id': str(ev.get('id', '')),
                             'home_team': home_c.get('team', {}).get('displayName', ''),
                             'away_team': away_c.get('team', {}).get('displayName', ''),
                             'completed': is_completed,
@@ -69,55 +76,53 @@ def obtener_resultados_api():
     print(f"   ✅ ESPN API: {len([j for j in todos_juegos if j.get('completed')])} partidos completados encontrados.")
     return todos_juegos
 
-def normalizar_nombre(nombre):
-    """Normaliza nombres de equipos para comparación fuzzy."""
-    import re
-    nombre = nombre.lower().strip()
-    # Remover acentos comunes
-    reemplazos = {'á':'a', 'é':'e', 'í':'i', 'ó':'o', 'ú':'u', 'ñ':'n', 'ü':'u'}
-    for k, v in reemplazos.items():
-        nombre = nombre.replace(k, v)
-    # Remover palabras comunes
-    for word in ['fc', 'cf', 'sc', 'ac', 'cd', 'club', 'deportivo']:
-        nombre = nombre.replace(word, '')
-    return re.sub(r'\s+', ' ', nombre).strip()
-
-def equipo_coincide(nombre_pick, nombre_api):
-    """Verifica si dos nombres de equipo coinciden (fuzzy match)."""
-    pick_norm = normalizar_nombre(nombre_pick)
-    api_norm = normalizar_nombre(nombre_api)
-    
-    # Match exacto
-    if pick_norm == api_norm:
-        return True
-    
-    # Match parcial (una palabra clave coincide)
-    palabras_pick = set(pick_norm.split())
-    palabras_api = set(api_norm.split())
-    
-    if len(palabras_pick & palabras_api) >= 1 and len(palabras_pick) > 0:
-        return True
-    
-    return False
-
-def determinar_ganador(resultado):
-    """Determina quién ganó basándose en los scores de la API."""
-    scores = resultado.get('scores', [])
-    if not scores or len(scores) < 2:
+def _event_from_api(resultado):
+    """Convert an API dictionary into the audited domain representation."""
+    scores = resultado.get('scores') or []
+    if len(scores) < 2:
         return None
-    
-    home = resultado.get('home_team', '')
-    away = resultado.get('away_team', '')
-    
-    score_home = int(scores[0].get('score', 0))
-    score_away = int(scores[1].get('score', 0))
-    
-    if score_home > score_away:
-        return home
-    elif score_away > score_home:
-        return away
-    else:
-        return 'EMPATE'
+    try:
+        return EventResult(
+            home=str(resultado.get('home_team', '')),
+            away=str(resultado.get('away_team', '')),
+            home_score=float(scores[0].get('score', 0) or 0),
+            away_score=float(scores[1].get('score', 0) or 0),
+            completed=bool(resultado.get('completed', False)),
+            home_corners=resultado.get('home_corners'),
+            away_corners=resultado.get('away_corners'),
+            source=str(resultado.get('source', 'unknown')),
+            source_id=str(resultado.get('source_id', '')),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def grade_pending_pick(pick, resultado):
+    """Return an update payload only for a unique, matching final event."""
+    event = _event_from_api(resultado)
+    if not event or not event.completed:
+        return None
+    if not match_event(str(pick.get('partido', '')), event):
+        return None
+
+    estado = grade_pick(str(pick.get('pick', '')), event)
+    if estado == 'pendiente':
+        return None
+
+    try:
+        cuota = float(str(pick.get('cuota', '1')).replace(',', '.'))
+    except (TypeError, ValueError):
+        cuota = 1.0
+    unidades = unit_result(estado, cuota)
+    return {
+        'estado': estado,
+        'ganancia_simulada': round(unidades * 10, 2),
+        'resultado_unidades': unidades,
+        'resultado_fuente': event.source,
+        'resultado_evento_id': event.source_id,
+        'resultado_marcador': f'{event.home_score:g}-{event.away_score:g}',
+        'resultado_verificado_at': datetime.now(timezone.utc).isoformat(),
+    }
 
 def verificar_picks():
     """Verifica los picks pendientes contra resultados reales."""
@@ -154,80 +159,31 @@ def verificar_picks():
     
     for pick in picks_pendientes:
         partido = pick.get('partido', '')
-        pick_text = pick.get('pick', '').lower()
-        
         for resultado in todos_resultados:
-            home = resultado.get('home_team', '')
-            away = resultado.get('away_team', '')
-            scores = resultado.get('scores', [])
-            
-            # Ver si este resultado corresponde a nuestro pick
-            if not (equipo_coincide(partido.split(' vs ')[0] if ' vs ' in partido else partido, home) or
-                    equipo_coincide(partido.split(' vs ')[-1] if ' vs ' in partido else partido, away)):
+            decision = grade_pending_pick(pick, resultado)
+            if not decision:
                 continue
-            
-            ganador = determinar_ganador(resultado)
-            if not ganador or len(scores) < 2:
-                continue
-            
-            score_home = int(scores[0].get('score', 0))
-            score_away = int(scores[1].get('score', 0))
-            total_goles = score_home + score_away
-            
-            # Determinar si ganamos o perdimos
-            gano = False
-            
-            # 1. Total de Goles / Over Under
-            if 'gol' in pick_text or 'total' in pick_text:
-                if 'más de 2.5' in pick_text or 'over 2.5' in pick_text:
-                    gano = total_goles > 2.5
-                elif 'menos de 2.5' in pick_text or 'under 2.5' in pick_text:
-                    gano = total_goles < 2.5
-                elif 'más de 1.5' in pick_text:
-                    gano = total_goles > 1.5
-                elif 'más de 3.5' in pick_text:
-                    gano = total_goles > 3.5
-                    
-            # 2. Doble Oportunidad
-            elif 'x2' in pick_text or ('gana o empata' in pick_text and (equipo_coincide(away, pick_text))):
-                gano = (ganador == away or ganador == 'EMPATE')
-            elif '1x' in pick_text or ('gana o empata' in pick_text and (equipo_coincide(home, pick_text))):
-                gano = (ganador == home or ganador == 'EMPATE')
-                
-            # 3. Moneyline Directo
-            elif 'gana' in pick_text or 'ml' in pick_text or 'moneyline' in pick_text:
-                if equipo_coincide(home, pick_text) and ganador == home:
-                    gano = True
-                elif equipo_coincide(away, pick_text) and ganador == away:
-                    gano = True
-                elif 'empate' in pick_text and ganador == 'EMPATE':
-                    gano = True
-            
-            # 4. Tiros de Esquina / Micro-mercados (si no hay stats de corners en scores API, considerar pendiente o validación)
-            elif 'córner' in pick_text or 'esquina' in pick_text:
-                # Si el partido terminó y fue de alto ritmo, validar
-                gano = True
-            
-            estado = 'ganado' if gano else 'perdido'
-            cuota = float(str(pick.get('cuota', '1.0')).replace(',', '.')) if pick.get('cuota') else 1.0
-            ganancia = round((cuota - 1) * 10, 2) if gano else -10.0  # Unidades de $10 MXN
-            
             try:
-                supabase.table("picks").update({
-                    "estado": estado,
-                    "ganancia_simulada": ganancia
-                }).eq("id", pick['id']).execute()
-                
-                emoji = '✅' if gano else '❌'
-                print(f"   {emoji} {partido} → {pick.get('pick')} → {estado.upper()} (${ganancia:+.2f})")
+                try:
+                    supabase.table("picks").update(decision).eq("id", pick['id']).execute()
+                except Exception:
+                    # Backward compatibility until the audit-column migration is deployed.
+                    legacy = {
+                        "estado": decision["estado"],
+                        "ganancia_simulada": decision["ganancia_simulada"],
+                    }
+                    supabase.table("picks").update(legacy).eq("id", pick['id']).execute()
+
+                estado = decision['estado']
+                emoji = '✅' if estado == 'ganado' else ('❌' if estado == 'perdido' else '🟡')
+                print(f"   {emoji} {partido} → {pick.get('pick')} → {estado.upper()} ({decision['resultado_unidades']:+.2f}u)")
                 actualizados += 1
-                if gano:
+                if estado == 'ganado':
                     ganados += 1
-                else:
+                elif estado == 'perdido':
                     perdidos += 1
             except Exception as e:
                 print(f"   ⚠️ Error actualizando pick {pick['id']}: {e}")
-            
             break
     
     print(f"\n{'='*60}")

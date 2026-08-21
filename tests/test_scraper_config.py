@@ -1,0 +1,64 @@
+from pathlib import Path
+
+import pytest
+
+from backend.scraper_config import ConfigError, REPO_ROOT, load_settings
+
+
+def test_paths_are_repository_anchored_when_cwd_changes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings({}, dry_run=True)
+
+    assert settings.public_picks_path == REPO_ROOT / "frontend" / "public" / "picks.json"
+    assert settings.queue_path == REPO_ROOT / "backend" / "channel_queue.json"
+
+
+def test_production_requires_supabase_write_credentials():
+    with pytest.raises(ConfigError, match="SUPABASE_URL.*SUPABASE_SERVICE_ROLE_KEY"):
+        load_settings({}, dry_run=False)
+
+
+def test_dry_run_allows_missing_supabase_write_credentials():
+    settings = load_settings({}, dry_run=True)
+
+    assert settings.supabase_url is None
+    assert settings.service_role_key is None
+
+
+def test_injected_mapping_does_not_read_dotenv(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "ambient-url")
+    settings = load_settings({"SUPABASE_URL": "injected-url"}, dry_run=True)
+
+    assert settings.supabase_url == "injected-url"
+
+
+def test_telegram_canonical_values_and_compatibility_fallbacks():
+    settings = load_settings(
+        {
+            "TELEGRAM_ADMIN_ID": "admin",
+            "TELEGRAM_CHAT_ID": "legacy-admin",
+            "TELEGRAM_VIP_CHANNEL_ID": "vip",
+            "TELEGRAM_CHANNEL_ID": "legacy-channel",
+            "TELEGRAM_FREE_CHANNEL_ID": "free",
+        },
+        dry_run=True,
+    )
+    assert settings.telegram_admin_id == "admin"
+    assert settings.telegram_vip_id == "vip"
+    assert settings.telegram_free_id == "free"
+
+    fallback = load_settings(
+        {"TELEGRAM_CHAT_ID": "legacy-admin", "TELEGRAM_CHANNEL_ID": "legacy-channel"},
+        dry_run=True,
+    )
+    assert fallback.telegram_admin_id == "legacy-admin"
+    assert fallback.telegram_vip_id == "legacy-channel"
+    assert fallback.telegram_free_id is None
+
+
+def test_env_file_is_loaded_relative_to_module(monkeypatch):
+    monkeypatch.chdir(Path(__file__).parent)
+    settings = load_settings(None, dry_run=True)
+
+    assert settings.public_picks_path == REPO_ROOT / "frontend" / "public" / "picks.json"

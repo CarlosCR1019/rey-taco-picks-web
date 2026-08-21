@@ -19,6 +19,7 @@ class ConfigError(RuntimeError):
 @dataclass(frozen=True)
 class ScraperSettings:
     dry_run: bool
+    run_key: str
     supabase_url: str
     service_role_key: str
     groq_api_key: str
@@ -56,6 +57,11 @@ def load_settings(
     source = _settings_values(values)
     supabase_url = _clean(source.get("SUPABASE_URL"))
     service_role_key = _clean(source.get("SUPABASE_SERVICE_ROLE_KEY"))
+    explicit_run_key = _clean(source.get("SCRAPER_RUN_KEY"))
+    github_run_id = _clean(source.get("GITHUB_RUN_ID"))
+    run_key = explicit_run_key or (
+        f"github-run:{github_run_id}" if github_run_id else ""
+    )
 
     if not dry_run:
         missing = [
@@ -66,11 +72,14 @@ def load_settings(
             )
             if not value
         ]
+        if not run_key:
+            missing.append("SCRAPER_RUN_KEY or GITHUB_RUN_ID")
         if missing:
             raise ConfigError(f"Required scraper configuration missing: {', '.join(missing)}")
 
     return ScraperSettings(
         dry_run=dry_run,
+        run_key=run_key,
         supabase_url=supabase_url,
         service_role_key=service_role_key,
         groq_api_key=_clean(source.get("GROQ_API_KEY")),

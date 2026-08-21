@@ -20,6 +20,40 @@ def test_production_requires_supabase_write_credentials():
         load_settings({}, dry_run=False)
 
 
+def test_production_requires_a_stable_run_key_before_dependencies_are_built():
+    with pytest.raises(ConfigError, match="SCRAPER_RUN_KEY.*GITHUB_RUN_ID"):
+        load_settings(
+            {
+                "SUPABASE_URL": "https://example.supabase.co",
+                "SUPABASE_SERVICE_ROLE_KEY": "service-role",
+            },
+            dry_run=False,
+        )
+
+
+def test_run_key_prefers_explicit_value_then_github_run_id():
+    explicit = load_settings(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role",
+            "SCRAPER_RUN_KEY": "scheduled-window",
+            "GITHUB_RUN_ID": "4242",
+        },
+        dry_run=False,
+    )
+    github = load_settings(
+        {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role",
+            "GITHUB_RUN_ID": "4242",
+        },
+        dry_run=False,
+    )
+
+    assert explicit.run_key == "scheduled-window"
+    assert github.run_key == "github-run:4242"
+
+
 def test_dry_run_allows_missing_supabase_write_credentials():
     settings = load_settings({}, dry_run=True)
 

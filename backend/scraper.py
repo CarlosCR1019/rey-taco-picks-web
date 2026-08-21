@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 import os
@@ -38,6 +39,14 @@ GROQ_API_KEY = ""
 ODDS_API_KEY = ""
 SUPABASE_SERVICE_ROLE_KEY = ""
 supabase = None
+
+
+class PersistenceFailure(RuntimeError):
+    """A bounded persistence phase failure safe to map at the CLI boundary."""
+
+
+class DeliveryFailure(RuntimeError):
+    """A bounded delivery bookkeeping failure safe to map at the CLI boundary."""
 
 def retire_previous_public_pending_pick():
     """Fail closed: retire the old free pick before publishing today's batch."""
@@ -1493,8 +1502,7 @@ def fase7_guardar_y_notificar(
     repository=None,
     settings=None,
     transport=None,
-    run_key=None,
-    environment=None,
+    run_key,
 ):
     """Publish one atomic batch, then deliver each Telegram destination independently."""
     print("\n" + "="*60)
@@ -1546,25 +1554,21 @@ def fase7_guardar_y_notificar(
     if len(free_picks) != 1 or free_picks[0].get('es_parlay'):
         raise ValueError("La publicación requiere exactamente un pick público no parlay.")
 
-    run_environment = os.environ if environment is None else environment
     active_run_key = str(run_key or "").strip()
-    if not active_run_key:
-        active_run_key = str(run_environment.get("SCRAPER_RUN_KEY") or "").strip()
-    if not active_run_key:
-        github_run_id = str(run_environment.get("GITHUB_RUN_ID") or "").strip()
-        if github_run_id:
-            active_run_key = f"github-run:{github_run_id}"
     if not active_run_key:
         raise RuntimeError(
             "No hay una clave estable de corrida; configura SCRAPER_RUN_KEY."
         )
 
-    publication = publish_batch(
-        repository,
-        picks,
-        active_run_key,
-        active_settings.public_picks_path,
-    )
+    try:
+        publication = publish_batch(
+            repository,
+            picks,
+            active_run_key,
+            active_settings.public_picks_path,
+        )
+    except Exception:
+        raise PersistenceFailure("scraper batch persistence failed") from None
     print(f"   ✅ Lote {publication.batch_id} publicado atómicamente.")
 
     destinations = [
@@ -1614,7 +1618,7 @@ def fase7_guardar_y_notificar(
         )
 
     if publication.run_id is None:
-        raise RuntimeError("El publicador no devolvió un identificador de corrida.")
+        raise PersistenceFailure("scraper batch persistence failed")
     record_failures = []
     for destination, result in deliveries.items():
         if result.skipped:
@@ -1634,7 +1638,7 @@ def fase7_guardar_y_notificar(
         print(f"   {outcome} Entrega Telegram {destination}.")
 
     if record_failures:
-        raise RuntimeError(
+        raise DeliveryFailure(
             "No se pudieron registrar entregas de Telegram: "
             + ", ".join(record_failures)
         )
@@ -1661,6 +1665,72 @@ class PipelineResult:
     persisted: bool
     failed_deliveries: tuple[str, ...]
 
+    def __post_init__(self):
+        _check_pipeline_result_fields(
+            self.event_count,
+            self.pick_count,
+            self.persisted,
+            self.failed_deliveries,
+        )
+        object.__setattr__(
+            self, "failed_deliveries", tuple(self.failed_deliveries)
+        )
+
+
+def _check_pipeline_result_fields(
+    event_count,
+    pick_count,
+    persisted,
+    failed_deliveries,
+):
+    if type(event_count) is not int or event_count < 0:
+        raise ValueError("invalid pipeline result")
+    if type(pick_count) is not int or pick_count < 0:
+        raise ValueError("invalid pipeline result")
+    if type(persisted) is not bool:
+        raise ValueError("invalid pipeline result")
+    if isinstance(failed_deliveries, (str, bytes)) or not isinstance(
+        failed_deliveries, Sequence
+    ):
+        raise ValueError("invalid pipeline result")
+    if any(
+        type(name) is not str
+        or re.fullmatch(r"[a-z][a-z0-9_-]{0,49}", name) is None
+        for name in failed_deliveries
+    ):
+        raise ValueError("invalid pipeline result")
+    if event_count == 0 and pick_count != 0:
+        raise ValueError("invalid pipeline result")
+    if pick_count == 0 and (persisted or failed_deliveries):
+        raise ValueError("invalid pipeline result")
+    if failed_deliveries and not persisted:
+        raise ValueError("invalid pipeline result")
+
+
+def _validated_pipeline_result(result, *, dry_run):
+    try:
+        event_count = result.event_count
+        pick_count = result.pick_count
+        persisted = result.persisted
+        failed_deliveries = result.failed_deliveries
+    except AttributeError:
+        raise ValueError("invalid pipeline result") from None
+
+    _check_pipeline_result_fields(
+        event_count,
+        pick_count,
+        persisted,
+        failed_deliveries,
+    )
+    if dry_run and (persisted or failed_deliveries):
+        raise ValueError("invalid pipeline result")
+    return PipelineResult(
+        event_count,
+        pick_count,
+        persisted,
+        tuple(failed_deliveries),
+    )
+
 
 def _schema_status_data(data):
     if isinstance(data, list) and len(data) == 1:
@@ -1677,6 +1747,8 @@ def probe_secure_schema(client):
         status = None
     if (
         status is None
+        or type(status.get("version")) is not int
+        or status.get("version") != 1
         or status.get("public_picks") is not True
         or status.get("publish_pick_batch") is not True
     ):
@@ -1746,6 +1818,7 @@ class LegacyPipeline:
                 picks,
                 repository=self.repository,
                 settings=self.settings,
+                run_key=self.settings.run_key,
             )
             failed = tuple(
                 sorted(
@@ -1803,7 +1876,9 @@ def run_main(argv=None, *, values=None, pipeline=None):
     try:
         settings = load_settings(values, dry_run=args.dry_run)
         active_pipeline = pipeline or build_pipeline(settings)
-        result = active_pipeline.run()
+        result = _validated_pipeline_result(
+            active_pipeline.run(), dry_run=settings.dry_run
+        )
         if result.event_count == 0:
             return ExitCode.NO_EVENTS
         if result.pick_count == 0:
@@ -1816,6 +1891,12 @@ def run_main(argv=None, *, values=None, pipeline=None):
     except ConfigError as error:
         print(f"configuration_error={_safe_configuration_error(error)}")
         return ExitCode.CONFIGURATION
+    except PersistenceFailure:
+        print("persistence_error=PersistenceFailure")
+        return ExitCode.PERSISTENCE
+    except DeliveryFailure:
+        print("delivery_error=DeliveryFailure")
+        return ExitCode.DELIVERY
     except Exception as error:
         print(f"unexpected_error={type(error).__name__}")
         return ExitCode.UNEXPECTED

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,7 @@ class FakePipeline:
 def settings(tmp_path, *, dry_run: bool) -> ScraperSettings:
     return ScraperSettings(
         dry_run=dry_run,
+        run_key="" if dry_run else "test-run",
         supabase_url="" if dry_run else "https://example.supabase.co",
         service_role_key="" if dry_run else "service-role-secret",
         groq_api_key="groq",
@@ -71,6 +73,25 @@ def test_configuration_failure_returns_nonzero_before_pipeline_build(monkeypatch
     assert builds == []
 
 
+def test_missing_run_key_fails_before_pipeline_or_chrome(monkeypatch):
+    builds = []
+    chrome = []
+    monkeypatch.setattr(scraper, "build_pipeline", lambda _settings: builds.append(True))
+    monkeypatch.setattr(scraper, "get_chrome_driver", lambda: chrome.append(True))
+
+    code = run_main(
+        [],
+        values={
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-role-secret",
+        },
+    )
+
+    assert code == ExitCode.CONFIGURATION
+    assert builds == []
+    assert chrome == []
+
+
 def test_dry_run_skips_writes_and_returns_success():
     fake_pipeline = FakePipeline()
 
@@ -96,6 +117,7 @@ def test_production_results_map_to_truthful_exit_codes(result, expected):
     values = {
         "SUPABASE_URL": "https://example.supabase.co",
         "SUPABASE_SERVICE_ROLE_KEY": "service-role-secret",
+        "SCRAPER_RUN_KEY": "test-run",
     }
     assert run_main([], values=values, pipeline=FakePipeline(result)) == expected
 
@@ -156,6 +178,52 @@ def test_unknown_cli_arguments_are_rejected():
     assert captured.value.code == 2
 
 
+@pytest.mark.parametrize(
+    "result",
+    [
+        SimpleNamespace(event_count=True, pick_count=0, persisted=False, failed_deliveries=()),
+        SimpleNamespace(event_count=-1, pick_count=0, persisted=False, failed_deliveries=()),
+        SimpleNamespace(event_count=1.0, pick_count=0, persisted=False, failed_deliveries=()),
+        SimpleNamespace(event_count=1, pick_count=True, persisted=False, failed_deliveries=()),
+        SimpleNamespace(event_count=1, pick_count=-1, persisted=False, failed_deliveries=()),
+        SimpleNamespace(event_count=1, pick_count=1, persisted=1, failed_deliveries=()),
+        SimpleNamespace(event_count=1, pick_count=1, persisted=True, failed_deliveries="vip"),
+        SimpleNamespace(event_count=1, pick_count=1, persisted=True, failed_deliveries=("",)),
+        SimpleNamespace(event_count=1, pick_count=1, persisted=True, failed_deliveries=("VIP!",)),
+        SimpleNamespace(event_count=0, pick_count=1, persisted=False, failed_deliveries=()),
+        SimpleNamespace(event_count=1, pick_count=0, persisted=True, failed_deliveries=()),
+        SimpleNamespace(event_count=1, pick_count=0, persisted=False, failed_deliveries=("vip",)),
+        SimpleNamespace(event_count=1, pick_count=1, persisted=False, failed_deliveries=("vip",)),
+    ],
+)
+def test_impossible_or_ill_typed_pipeline_results_are_unexpected(result, capsys):
+    code = run_main(["--dry-run"], values={}, pipeline=FakePipeline(result))
+
+    assert code == ExitCode.UNEXPECTED
+    assert "unexpected_error=" in capsys.readouterr().out
+
+
+def test_pipeline_result_accepts_a_safe_delivery_sequence_in_production():
+    result = SimpleNamespace(
+        event_count=2,
+        pick_count=1,
+        persisted=True,
+        failed_deliveries=["vip"],
+    )
+
+
+def test_pipeline_result_normalizes_safe_delivery_sequences_to_an_immutable_tuple():
+    result = PipelineResult(2, 1, True, ["vip"])  # type: ignore[arg-type]
+
+    assert result.failed_deliveries == ("vip",)
+    assert isinstance(result.failed_deliveries, tuple)
+
+    assert (
+        run_main([], values=production_values(), pipeline=FakePipeline(result))
+        == ExitCode.DELIVERY
+    )
+
+
 class FakeRpcCall:
     def __init__(self, data=None, error: Exception | None = None):
         self.data = data
@@ -199,6 +267,11 @@ def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
     [
         None,
         {},
+        {"public_picks": True, "publish_pick_batch": True},
+        {"public_picks": True, "publish_pick_batch": True, "version": False},
+        {"public_picks": True, "publish_pick_batch": True, "version": "1"},
+        {"public_picks": True, "publish_pick_batch": True, "version": 0},
+        {"public_picks": True, "publish_pick_batch": True, "version": 2},
         {"public_picks": False, "publish_pick_batch": True, "version": 1},
         {"public_picks": True, "publish_pick_batch": False, "version": 1},
     ],
@@ -252,6 +325,101 @@ class FakeDriver:
         self.quit_calls += 1
 
 
+def stub_successful_legacy_phases(monkeypatch, picks=None):
+    selected = picks or [
+        {
+            "partido": "Pumas vs Atlas",
+            "pick": "Pumas gana",
+            "cuota": "1.80",
+            "confianza": "85%",
+            "razonamiento": "Análisis privado",
+            "es_parlay": False,
+        }
+    ]
+    monkeypatch.setattr(scraper, "fase1_escaneo_superficie", lambda _driver, **_kw: ["event"])
+    monkeypatch.setattr(scraper, "fase2_comparacion_mercado", lambda *_a, **_kw: {})
+    monkeypatch.setattr(scraper, "fase3_filtro_inteligente", lambda *_a, **_kw: ["target"])
+    monkeypatch.setattr(scraper, "fase4_inmersion", lambda *_a, **_kw: ["deep"])
+    monkeypatch.setattr(scraper, "fase5_memoria_historica", lambda *_a, **_kw: "history")
+    monkeypatch.setattr(scraper, "fase6_analisis_final", lambda *_a, **_kw: selected)
+
+
+def production_values():
+    return {
+        "SUPABASE_URL": "https://example.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "service-role-secret",
+        "SCRAPER_RUN_KEY": "test-run",
+    }
+
+
+class PublishFailureRepository:
+    def publish(self, _run_key, _source_hash, _picks):
+        raise RuntimeError("database provider leaked service-role-secret")
+
+    def record_delivery(self, *_args, **_kwargs):
+        raise AssertionError("delivery must not run after persistence failure")
+
+
+def test_real_phase7_persistence_failure_maps_to_exit_5_without_leaking(
+    tmp_path, monkeypatch, capsys
+):
+    stub_successful_legacy_phases(monkeypatch)
+    driver = FakeDriver()
+    pipeline = LegacyPipeline(
+        settings(tmp_path, dry_run=False),
+        repository=PublishFailureRepository(),
+        history_client=object(),
+        driver_factory=lambda: driver,
+    )
+
+    code = run_main([], values=production_values(), pipeline=pipeline)
+
+    assert code == ExitCode.PERSISTENCE
+    output = capsys.readouterr().out
+    assert "service-role-secret" not in output
+    assert "database provider" not in output
+    assert driver.quit_calls == 1
+
+
+class DeliveryRecordFailureRepository:
+    def publish(self, _run_key, _source_hash, _picks):
+        return {
+            "run_id": "run-1",
+            "batch_id": "batch-1",
+            "created": True,
+            "delivery_status": {},
+        }
+
+    def record_delivery(self, *_args, **_kwargs):
+        raise RuntimeError("delivery provider leaked telegram-secret")
+
+
+def test_real_delivery_record_failure_maps_to_exit_6_without_leaking(
+    tmp_path, monkeypatch, capsys
+):
+    stub_successful_legacy_phases(monkeypatch)
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: (lambda _destination, _text: None),
+    )
+    driver = FakeDriver()
+    pipeline = LegacyPipeline(
+        settings(tmp_path, dry_run=False),
+        repository=DeliveryRecordFailureRepository(),
+        history_client=object(),
+        driver_factory=lambda: driver,
+    )
+
+    code = run_main([], values=production_values(), pipeline=pipeline)
+
+    assert code == ExitCode.DELIVERY
+    output = capsys.readouterr().out
+    assert "telegram-secret" not in output
+    assert "delivery provider" not in output
+    assert driver.quit_calls == 1
+
+
 def test_legacy_dry_run_executes_phases_but_never_publishes_or_delivers(
     tmp_path, monkeypatch
 ):
@@ -300,6 +468,7 @@ def test_legacy_production_maps_publication_and_failed_deliveries(tmp_path, monk
     def publish(picks, **kwargs):
         assert picks == [{"pick": "x"}]
         assert kwargs["repository"] is repository
+        assert kwargs["run_key"] == "test-run"
         return FakePublication("run-1"), {
             "admin": FakeDelivery(True),
             "vip": FakeDelivery(False),

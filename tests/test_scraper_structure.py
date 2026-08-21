@@ -1,4 +1,5 @@
 import ast
+import inspect
 import json
 import os
 from pathlib import Path
@@ -114,6 +115,7 @@ class FakeRepository:
 def scraper_settings(tmp_path, *, token="telegram-token"):
     return ScraperSettings(
         dry_run=False,
+        run_key="test-run",
         supabase_url="https://example.supabase.co",
         service_role_key="service-role",
         groq_api_key="",
@@ -163,7 +165,7 @@ class HashGuardRepository(FakeRepository):
 
 
 def test_github_run_id_is_stable_across_reruns_and_source_hash_stays_separate(tmp_path):
-    from backend.scraper import fase7_guardar_y_notificar
+    from backend.scraper import PersistenceFailure, fase7_guardar_y_notificar
 
     repository = HashGuardRepository()
     sent = []
@@ -176,17 +178,17 @@ def test_github_run_id_is_stable_across_reruns_and_source_hash_stays_separate(tm
         repository=repository,
         settings=scraper_settings(tmp_path),
         transport=transport,
-        environment={"GITHUB_RUN_ID": "424242"},
+        run_key="github-run:424242",
     )
     sent_after_first_run = list(sent)
 
-    with pytest.raises(RuntimeError, match="different hash"):
+    with pytest.raises(PersistenceFailure, match="scraper batch persistence failed"):
         fase7_guardar_y_notificar(
             single_pick("Atlas gana"),
             repository=repository,
             settings=scraper_settings(tmp_path),
             transport=transport,
-            environment={"GITHUB_RUN_ID": "424242"},
+            run_key="github-run:424242",
         )
 
     assert [attempt[0] for attempt in repository.published] == [
@@ -198,34 +200,32 @@ def test_github_run_id_is_stable_across_reruns_and_source_hash_stays_separate(tm
     assert sent == sent_after_first_run
 
 
-@pytest.mark.parametrize(
-    ("explicit_key", "environment", "expected"),
-    [
-        ("manual-key", {"SCRAPER_RUN_KEY": "env-key", "GITHUB_RUN_ID": "1"}, "manual-key"),
-        (None, {"SCRAPER_RUN_KEY": "env-key", "GITHUB_RUN_ID": "1"}, "env-key"),
-    ],
-)
-def test_run_key_precedence_is_explicit_then_environment(
-    tmp_path, explicit_key, environment, expected
-):
+def test_phase7_uses_only_the_explicit_resolved_run_key(tmp_path, monkeypatch):
     from backend.scraper import fase7_guardar_y_notificar
 
+    assert (
+        inspect.signature(fase7_guardar_y_notificar).parameters["run_key"].default
+        is inspect.Parameter.empty
+    )
+    monkeypatch.setenv("SCRAPER_RUN_KEY", "ambient-key")
+    monkeypatch.setenv("GITHUB_RUN_ID", "999")
     repository = FakeRepository()
     fase7_guardar_y_notificar(
         single_pick("Pumas gana"),
         repository=repository,
         settings=scraper_settings(tmp_path),
         transport=lambda _destination, _text: None,
-        run_key=explicit_key,
-        environment=environment,
+        run_key="resolved-key",
     )
 
-    assert repository.published[0][0] == expected
+    assert repository.published[0][0] == "resolved-key"
 
 
-def test_phase7_fails_closed_without_a_stable_run_key(tmp_path):
+def test_phase7_fails_closed_without_a_stable_run_key(tmp_path, monkeypatch):
     from backend.scraper import fase7_guardar_y_notificar
 
+    monkeypatch.setenv("SCRAPER_RUN_KEY", "ambient-key-must-not-be-read")
+    monkeypatch.setenv("GITHUB_RUN_ID", "999")
     repository = FakeRepository()
     with pytest.raises(RuntimeError, match="clave estable"):
         fase7_guardar_y_notificar(
@@ -233,7 +233,7 @@ def test_phase7_fails_closed_without_a_stable_run_key(tmp_path):
             repository=repository,
             settings=scraper_settings(tmp_path),
             transport=lambda _destination, _text: None,
-            environment={},
+            run_key=None,
         )
 
     assert repository.published == []
@@ -248,7 +248,6 @@ def test_missing_telegram_token_records_each_configured_destination_as_failed(tm
         repository=repository,
         settings=scraper_settings(tmp_path, token=""),
         run_key="manual-key",
-        environment={},
     )
 
     assert set(deliveries) == {"admin", "vip", "free"}
@@ -286,7 +285,6 @@ def test_delivery_record_failures_do_not_block_other_destinations_or_leak_errors
             settings=scraper_settings(tmp_path),
             transport=lambda _destination, _text: None,
             run_key="manual-key",
-            environment={},
         )
 
     assert [attempt[1] for attempt in repository.record_attempts] == [

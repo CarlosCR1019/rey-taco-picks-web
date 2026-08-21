@@ -3,7 +3,7 @@
   "version": "5.0.0",
   "private": true,
   "scripts": {
-    "build": "cd frontend && npm install && npm run build && cd .. && node -e \"const fs=require('fs'),p=require('path');const root=process.cwd(),out=p.resolve(root,'dist');if(!out.startsWith(root+p.sep))throw new Error('Unsafe dist path');fs.rmSync(out,{recursive:true,force:true});fs.cpSync('frontend/dist',out,{recursive:true});\"",
+    "build": "cd frontend && npm install && npm run build && cd .. && node -e \"const fs=require('fs'),p=require('path');const root=process.cwd(),out=p.resolve(root,'dist');if(!out.startsWith(root+p.sep))throw new Error('Unsafe dist path');fs.rmSync(out,{recursive:true,force:true});fs.cpSync('frontend/dist',out,{recursive:true});const text=/\\.(html|css|js)$/;const walk=d=>fs.readdirSync(d,{withFileTypes:true}).forEach(e=>{const f=p.join(d,e.name);if(e.isDirectory())walk(f);else if(text.test(e.name)&&(f===p.join(out,'index.html')||f.startsWith(p.join(out,'assets')+p.sep))){const s=fs.readFileSync(f,'utf8');fs.writeFileSync(f,s.replace(/\\r\\n/g,'\\n').replace(/[ \\t]+$/gm,''))}});walk(out);\"",
     "start": "cd frontend && npm run preview"
   }
 }

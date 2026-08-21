@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import subprocess
 import unittest
 
@@ -83,6 +84,12 @@ class SourceSecurityTests(unittest.TestCase):
         update_block = contents[contents.index("for pick in picks_pendientes"):contents.index("print(f\"\\n{'='*60}\")")]
         self.assertIn('.eq("estado", "pendiente")', update_block)
         self.assertNotIn("legacy", update_block)
+
+    def test_build_normalizes_deploy_artifact_line_endings(self):
+        contents = (ROOT / "package.json").read_text(encoding="utf-8")
+        build_script = json.loads(contents)["scripts"]["build"]
+        self.assertIn("replace(/\\r\\n/g,'\\n')", build_script)
+        self.assertIn("replace(/[ \\t]+$/gm,'')", build_script)
 
 
 if __name__ == "__main__":

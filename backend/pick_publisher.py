@@ -8,9 +8,28 @@ import json
 import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Mapping, Protocol, Sequence, TypedDict
 
 from backend.publishing_policy import public_payload
+
+
+class PublishResponse(TypedDict):
+    run_id: str
+    batch_id: str
+    created: bool
+    delivery_status: dict[str, object]
+
+
+class _SupabaseResponse(Protocol):
+    data: object
+
+
+class _SupabaseRpc(Protocol):
+    def execute(self) -> _SupabaseResponse: ...
+
+
+class _SupabaseClient(Protocol):
+    def rpc(self, function_name: str, arguments: dict[str, object]) -> _SupabaseRpc: ...
 
 
 class BatchRepository(Protocol):
@@ -18,7 +37,7 @@ class BatchRepository(Protocol):
 
     def publish(
         self, run_key: str, source_hash: str, picks: Sequence[Mapping[str, object]]
-    ) -> dict[str, object]: ...
+    ) -> PublishResponse: ...
 
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""
@@ -37,12 +56,12 @@ class PublicationResult:
 class SupabaseBatchRepository:
     """Supabase RPC implementation of the batch repository boundary."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: _SupabaseClient) -> None:
         self._client = client
 
     def publish(
         self, run_key: str, source_hash: str, picks: Sequence[Mapping[str, object]]
-    ) -> dict[str, object]:
+    ) -> PublishResponse:
         response = self._client.rpc(
             "publish_pick_batch",
             {
@@ -51,7 +70,7 @@ class SupabaseBatchRepository:
                 "requested_picks": picks,
             },
         ).execute()
-        return _normalized_publish_response(getattr(response, "data", None))
+        return _normalized_publish_response(response.data)
 
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""
@@ -97,36 +116,51 @@ def publish_batch(
     return result
 
 
-def _normalized_publish_response(data: object) -> dict[str, object]:
+def _normalized_publish_response(data: object) -> PublishResponse:
     if isinstance(data, list) and len(data) == 1:
         data = data[0]
-    if not isinstance(data, dict):
+    response = _string_keyed_dict(data)
+    if response is None:
         raise RuntimeError("publish_pick_batch returned an invalid response: run_id and batch_id are required")
 
-    run_id = data.get("run_id")
-    batch_id = data.get("batch_id")
+    run_id = response.get("run_id")
+    batch_id = response.get("batch_id")
     if not isinstance(run_id, str) or not run_id.strip() or not isinstance(batch_id, str) or not batch_id.strip():
         raise RuntimeError("publish_pick_batch returned an invalid response: run_id and batch_id are required")
 
-    delivery_status = data.get("delivery_status", {})
-    if not isinstance(delivery_status, dict):
+    created = response.get("created")
+    if not isinstance(created, bool):
+        raise RuntimeError("publish_pick_batch returned an invalid response: created must be a boolean")
+
+    delivery_status = _string_keyed_dict(response.get("delivery_status"))
+    if delivery_status is None:
         raise RuntimeError("publish_pick_batch returned an invalid delivery_status")
 
     return {
         "run_id": run_id,
         "batch_id": batch_id,
-        "created": bool(data.get("created", False)),
+        "created": created,
         "delivery_status": delivery_status,
     }
 
 
-def _publication_result(response: Mapping[str, object]) -> PublicationResult:
-    normalized = _normalized_publish_response(dict(response))
+def _string_keyed_dict(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    normalized: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            return None
+        normalized[key] = item
+    return normalized
+
+
+def _publication_result(response: PublishResponse) -> PublicationResult:
     return PublicationResult(
-        run_id=normalized["run_id"],
-        batch_id=normalized["batch_id"],
-        created=normalized["created"],
-        delivery_status=normalized["delivery_status"],
+        run_id=response["run_id"],
+        batch_id=response["batch_id"],
+        created=response["created"],
+        delivery_status=response["delivery_status"],
     )
 
 

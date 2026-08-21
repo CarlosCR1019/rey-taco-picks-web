@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import backend.pick_publisher as pick_publisher
 from backend.pick_publisher import (
     SupabaseBatchRepository,
     publish_batch,
@@ -102,6 +103,45 @@ def test_repository_error_preserves_existing_public_file(tmp_path):
     assert destination.read_text(encoding="utf-8") == '[{"pick":"existing"}]'
 
 
+@pytest.mark.parametrize("existing_content", ['[{"pick":"stale"}]', None])
+def test_replay_rewrites_stale_or_missing_public_file_with_current_projection(
+    existing_content, tmp_path
+):
+    destination = tmp_path / "picks.json"
+    if existing_content is not None:
+        destination.write_text(existing_content, encoding="utf-8")
+    repository = FakeRepository(response={
+        "run_id": "run-1",
+        "batch_id": "batch-1",
+        "created": False,
+        "delivery_status": {"vip": {"success": True}},
+    })
+
+    result = publish_batch(repository, picks(), "run-1", destination)
+
+    assert json.loads(destination.read_text(encoding="utf-8")) == [picks()[0]]
+    assert result.created is False
+    assert result.delivery_status == {"vip": {"success": True}}
+
+
+def test_local_replacement_failure_preserves_destination_and_removes_temp_file(
+    tmp_path, monkeypatch
+):
+    destination = tmp_path / "picks.json"
+    destination.write_text('[{"pick":"existing"}]', encoding="utf-8")
+    monkeypatch.setattr(
+        pick_publisher.os,
+        "replace",
+        lambda source, target: (_ for _ in ()).throw(OSError("disk error")),
+    )
+
+    with pytest.raises(RuntimeError, match="failed to write public picks file"):
+        publish_batch(FakeRepository(), picks(), "run-1", destination)
+
+    assert destination.read_text(encoding="utf-8") == '[{"pick":"existing"}]'
+    assert list(tmp_path.glob(".picks.json.*.tmp")) == []
+
+
 def test_source_hash_is_order_independent_and_content_sensitive():
     first = [{"pick": "Gratis", "visibility": "public", "cuota": 1.8}]
     reordered = [{"cuota": 1.8, "visibility": "public", "pick": "Gratis"}]
@@ -159,11 +199,22 @@ def test_supabase_repository_uses_rpc_arguments_and_normalizes_response(response
     ]
 
 
-@pytest.mark.parametrize("response_data", [None, {}, [], [{"run_id": "run-1"}], {"batch_id": "batch-1"}])
+@pytest.mark.parametrize("response_data", [
+    None,
+    {},
+    [],
+    [{"run_id": "run-1"}],
+    {"batch_id": "batch-1"},
+    {"run_id": "run-1", "batch_id": "batch-1", "delivery_status": {}},
+    {"run_id": "run-1", "batch_id": "batch-1", "created": "false", "delivery_status": {}},
+    {"run_id": "run-1", "batch_id": "batch-1", "created": "true", "delivery_status": {}},
+    {"run_id": "run-1", "batch_id": "batch-1", "created": 0, "delivery_status": {}},
+    {"run_id": "run-1", "batch_id": "batch-1", "created": None, "delivery_status": {}},
+])
 def test_supabase_repository_rejects_invalid_publish_response(response_data):
     repository = SupabaseBatchRepository(FakeClient([response_data]))
 
-    with pytest.raises(RuntimeError, match="publish_pick_batch.*run_id.*batch_id"):
+    with pytest.raises(RuntimeError, match="publish_pick_batch"):
         repository.publish("run-1", "hash-1", picks())
 
 

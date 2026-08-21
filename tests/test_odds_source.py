@@ -304,7 +304,7 @@ def test_legacy_decimal_normalizer_preserves_decimal_or_explicit_american_odds(
     assert normalizar_cuota_decimal(raw) == expected
 
 
-def _run_legacy_ai(monkeypatch, raw_picks):
+def _run_legacy_ai(monkeypatch, raw_picks, *, named_prices=None):
     from backend import scraper
 
     monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
@@ -320,6 +320,7 @@ def _run_legacy_ai(monkeypatch, raw_picks):
         "local": "América",
         "visitante": "Tigres",
         "horario": "Mañana 23:59",
+        "cuotas_por_resultado": named_prices or {},
         "cuotas_superficie": [],
         "info_texto": "",
     }
@@ -328,37 +329,84 @@ def _run_legacy_ai(monkeypatch, raw_picks):
     )
 
 
-@pytest.mark.parametrize("invalid", [None, "bad", 0, 99])
-def test_ai_validated_path_discards_missing_or_invalid_price(monkeypatch, invalid):
+@pytest.mark.parametrize("invalid", [None, "bad", 0, 99, "1.70", "+110"])
+def test_ai_validated_path_discards_every_price_without_named_evidence(
+    monkeypatch, invalid
+):
     raw_picks = [
         {
             "partido": "América vs Tigres",
-            "pick": "INVALID PRICE",
+            "pick": "América Gana Directo",
             "cuota": invalid,
             "horario": "Mañana 23:59",
             "razonamiento": "Datos suficientes para explicar la selección.",
             "es_parlay": False,
             "odds_mercado": "1.55",
         },
-        *[
-            {
-                "partido": "América vs Tigres",
-                "pick": f"VALID {index}",
-                "cuota": price,
-                "horario": "Mañana 23:59",
-                "razonamiento": "Datos suficientes para explicar la selección.",
-                "es_parlay": False,
-                "odds_mercado": "1.55",
-            }
-            for index, price in enumerate(("1.70", "+110", "2.00"), start=1)
-        ],
     ]
 
     picks = _run_legacy_ai(monkeypatch, raw_picks)
 
-    assert [pick["pick"] for pick in picks] == ["VALID 1", "VALID 2", "VALID 3"]
-    assert [pick["cuota"] for pick in picks] == ["1.70", "2.10", "2.00"]
+    assert picks == []
+
+
+def test_ai_price_is_ignored_and_exact_named_observation_is_copied(monkeypatch):
+    raw_picks = [
+        {
+            "partido": "América vs Tigres",
+            "pick": "América Gana Directo",
+            "cuota": ai_price,
+            "horario": "Mañana 23:59",
+            "razonamiento": "Datos suficientes para explicar la selección.",
+            "es_parlay": False,
+            "odds_mercado": "1.55",
+        }
+        for ai_price in ("1.72", "9.99", "+110")
+    ]
+
+    picks = _run_legacy_ai(
+        monkeypatch,
+        raw_picks,
+        named_prices={"home": "1.72", "draw": "3.30", "away": "2.40"},
+    )
+
+    assert [pick["cuota"] for pick in picks] == ["1.72", "1.72", "1.72"]
     assert all("odds_mercado" not in pick for pick in picks)
+
+
+@pytest.mark.parametrize(
+    ("pick_text", "is_parlay"),
+    [
+        ("Más de 2.5 goles", False),
+        ("América -1.5", False),
+        ("Tigres tiros de esquina", False),
+        ("América gana y Tigres gana", True),
+        ("América gana o empata (1X)", False),
+    ],
+)
+def test_ai_unrecognized_or_composite_markets_are_discarded(
+    monkeypatch, pick_text, is_parlay
+):
+    raw = [{
+        "partido": "América vs Tigres",
+        "pick": pick_text,
+        "cuota": "1.72",
+        "horario": "Mañana 23:59",
+        "razonamiento": "Datos suficientes para explicar la selección.",
+        "es_parlay": is_parlay,
+    }]
+
+    picks = _run_legacy_ai(
+        monkeypatch,
+        raw,
+        named_prices={"home": "1.72", "draw": "3.30", "away": "2.40"},
+    )
+
+    # The hallucinated selection is discarded. The legacy function may still
+    # return its deterministic, source-backed home-moneyline fallback.
+    assert all(pick["pick"] != pick_text for pick in picks)
+    assert {pick["pick"] for pick in picks} <= {"América Gana Directo"}
+    assert {pick["cuota"] for pick in picks} <= {"1.72"}
 
 
 @pytest.mark.parametrize("invalid", [None, "bad", 0, 99])
@@ -390,7 +438,38 @@ def test_legacy_surface_fallback_does_not_turn_invalid_price_into_a_pick(
     assert picks == []
 
 
-def test_legacy_surface_fallback_preserves_exact_observed_price_without_floor(
+def test_legacy_fallback_uses_named_home_price_not_positional_surface_price(
+    monkeypatch,
+):
+    from backend import scraper
+
+    monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        scraper,
+        "ejecutar_groq_con_fallback",
+        lambda *_args, **_kwargs: "not-json",
+    )
+    event = {
+        "categoria": "Liga MX",
+        "partido": "América vs Tigres",
+        "local": "América",
+        "visitante": "Tigres",
+        "horario": "Mañana 23:59",
+        "cuotas_por_resultado": {"home": "1.20"},
+        "cuotas_superficie": ["9.99"],
+        "info_texto": "",
+    }
+
+    picks = scraper.fase6_analisis_final(
+        [event], "", {}, [event], groq_api_key="fake-key"
+    )
+
+    assert picks[0]["cuota"] == "1.20"
+    assert picks[0]["pick"] == "América Gana Directo"
+    assert "odds_mercado" not in picks[0]
+
+
+def test_legacy_fallback_without_named_h2h_map_creates_no_moneyline_pick(
     monkeypatch,
 ):
     from backend import scraper
@@ -415,8 +494,7 @@ def test_legacy_surface_fallback_preserves_exact_observed_price_without_floor(
         [event], "", {}, [event], groq_api_key="fake-key"
     )
 
-    assert picks[0]["cuota"] == "1.20"
-    assert "odds_mercado" not in picks[0]
+    assert picks == []
 
 
 def test_legacy_source_has_no_executable_price_defaults_or_derived_market_odds():
@@ -429,5 +507,7 @@ def test_legacy_source_has_no_executable_price_defaults_or_derived_market_odds()
         "c_val - 0.05",
         "cuota_parlay - 0.10",
         '"odds_mercado": f',
+        "cuotas_superficie[0]",
     )
     assert not [pattern for pattern in forbidden if pattern in text]
+    assert text.count('"cuotas_por_resultado": {}') >= 2

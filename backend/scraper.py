@@ -181,6 +181,47 @@ def get_chrome_version():
 
     return None
 
+
+def _observed_h2h_selection(pick_text, event):
+    """Resolve a direct moneyline pick to an exact named source observation.
+
+    The AI may describe a selection, but it never supplies its price. During
+    the legacy migration only direct home/away moneylines and an exact draw
+    label are supported; composite or unrecognized markets fail closed.
+    """
+
+    if not isinstance(pick_text, str) or not isinstance(event, dict):
+        return None
+    text = " ".join(pick_text.strip().casefold().split())
+    if not text:
+        return None
+
+    named_prices = event.get("cuotas_por_resultado")
+    if not isinstance(named_prices, dict):
+        return None
+
+    home = str(event.get("local") or "").strip()
+    away = str(event.get("visitante") or "").strip()
+    candidates = (
+        ("home", home, f"{home} Gana Directo"),
+        ("away", away, f"{away} Gana Directo"),
+    )
+    for key, team, canonical_pick in candidates:
+        if not team:
+            continue
+        team_key = re.escape(team.casefold())
+        if re.fullmatch(rf"{team_key}\s+(?:gana(?:\s+directo)?|moneyline)", text):
+            price = normalizar_cuota_decimal(named_prices.get(key))
+            if price is not None:
+                return canonical_pick, price
+            return None
+
+    if text in {"empate", "draw"}:
+        price = normalizar_cuota_decimal(named_prices.get("draw"))
+        if price is not None:
+            return "Empate", price
+    return None
+
 def get_chrome_driver():
     def make_options():
         options = uc.ChromeOptions()
@@ -689,6 +730,7 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
                     "local": e['local'],
                     "visitante": e['visitante'],
                     "horario": horario_limpio,
+                    "cuotas_por_resultado": {},
                     "cuotas_superficie": e.get('cuotas', [])[:4],
                     "info_texto": f"{cat_real}: {nombre}. Horario: {horario_limpio}. Cuotas Playdoit: {' | '.join(e.get('cuotas', []))}"
                 })
@@ -724,6 +766,7 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
                             "local": e['local'],
                             "visitante": e['visitante'],
                             "horario": horario_limpio,
+                            "cuotas_por_resultado": {},
                             "cuotas_superficie": e.get('cuotas', [])[:4],
                             "info_texto": f"{cat_real}: {nombre}. Horario: {horario_limpio}. Cuotas Playdoit: {' | '.join(e.get('cuotas', []))}"
                         })
@@ -1313,6 +1356,13 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             p_pick = p.get('pick')
             if not p_partido or not p_pick or str(p_pick).strip().lower() in ('none', '', 'null'):
                 continue
+
+            # Until the structured candidate catalog is connected, the legacy
+            # AI path accepts only one direct h2h selection. AI parlays, totals,
+            # spreads and props cannot establish their own market identity.
+            if p.get('es_parlay'):
+                print(f"   🛑 DESCARTADO (Parlay sin piernas verificadas): {p_partido}")
+                continue
             
             # 1. Verificar existencia contra partidos reales escaneados
             match_encontrado = None
@@ -1328,47 +1378,16 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                     match_encontrado = dp
                     break
             
-            # Si es parlay, validar que TODAS las partes existan
-            if p.get('es_parlay'):
-                partes = re.split(r'[+&/]|(?:\s+y\s+)', p_partido, flags=re.IGNORECASE)
-                parlay_matches = []
-                for parte in partes:
-                    parte = parte.strip()
-                    if len(parte) < 3: continue
-                    leg_match = next(
-                        (dp for dp in (datos_profundos + partidos_data) if
-                         (dp.get('local', '') and len(dp.get('local', '')) > 3 and dp.get('local', '').lower() in parte.lower()) or
-                         (dp.get('visitante', '') and len(dp.get('visitante', '')) > 3 and dp.get('visitante', '').lower() in parte.lower()) or
-                         (dp.get('partido', '').lower() in parte.lower()) or
-                         (parte.lower() in dp.get('partido', '').lower())),
-                        None,
-                    )
-                    if not leg_match:
-                        parlay_matches = []
-                        break
-                    parlay_matches.append(leg_match)
-                
-                parlay_horarios = [leg.get('horario', 'Hoy') for leg in parlay_matches]
-                fecha_base = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
-                if len(parlay_matches) >= 2 and event_labels_share_date(parlay_horarios, fecha_base):
-                    match_encontrado = parlay_matches[0]
-                    p['horario'] = " / ".join(parlay_horarios)
-                else:
-                    match_encontrado = None
-            
             if not match_encontrado:
                 print(f"   🛑 DESCARTADO (Partido o pierna de parlay no existe en catálogo): {p_partido}")
                 continue
 
             # 2. Asignar categoría exacta
-            if p.get('es_parlay'):
-                p['categoria'] = "Parlays +EV"
-            else:
-                p['categoria'] = inferir_categoria_deporte(
-                    match_encontrado.get('local', ''), 
-                    match_encontrado.get('visitante', ''), 
-                    fallback=match_encontrado.get('categoria', 'Fútbol Internacional')
-                )
+            p['categoria'] = inferir_categoria_deporte(
+                match_encontrado.get('local', ''),
+                match_encontrado.get('visitante', ''),
+                fallback=match_encontrado.get('categoria', 'Fútbol Internacional')
+            )
 
             # 3. Corregir y forzar Horario Real y verificar que sea futuro en CDMX
             if not p.get('es_parlay') and match_encontrado and match_encontrado.get('horario'):
@@ -1380,12 +1399,16 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                 continue
             p['horario'] = horario_limpio
             
-            # 4. Limpieza y Normalización Matemática de Cuota
-            normalized_price = normalizar_cuota_decimal(p.get('cuota'))
-            if normalized_price is None:
-                print(f"   🛑 DESCARTADO (Cuota ausente o inválida): {p_partido}")
+            # Resolve identity and price from named source evidence. The
+            # numeric value returned by the AI is deliberately ignored.
+            observed_selection = _observed_h2h_selection(p_pick, match_encontrado)
+            if observed_selection is None:
+                print(f"   🛑 DESCARTADO (Mercado o cuota sin evidencia): {p_partido}")
                 continue
-            p['cuota'] = normalized_price
+            canonical_pick, observed_price = observed_selection
+            p['pick'] = canonical_pick
+            p['cuota'] = observed_price
+            p['es_parlay'] = False
             p.pop('odds_mercado', None)
             
             if not p.get('razonamiento') or len(p.get('razonamiento', '')) < 10:
@@ -1417,7 +1440,7 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
             vis = dp.get('visitante', '')
             horario = dp.get('horario', 'Hoy')
             mercados = dp.get('mercados_profundos', '') or dp.get('info_texto', '')
-            cuotas_sup = dp.get('cuotas_superficie', [])
+            named_prices = dp.get('cuotas_por_resultado', {})
             categoria = inferir_categoria_deporte(local, vis, fallback=dp.get('categoria', 'Fútbol Internacional'))
             
             es_valido, horario_limpio = es_partido_futuro_valido(horario)
@@ -1469,10 +1492,10 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                 if c_val <= 1.85:
                     parlay_candidatos.append(p_item)
             
-            # B) Buscar Línea de Dinero (ML) o Hándicap
-            if len(cuotas_sup) >= 1 and len(picks_fallback) < 6:
+            # B) Moneyline local: only from the explicitly named home quote.
+            if isinstance(named_prices, dict) and len(picks_fallback) < 6:
                 try:
-                    c_local_str = normalizar_cuota_decimal(cuotas_sup[0])
+                    c_local_str = normalizar_cuota_decimal(named_prices.get('home'))
                     if c_local_str is None:
                         continue
                     c_local = float(c_local_str)
@@ -1504,18 +1527,17 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
                 partido_nom = p.get('partido', '')
                 if any(x['partido'] == partido_nom for x in picks_fallback):
                     continue
-                cuotas = p.get('cuotas_superficie', [])
-                if cuotas:
-                    c_val_str = normalizar_cuota_decimal(cuotas[0])
+                named_prices = p.get('cuotas_por_resultado', {})
+                if isinstance(named_prices, dict):
+                    c_val_str = normalizar_cuota_decimal(named_prices.get('home'))
                     if c_val_str is None:
                         continue
-                    c_val = float(c_val_str)
                     picks_fallback.append({
                         "categoria": p.get('categoria', 'Fútbol Global'),
                         "partido": partido_nom,
                         "local": p.get('local', partido_nom.split(' vs ')[0]),
                         "horario": p.get('horario', 'Hoy'),
-                        "pick": f"{p.get('local', partido_nom.split(' vs ')[0])} Gana o Empata (1X)" if c_val < 1.60 else f"{p.get('local', partido_nom.split(' vs ')[0])} Gana Directo",
+                        "pick": f"{p.get('local', partido_nom.split(' vs ')[0])} Gana Directo",
                         "cuota": c_val_str,
                         "confianza": "91%",
                         "razonamiento": "Consenso Quant: Selección calculada de alta probabilidad matemática y valor esperado positivo.",
@@ -1528,7 +1550,8 @@ Devuelve ÚNICAMENTE un JSON array válido con este formato:
         fecha_base = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
         for index, p1 in enumerate(parlay_candidatos):
             for p2 in parlay_candidatos[index + 1:]:
-                if event_labels_share_date([p1.get('horario'), p2.get('horario')], fecha_base):
+                parlay_horarios = [p1.get('horario'), p2.get('horario')]
+                if event_labels_share_date(parlay_horarios, fecha_base):
                     parlay_pair = (p1, p2)
                     break
             if parlay_pair:

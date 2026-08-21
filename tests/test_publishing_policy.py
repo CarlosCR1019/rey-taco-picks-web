@@ -50,8 +50,8 @@ class PublishingPolicyTests(unittest.TestCase):
 
     def test_scraper_applies_the_same_day_rule_to_generated_parlays(self):
         scraper = (Path(__file__).resolve().parents[1] / "backend" / "scraper.py").read_text(encoding="utf-8")
+        self.assertIn("Parlay sin piernas verificadas", scraper)
         self.assertIn("event_labels_share_date(parlay_horarios", scraper)
-        self.assertIn("event_labels_share_date([p1.get('horario'), p2.get('horario')]", scraper)
 
 
 if __name__ == "__main__":

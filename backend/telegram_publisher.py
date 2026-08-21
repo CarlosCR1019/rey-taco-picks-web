@@ -107,8 +107,6 @@ class TelegramHttpTransport:
             if response.getcode() != 200:
                 raise RuntimeError("unexpected Telegram HTTP status")
             body = response.read() if callable(getattr(response, "read", None)) else b""
-        if not body:
-            return
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -179,7 +177,6 @@ def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> st
     selection = _field(pick, ("pick",), "Pick no especificado", 800)
     price = _field(pick, ("cuota", "price", "odds"), "No especificado", 300)
     confidence = _field(pick, ("confianza", "confidence"), "No especificada", 300)
-    rationale = _field(pick, ("razonamiento", "razon", "rationale", "analysis"), "No especificada", MAX_MESSAGE_LENGTH)
 
     lines = [f"Evento: {event}"]
     if schedule:
@@ -196,6 +193,10 @@ def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> st
         if public
         else "Nota: análisis informativo; no garantiza resultados."
     )
+    if public:
+        return f"{'\n'.join(lines)}\n{notice}"
+
+    rationale = _field(pick, ("razonamiento", "razon", "rationale", "analysis"), "No especificada", MAX_MESSAGE_LENGTH)
     prefix = "\n".join(lines) + "\nRationale: "
     available = MAX_MESSAGE_LENGTH - len(prefix) - 1 - len(notice)
     bounded_rationale = _truncate(rationale, max(0, available))

@@ -89,9 +89,15 @@ class TelegramPublisherTests(unittest.TestCase):
         self.assertIn("PUBLIC PICK", by_name["free"])
         self.assertNotIn("PREMIUM SECRET", by_name["free"])
         self.assertNotIn("Private rationale", by_name["free"])
+        self.assertNotIn("Visible rationale", by_name["free"])
+        self.assertNotIn("Rationale:", by_name["free"])
         self.assertIn("PUBLIC PICK", by_name["vip"])
         self.assertIn("PREMIUM SECRET", by_name["vip"])
+        self.assertIn("Visible rationale", by_name["vip"])
+        self.assertIn("Rationale:", by_name["vip"])
         self.assertIn("PREMIUM SECRET", by_name["admin"])
+        self.assertIn("Visible rationale", by_name["admin"])
+        self.assertIn("Rationale:", by_name["admin"])
         self.assertEqual(results["free"], DeliveryResult(success=True, message_count=1))
 
     def test_destination_failure_is_isolated_from_other_destinations(self):
@@ -184,6 +190,21 @@ class TelegramPublisherTests(unittest.TestCase):
             TelegramDestination("free", "", "public")
         with self.assertRaises(ValueError):
             TelegramDestination("free", "id", "unknown")
+
+    def test_http_transport_rejects_an_empty_200_response(self):
+        transport = TelegramHttpTransport("token", retries=0, urlopen=lambda *unused, **kwargs: FakeResponse(body=b""))
+
+        with self.assertRaisesRegex(RuntimeError, "RuntimeError"):
+            transport(TelegramDestination("free", "free-id", "public"), "hello")
+
+    def test_http_transport_rejects_malformed_or_not_ok_200_response(self):
+        for body in (b"not-json", b'{"ok": false}'):
+            with self.subTest(body=body):
+                transport = TelegramHttpTransport(
+                    "token", retries=0, urlopen=lambda *unused, **kwargs: FakeResponse(body=body)
+                )
+                with self.assertRaisesRegex(RuntimeError, "RuntimeError"):
+                    transport(TelegramDestination("free", "free-id", "public"), "hello")
 
     def test_publisher_source_does_not_queue_future_free_or_premium_messages(self):
         source = (Path(__file__).resolve().parents[1] / "backend" / "telegram_publisher.py").read_text(encoding="utf-8").lower()

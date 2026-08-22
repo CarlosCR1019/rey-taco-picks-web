@@ -60,10 +60,10 @@ begin
     into eligible_pick_count
     from public.picks as picks
     where picks.batch_id = selected_batch.id
-      and picks.active
+      and picks.active = true
       and picks.estado = 'pendiente'
       and picks.visibility = 'public'
-      and not coalesce(picks.es_parlay, false);
+      and picks.es_parlay = false;
 
     if eligible_pick_count <> 1 then
         raise exception 'meta social pick integrity error';
@@ -73,10 +73,10 @@ begin
     into selected_pick
     from public.picks as picks
     where picks.batch_id = selected_batch.id
-      and picks.active
+      and picks.active = true
       and picks.estado = 'pendiente'
       and picks.visibility = 'public'
-      and not coalesce(picks.es_parlay, false);
+      and picks.es_parlay = false;
 
     if selected_pick.source_audit_version is distinct from 1
        or nullif(btrim(selected_pick.source), '') is null

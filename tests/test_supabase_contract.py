@@ -23,6 +23,53 @@ def function_body(path: Path, signature: str) -> str:
     return text[body_start:body_end].strip()
 
 
+def sql_call_arguments(text: str, call: str, start: int = 0) -> tuple[list[str], int]:
+    call_start = text.index(call, start)
+    opening = text.index("(", call_start + len(call))
+    arguments: list[str] = []
+    argument_start = opening + 1
+    depth = 1
+    quoted = False
+    index = opening + 1
+
+    while index < len(text):
+        character = text[index]
+        if quoted:
+            if character == "'":
+                if index + 1 < len(text) and text[index + 1] == "'":
+                    index += 2
+                    continue
+                quoted = False
+        elif character == "'":
+            quoted = True
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                arguments.append(text[argument_start:index].strip())
+                return arguments, index + 1
+        elif character == "," and depth == 1:
+            arguments.append(text[argument_start:index].strip())
+            argument_start = index + 1
+        index += 1
+
+    raise ValueError(f"unterminated SQL call: {call}")
+
+
+def function_signature_pattern(signature: str) -> str:
+    function_name, parameter_list = signature.rstrip(")").split("(", 1)
+    parameter_patterns = []
+    for parameter in parameter_list.split(","):
+        words = parameter.strip().split()
+        parameter_patterns.append(r"\s+".join(re.escape(word) for word in words))
+    return (
+        rf"{re.escape(function_name)}\s*\(\s*"
+        + r"\s*,\s*".join(parameter_patterns)
+        + r"\s*\)"
+    )
+
+
 class SupabaseContractTests(unittest.TestCase):
     def test_base_profiles_and_picks_schema_precedes_membership_and_is_upgrade_safe(self):
         migrations = sorted(path.name for path in SQL.parent.glob("*.sql"))
@@ -987,24 +1034,48 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("runs.status in ('published', 'partial')", body)
         self.assertIn("if not found then return null", body)
 
+        advisory_lock = body.index("perform pg_advisory_xact_lock(20260820233000)")
+        first_ledger_read = min(
+            body.index("from public.scraper_runs"),
+            body.index("from public.pick_batches"),
+        )
+        self.assertLess(advisory_lock, first_ledger_read)
+
         self.assertIn("batches.run_id = selected_run.id", body)
         self.assertIn("batches.active", body)
         self.assertIn("if active_batch_count <> 1 then", body)
         self.assertIn("raise exception 'meta social batch integrity error'", body)
-        self.assertIn("picks.batch_id = selected_batch.id", body)
-        self.assertIn("picks.active", body)
-        self.assertIn("picks.estado = 'pendiente'", body)
-        self.assertIn("picks.visibility = 'public'", body)
-        self.assertIn("not coalesce(picks.es_parlay, false)", body)
+
+        eligible_start = body.index("select count(*) into eligible_pick_count")
+        eligible_end = body.index("if eligible_pick_count <> 1 then", eligible_start)
+        eligible_statement = body[eligible_start:eligible_end]
         self.assertIn("if eligible_pick_count <> 1 then", body)
         self.assertIn("raise exception 'meta social pick integrity error'", body)
+        selected_start = body.index("select picks.* into selected_pick", eligible_end)
+        selected_end = body.index(
+            "if selected_pick.source_audit_version is distinct from 1",
+            selected_start,
+        )
+        selected_statement = body[selected_start:selected_end]
+
+        for statement in (eligible_statement, selected_statement):
+            self.assertIn("picks.batch_id = selected_batch.id", statement)
+            self.assertIn("picks.active = true", statement)
+            self.assertIn("picks.estado = 'pendiente'", statement)
+            self.assertIn("picks.visibility = 'public'", statement)
+            self.assertIn("picks.es_parlay = false", statement)
+            self.assertNotIn("coalesce(picks.es_parlay", statement)
 
         for audit_guard in (
             "selected_pick.source_audit_version is distinct from 1",
             "nullif(btrim(selected_pick.source), '') is null",
+            "length(btrim(selected_pick.source)) not between 1 and 100",
             "nullif(btrim(selected_pick.source_event_id), '') is null",
+            "length(btrim(selected_pick.source_event_id)) not between 1 and 500",
             "nullif(btrim(selected_pick.source_market_key), '') is null",
+            "length(btrim(selected_pick.source_market_key)) not between 1 and 1000",
             "nullif(btrim(selected_pick.source_selection_key), '') is null",
+            "length(btrim(selected_pick.source_selection_key)) not between 1 and 500",
             "selected_pick.source_observed_at is null",
             "selected_pick.source_starts_at is null",
             "selected_pick.source_observed_at > clock_timestamp()",
@@ -1021,8 +1092,6 @@ class SupabaseContractTests(unittest.TestCase):
         )
         result_start = body.index("return jsonb_build_object(")
         result = body[result_start:]
-        pick_start = result.index("'public_pick', jsonb_build_object(")
-        public_pick = result[pick_start:]
         expected_fields = (
             "id", "categoria", "partido", "pick", "cuota", "confianza",
             "estado", "es_parlay", "liga", "mercado", "riesgo",
@@ -1034,13 +1103,22 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("'run_id', selected_run.id", result)
         self.assertIn("'batch_id', selected_batch.id", result)
         self.assertIn("'delivery_status', selected_run.delivery_status", result)
-        for field in expected_fields:
-            self.assertIn(f"'{field}', selected_pick.{field}", public_pick)
-        returned_fields = re.findall(
-            r"'([a-z_][a-z0-9_]*)', selected_pick\.[a-z_][a-z0-9_]*",
-            public_pick,
+        outer_arguments, _ = sql_call_arguments(result, "jsonb_build_object")
+        public_pick_key = outer_arguments.index("'public_pick'")
+        public_pick_expression = outer_arguments[public_pick_key + 1]
+        public_pick_arguments, public_pick_end = sql_call_arguments(
+            public_pick_expression,
+            "jsonb_build_object",
         )
-        self.assertEqual(tuple(returned_fields), expected_fields)
+        self.assertEqual(public_pick_expression[public_pick_end:].strip(), "")
+        self.assertEqual(len(public_pick_arguments), len(expected_fields) * 2)
+        self.assertEqual(
+            tuple(zip(public_pick_arguments[::2], public_pick_arguments[1::2])),
+            tuple(
+                (f"'{field}'", f"selected_pick.{field}")
+                for field in expected_fields
+            ),
+        )
         self.assertNotIn("razonamiento", body)
         self.assertNotIn("to_jsonb(", body)
 
@@ -1113,6 +1191,12 @@ class SupabaseContractTests(unittest.TestCase):
                 f"grant execute on function {signature} to service_role",
                 text,
             )
+            grants = re.findall(
+                rf"\bgrant\s+([^;]+?)\s+on\s+function\s+"
+                rf"{function_signature_pattern(signature)}\s+to\s+([^;]+);",
+                text,
+            )
+            self.assertEqual(grants, [("execute", "service_role")])
         self.assertNotIn("grant execute on function public.get_meta_social_batch(text) to anon", text)
         self.assertNotIn("create or replace function public.record_scraper_delivery", text)
 

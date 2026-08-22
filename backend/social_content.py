@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, DecimalException, ROUND_HALF_UP
 import re
 from typing import Mapping
+from unicodedata import category as unicode_category
 from unicodedata import normalize as normalize_unicode
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -72,6 +73,7 @@ _FACEBOOK_HASHTAGS = "#ReyTacoPicks #ApuestasResponsables"
 _INSTAGRAM_HASHTAGS = (
     "#ReyTacoPicks #ApuestasResponsables #PronósticosDeportivos #Deportes"
 )
+_MAX_CAPTION_FACT_CODEPOINTS = 300
 _UNSAFE_CAPTION_WORDING = (
     re.compile(r"\b(?:por\s+ciento|porcentajes?|percent(?:age)?s?)\b"),
     re.compile(r"\b(?:garant|guarant)\w*\b"),
@@ -277,6 +279,9 @@ _PERSON_REFERENCE_TOKENS = frozenset(
         "ellas",
     }
 )
+_US_OPEN_WINNER_MARKET = re.compile(
+    r"^us open winner: [^\W\d_]+(?:[ .'’\-][^\W\d_]+){0,5}$"
+)
 
 
 @dataclass(frozen=True)
@@ -339,6 +344,20 @@ def _normalized_text(value: object, *, field: str) -> str:
     return normalized
 
 
+def _prevalidate_caption_fact(value: object, *, field: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a nonblank string")
+    if len(value) > _MAX_CAPTION_FACT_CODEPOINTS:
+        raise ValueError(
+            f"{field} must be at most {_MAX_CAPTION_FACT_CODEPOINTS} "
+            "Unicode code points"
+        )
+    if any(
+        unicode_category(character) in {"Cc", "Cf"} for character in value
+    ):
+        raise ValueError(f"{field} contains Unicode control characters")
+
+
 def _matches_any_rule(
     value: str,
     rule_groups: tuple[tuple[re.Pattern[str], ...], ...],
@@ -367,7 +386,23 @@ def _has_token_category_claim(value: str) -> bool:
     )
 
 
+def _is_canonical_neutral_market(value: str, *, folded: str) -> bool:
+    if folded == "home win or draw (double chance)":
+        return True
+    if not value.startswith("US Open winner: "):
+        return False
+    if _US_OPEN_WINNER_MARKET.fullmatch(folded) is None:
+        return False
+    tokens = frozenset(_CAPTION_WORD_TOKEN.findall(folded))
+    return (
+        tokens.intersection(_WIN_OUTCOME_TOKENS) == {"winner"}
+        and tokens.intersection(_PERSON_REFERENCE_TOKENS) == {"us"}
+        and tokens.isdisjoint(_PROBABILITY_INDICATOR_TOKENS)
+    )
+
+
 def _validate_caption_fact(value: object, *, field: str) -> None:
+    _prevalidate_caption_fact(value, field=field)
     normalized = _normalized_text(value, field=field)
     if normalized != value:
         raise ValueError(f"{field} must be normalized for a social caption")
@@ -377,12 +412,17 @@ def _validate_caption_fact(value: object, *, field: str) -> None:
     )
     has_predictive_wording = _matches_any_rule(folded, _PREDICTIVE_CAPTION_RULES)
     has_token_category_claim = _has_token_category_claim(folded)
-    if (
+    has_explicit_unsafe_wording = (
         "%" in folded
         or "#" in folded
         or has_unsafe_wording
         or has_predictive_wording
-        or has_token_category_claim
+    )
+    if has_explicit_unsafe_wording:
+        raise ValueError(f"{field} contains unsafe social caption wording")
+    if has_token_category_claim and not _is_canonical_neutral_market(
+        normalized,
+        folded=folded,
     ):
         raise ValueError(f"{field} contains unsafe social caption wording")
 
@@ -406,13 +446,13 @@ def _utc_timestamp(value: object, *, field: str) -> datetime:
         raise ValueError(f"{field} must be an ISO timezone-aware timestamp")
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError
+        return parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
         raise ValueError(
             f"{field} must be an ISO timezone-aware timestamp"
         ) from None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError(f"{field} must be an ISO timezone-aware timestamp")
-    return parsed.astimezone(timezone.utc)
 
 
 def _odds_text(value: object) -> str:
@@ -459,6 +499,9 @@ def content_from_public_pick(
         raise ValueError("es_parlay must be boolean false")
     if type(row["tiene_valor"]) is not bool:
         raise ValueError("tiene_valor must be boolean")
+
+    for field in ("partido", "pick"):
+        _prevalidate_caption_fact(row[field], field=field)
 
     normalized = {
         field: _normalized_text(row[field], field=field)
@@ -558,6 +601,10 @@ def build_fallback_captions(content: SocialContent) -> SocialCaptions:
 
     if not isinstance(content, SocialContent):
         raise ValueError("content must be SocialContent")
+    if type(content.is_demo) is not bool:
+        raise ValueError("is_demo must be boolean")
+    if type(content.has_value_signal) is not bool:
+        raise ValueError("has_value_signal must be boolean")
     base = "\n".join(_caption_lines(content))
     return SocialCaptions(
         facebook=f"{base}\n{_FACEBOOK_HASHTAGS}",

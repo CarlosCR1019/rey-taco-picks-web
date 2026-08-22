@@ -174,6 +174,25 @@ SAFE_PERSON_REFERENCE_PHRASES = (
     "Their draw",
     "Tu empate",
 )
+CANONICAL_NEUTRAL_MARKETS = (
+    "Home win or draw (double chance)",
+    "US Open winner: Carlos Alcaraz",
+)
+UNSAFE_NEUTRAL_MARKET_NEIGHBORS = (
+    "High chance for a home win",
+    "Home win or draw (double chance) guaranteed",
+    "US Open winner: You win",
+    "us open winner: Carlos Alcaraz",
+    "WIN WITH US",
+)
+UNICODE_CONTROL_BYPASSES = (
+    "se\u200dgura",
+    "se\u200cgura",
+    "proba\u200bbilidad",
+    "proba\u202ebilidad",
+    "proba\u2066bilidad",
+    "se\u0001gura",
+)
 EXPECTED_FIELDS = frozenset(
     {
         "id",
@@ -442,6 +461,15 @@ def test_rejects_naive_or_invalid_source_timestamps(field, timestamp):
         )
 
 
+@pytest.mark.parametrize("field", ["source_observed_at", "source_starts_at"])
+def test_rejects_timestamp_utc_conversion_overflow_with_field_error(field):
+    with pytest.raises(ValueError, match=field):
+        content_from_public_pick(
+            valid_row(**{field: "9999-12-31T23:59:59-23:59"}),
+            reference_at=NOW,
+        )
+
+
 @pytest.mark.parametrize(
     "odds",
     [
@@ -606,6 +634,21 @@ def assert_manual_claim_is_rejected(predictive_claim):
 
     with pytest.raises(ValueError, match="selection"):
         build_fallback_captions(content)
+
+
+def build_captions_at_boundary(*, boundary, field, value):
+    if boundary == "persisted":
+        row_field = {"event": "partido", "selection": "pick"}[field]
+        content = content_from_public_pick(
+            valid_row(**{row_field: value}),
+            reference_at=NOW,
+        )
+    else:
+        content = replace(
+            content_from_public_pick(valid_row(), reference_at=NOW),
+            **{field: value},
+        )
+    return build_fallback_captions(content)
 
 
 @pytest.mark.parametrize("claim", PROMOTIONAL_SUBJECT_CLAIMS)
@@ -788,6 +831,98 @@ def test_accepts_person_references_without_win(safe_phrase):
     assert safe_phrase in build_fallback_captions(content).instagram
 
 
+@pytest.mark.parametrize("boundary", ["persisted", "manual"])
+@pytest.mark.parametrize("safe_selection", CANONICAL_NEUTRAL_MARKETS)
+def test_accepts_canonical_neutral_markets_at_each_boundary(
+    boundary,
+    safe_selection,
+):
+    captions = build_captions_at_boundary(
+        boundary=boundary,
+        field="selection",
+        value=safe_selection,
+    )
+
+    assert safe_selection in captions.facebook
+
+
+@pytest.mark.parametrize("boundary", ["persisted", "manual"])
+@pytest.mark.parametrize("unsafe_selection", UNSAFE_NEUTRAL_MARKET_NEIGHBORS)
+def test_rejects_unsafe_near_neighbors_of_neutral_markets(
+    boundary,
+    unsafe_selection,
+):
+    with pytest.raises(ValueError):
+        build_captions_at_boundary(
+            boundary=boundary,
+            field="selection",
+            value=unsafe_selection,
+        )
+
+
+@pytest.mark.parametrize("boundary", ["persisted", "manual"])
+@pytest.mark.parametrize("field", ["event", "selection"])
+@pytest.mark.parametrize("unsafe_fact", UNICODE_CONTROL_BYPASSES)
+def test_rejects_unicode_control_bypasses_in_caption_facts(
+    boundary,
+    field,
+    unsafe_fact,
+):
+    with pytest.raises(ValueError):
+        build_captions_at_boundary(
+            boundary=boundary,
+            field=field,
+            value=unsafe_fact,
+        )
+
+
+@pytest.mark.parametrize("boundary", ["persisted", "manual"])
+@pytest.mark.parametrize(
+    ("field", "safe_fact"),
+    [
+        ("event", "América vs León"),
+        ("selection", "Más de 2.5 goles"),
+    ],
+)
+def test_accepts_ordinary_accented_spanish_caption_facts(
+    boundary,
+    field,
+    safe_fact,
+):
+    captions = build_captions_at_boundary(
+        boundary=boundary,
+        field=field,
+        value=safe_fact,
+    )
+
+    assert safe_fact in captions.instagram
+
+
+@pytest.mark.parametrize("boundary", ["persisted", "manual"])
+@pytest.mark.parametrize("field", ["event", "selection"])
+def test_accepts_caption_facts_at_300_code_points(boundary, field):
+    safe_fact = "x" * 300
+
+    captions = build_captions_at_boundary(
+        boundary=boundary,
+        field=field,
+        value=safe_fact,
+    )
+
+    assert safe_fact in captions.facebook
+
+
+@pytest.mark.parametrize("boundary", ["persisted", "manual"])
+@pytest.mark.parametrize("field", ["event", "selection"])
+def test_rejects_caption_facts_above_300_code_points(boundary, field):
+    with pytest.raises(ValueError, match="300"):
+        build_captions_at_boundary(
+            boundary=boundary,
+            field=field,
+            value="x" * 301,
+        )
+
+
 @pytest.mark.parametrize(
     "safe_selection",
     [
@@ -846,6 +981,24 @@ def test_caption_builder_revalidates_manually_constructed_caption_facts():
     )
 
     with pytest.raises(ValueError, match="selection"):
+        build_fallback_captions(content)
+
+
+def test_caption_builder_rejects_nonboolean_demo_flag():
+    content = replace(demo_social_content(reference_at=NOW), is_demo=1)
+
+    with pytest.raises(ValueError, match="is_demo"):
+        build_fallback_captions(content)
+
+
+@pytest.mark.parametrize("nonboolean_value", [None, 0, 1, "true"])
+def test_caption_builder_rejects_nonboolean_value_signal(nonboolean_value):
+    content = replace(
+        content_from_public_pick(valid_row(), reference_at=NOW),
+        has_value_signal=nonboolean_value,
+    )
+
+    with pytest.raises(ValueError, match="has_value_signal"):
         build_fallback_captions(content)
 
 

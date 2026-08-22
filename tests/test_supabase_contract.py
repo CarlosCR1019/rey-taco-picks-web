@@ -11,7 +11,16 @@ SQL = (
 )
 RUN_LEDGER_SQL = SQL.parent / "20260820233000_scraper_run_ledger.sql"
 SOURCE_AUDIT_SQL = SQL.parent / "20260820234500_pick_source_audit.sql"
+META_SOCIAL_SQL = SQL.parent / "20260821010000_meta_social_delivery.sql"
 BASE_SCHEMA_SQL = SQL.parent / "20260820210000_base_profiles_picks.sql"
+
+
+def function_body(path: Path, signature: str) -> str:
+    text = " ".join(path.read_text(encoding="utf-8").lower().split())
+    start = text.index(f"create or replace function {signature}")
+    body_start = text.index("as $$", start) + len("as $$")
+    body_end = text.index("$$;", body_start)
+    return text[body_start:body_end].strip()
 
 
 class SupabaseContractTests(unittest.TestCase):
@@ -935,6 +944,178 @@ class SupabaseContractTests(unittest.TestCase):
             "drop constraint picks_source_audit_expected_20260820234500_check",
             text,
         )
+
+    def test_meta_social_migration_is_transactional_and_upserts_public_jpeg_bucket(self):
+        text = " ".join(META_SOCIAL_SQL.read_text(encoding="utf-8").lower().split())
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)",
+            text,
+        )
+        self.assertIn(
+            "values ('social-media', 'social-media', true, 5242880, array['image/jpeg'])",
+            text,
+        )
+        bucket_upsert = text[text.index("insert into storage.buckets"):]
+        self.assertIn("on conflict (id) do update", bucket_upsert)
+        for assignment in (
+            "name = excluded.name",
+            "public = excluded.public",
+            "file_size_limit = excluded.file_size_limit",
+            "allowed_mime_types = excluded.allowed_mime_types",
+        ):
+            self.assertIn(assignment, bucket_upsert)
+
+    def test_meta_social_read_rpc_selects_the_exact_eligible_run_and_pick(self):
+        text = " ".join(META_SOCIAL_SQL.read_text(encoding="utf-8").lower().split())
+        signature = "public.get_meta_social_batch( requested_run_key text ) returns jsonb"
+        body = function_body(META_SOCIAL_SQL, signature)
+
+        self.assertIn(f"create or replace function {signature}", text)
+        function_start = text.index(f"create or replace function {signature}")
+        function_end = text.index("$$;", function_start)
+        declaration = text[function_start:function_end]
+        self.assertIn("language plpgsql security definer", declaration)
+        self.assertIn("set search_path = public, pg_temp", declaration)
+
+        self.assertIn("requested_run_key is null", body)
+        self.assertIn("btrim(requested_run_key) = ''", body)
+        self.assertIn("raise exception 'requested_run_key must not be blank'", body)
+        self.assertIn("runs.run_key = requested_run_key", body)
+        self.assertIn("runs.status in ('published', 'partial')", body)
+        self.assertIn("if not found then return null", body)
+
+        self.assertIn("batches.run_id = selected_run.id", body)
+        self.assertIn("batches.active", body)
+        self.assertIn("if active_batch_count <> 1 then", body)
+        self.assertIn("raise exception 'meta social batch integrity error'", body)
+        self.assertIn("picks.batch_id = selected_batch.id", body)
+        self.assertIn("picks.active", body)
+        self.assertIn("picks.estado = 'pendiente'", body)
+        self.assertIn("picks.visibility = 'public'", body)
+        self.assertIn("not coalesce(picks.es_parlay, false)", body)
+        self.assertIn("if eligible_pick_count <> 1 then", body)
+        self.assertIn("raise exception 'meta social pick integrity error'", body)
+
+        for audit_guard in (
+            "selected_pick.source_audit_version is distinct from 1",
+            "nullif(btrim(selected_pick.source), '') is null",
+            "nullif(btrim(selected_pick.source_event_id), '') is null",
+            "nullif(btrim(selected_pick.source_market_key), '') is null",
+            "nullif(btrim(selected_pick.source_selection_key), '') is null",
+            "selected_pick.source_observed_at is null",
+            "selected_pick.source_starts_at is null",
+            "selected_pick.source_observed_at > clock_timestamp()",
+            "selected_pick.source_starts_at <= selected_pick.source_observed_at",
+            "selected_pick.source_starts_at <= clock_timestamp()",
+        ):
+            self.assertIn(audit_guard, body)
+        self.assertGreaterEqual(body.count("return null"), 2)
+
+    def test_meta_social_read_rpc_returns_only_the_public_pick_allowlist(self):
+        body = function_body(
+            META_SOCIAL_SQL,
+            "public.get_meta_social_batch( requested_run_key text ) returns jsonb",
+        )
+        result_start = body.index("return jsonb_build_object(")
+        result = body[result_start:]
+        pick_start = result.index("'public_pick', jsonb_build_object(")
+        public_pick = result[pick_start:]
+        expected_fields = (
+            "id", "categoria", "partido", "pick", "cuota", "confianza",
+            "estado", "es_parlay", "liga", "mercado", "riesgo",
+            "fecha_generacion", "fecha_evento", "horario", "tiene_valor",
+            "visibility", "source", "source_event_id", "source_market_key",
+            "source_selection_key", "source_observed_at", "source_starts_at",
+        )
+
+        self.assertIn("'run_id', selected_run.id", result)
+        self.assertIn("'batch_id', selected_batch.id", result)
+        self.assertIn("'delivery_status', selected_run.delivery_status", result)
+        for field in expected_fields:
+            self.assertIn(f"'{field}', selected_pick.{field}", public_pick)
+        returned_fields = re.findall(
+            r"'([a-z_][a-z0-9_]*)', selected_pick\.[a-z_][a-z0-9_]*",
+            public_pick,
+        )
+        self.assertEqual(tuple(returned_fields), expected_fields)
+        self.assertNotIn("razonamiento", body)
+        self.assertNotIn("to_jsonb(", body)
+
+    def test_meta_social_write_rpc_validates_receipts_before_updating_full_ledger(self):
+        text = " ".join(META_SOCIAL_SQL.read_text(encoding="utf-8").lower().split())
+        signature = (
+            "public.record_meta_social_delivery( requested_run_id uuid, "
+            "requested_destination text, requested_success boolean, "
+            "requested_receipt text default '', requested_error text default '' ) returns void"
+        )
+        body = function_body(META_SOCIAL_SQL, signature)
+
+        self.assertIn(f"create or replace function {signature}", text)
+        function_start = text.index(f"create or replace function {signature}")
+        function_end = text.index("$$;", function_start)
+        declaration = text[function_start:function_end]
+        self.assertIn("language plpgsql security definer", declaration)
+        self.assertIn("set search_path = public, pg_temp", declaration)
+        self.assertIn("requested_run_id is null", body)
+        self.assertIn("requested_success is null", body)
+        self.assertIn("normalized_destination not in ('facebook', 'instagram')", body)
+        self.assertIn("normalized_receipt !~ '^[a-za-z0-9_:-]{1,200}$'", body)
+        self.assertIn("normalized_error <> ''", body)
+        self.assertIn("normalized_receipt <> ''", body)
+        self.assertIn(
+            "normalized_error not in ('token_invalid', 'delivery_failed', 'not_configured')",
+            body,
+        )
+
+        first_lock = body.index("for update")
+        for validation in (
+            "normalized_destination not in ('facebook', 'instagram')",
+            "normalized_receipt !~ '^[a-za-z0-9_:-]{1,200}$'",
+            "normalized_error not in ('token_invalid', 'delivery_failed', 'not_configured')",
+        ):
+            self.assertLess(body.index(validation), first_lock)
+        self.assertIn("runs.id = requested_run_id", body)
+        self.assertIn("runs.status in ('published', 'partial')", body)
+        self.assertIn("raise exception 'unknown or unpublished scraper run %'", body)
+        self.assertIn("jsonb_set(", body)
+        self.assertIn("array[normalized_destination]", body)
+        for ledger_field in ("success", "receipt", "error", "updated_at"):
+            self.assertIn(f"'{ledger_field}'", body)
+        self.assertIn("jsonb_each(next_delivery_status)", body)
+        self.assertIn("details->>'success' is distinct from 'true'", body)
+        self.assertIn("then 'published' else 'partial'", body)
+        self.assertNotIn("left(", body)
+        self.assertNotIn("record_scraper_delivery", body)
+        self.assertNotIn("telegram", body)
+
+    def test_meta_social_rpcs_are_service_only_and_leave_telegram_contract_unchanged(self):
+        text = " ".join(META_SOCIAL_SQL.read_text(encoding="utf-8").lower().split())
+        signatures = (
+            "public.get_meta_social_batch(text)",
+            "public.record_meta_social_delivery(uuid, text, boolean, text, text)",
+        )
+        for signature in signatures:
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature} to service_role",
+                text,
+            )
+        self.assertNotIn("grant execute on function public.get_meta_social_batch(text) to anon", text)
+        self.assertNotIn("create or replace function public.record_scraper_delivery", text)
+
+        legacy = function_body(
+            RUN_LEDGER_SQL,
+            "public.record_scraper_delivery( requested_run_id uuid, requested_destination text, requested_success boolean, requested_error text default '' ) returns void",
+        )
+        self.assertIn("requested_destination not in ('admin', 'vip', 'free')", legacy)
+        self.assertNotIn("facebook", legacy)
+        self.assertNotIn("instagram", legacy)
 
 
 if __name__ == "__main__":

@@ -80,11 +80,20 @@ _UNSAFE_CAPTION_WORDING = (
     re.compile(r"\bsin\s+riesgo\b"),
     re.compile(r"\b(?:patrocin\w*|sponsor\w*)\b"),
     re.compile(r"\b(?:promes\w*|promet\w*|promis\w*)\b"),
-    re.compile(r"\bwill\s+win\b"),
-    re.compile(r"\bchance\s+of\s+winning\b"),
+    re.compile(r"\bdemo\s+no\s+vigente\b"),
+)
+_CONTENT_SUBJECT = r"(?:this|the)\s+(?:pick|bet|selection)"
+_PREDICTIVE_CAPTION_WORDING = (
+    re.compile(r"\b(?:will|should|must)(?:\s+\w+){0,2}\s+win\b"),
+    re.compile(r"\b(?:is|are)\s+going\s+to\s+win\b"),
+    re.compile(r"\b(?:bound|expected|likely)\s+to\s+win\b"),
+    re.compile(r"\bchance\s+(?:to\s+win|of\s+winning)\b"),
+    re.compile(rf"\b{_CONTENT_SUBJECT}\s+(?:wins|is\s+(?:a|the)\s+winner)\b"),
     re.compile(r"\bva\s+a\s+ganar\b"),
     re.compile(r"\bganará\b"),
-    re.compile(r"\bdemo\s+no\s+vigente\b"),
+    re.compile(r"\bdeber[ií]a\s+ganar\b"),
+    re.compile(r"\bprobable\s+que\s+gane\b"),
+    re.compile(r"\b(?:posibilidad(?:es)?|chance)\s+de\s+ganar\b"),
 )
 
 
@@ -153,8 +162,18 @@ def _validate_caption_fact(value: object, *, field: str) -> None:
     if normalized != value:
         raise ValueError(f"{field} must be normalized for a social caption")
     folded = normalize_unicode("NFKC", normalized).casefold()
-    if "%" in folded or "#" in folded or any(
+    has_unsafe_wording = any(
         pattern.search(folded) is not None for pattern in _UNSAFE_CAPTION_WORDING
+    )
+    has_predictive_wording = any(
+        pattern.search(folded) is not None
+        for pattern in _PREDICTIVE_CAPTION_WORDING
+    )
+    if (
+        "%" in folded
+        or "#" in folded
+        or has_unsafe_wording
+        or has_predictive_wording
     ):
         raise ValueError(f"{field} contains unsafe social caption wording")
 

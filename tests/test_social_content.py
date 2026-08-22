@@ -17,12 +17,28 @@ from backend.social_content import (
 
 NOW = datetime(2026, 8, 21, 20, 0, tzinfo=timezone.utc)
 CANONICAL_BATCH_ID = "11111111-1111-4111-8111-111111111111"
-DIRECT_PREDICTIVE_CLAIMS = (
+PREDICTIVE_CLAIM_FAMILIES = (
     "This pick will win",
+    "This pick is going to win",
+    "These bets are going to win",
+    "This pick should win",
+    "This bet must win",
+    "This selection is bound to win",
+    "This pick is expected to win",
+    "Likely to win",
+    "High chance to win",
     "High chance of winning",
     "Chance of winning",
+    "Very high chance of winning",
+    "This pick wins",
+    "The bet wins",
+    "This selection is a winner",
     "Este pick va a ganar",
     "Este pick ganará",
+    "Este pick debería ganar",
+    "Probable que gane",
+    "Alta posibilidad de ganar",
+    "Buena chance de ganar",
 )
 EXPECTED_FIELDS = frozenset(
     {
@@ -440,7 +456,7 @@ def test_fallback_captions_include_only_required_factual_persisted_copy():
         captions.facebook = "Cambio"  # type: ignore[misc]
 
 
-@pytest.mark.parametrize("predictive_claim", DIRECT_PREDICTIVE_CLAIMS)
+@pytest.mark.parametrize("predictive_claim", PREDICTIVE_CLAIM_FAMILIES)
 def test_rejects_each_direct_predictive_claim_from_a_persisted_row(
     predictive_claim,
 ):
@@ -451,7 +467,7 @@ def test_rejects_each_direct_predictive_claim_from_a_persisted_row(
         )
 
 
-@pytest.mark.parametrize("predictive_claim", DIRECT_PREDICTIVE_CLAIMS)
+@pytest.mark.parametrize("predictive_claim", PREDICTIVE_CLAIM_FAMILIES)
 def test_rejects_each_direct_predictive_claim_from_manual_content(
     predictive_claim,
 ):
@@ -464,7 +480,10 @@ def test_rejects_each_direct_predictive_claim_from_manual_content(
         build_fallback_captions(content)
 
 
-@pytest.mark.parametrize("safe_selection", ["América gana", "Victoria de América"])
+@pytest.mark.parametrize(
+    "safe_selection",
+    ["América gana", "Victoria de América", "America wins", "America to win"],
+)
 def test_accepts_neutral_standalone_market_selections(safe_selection):
     content = content_from_public_pick(
         valid_row(pick=safe_selection),

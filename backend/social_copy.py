@@ -158,7 +158,11 @@ class GroqCopyProvider:
             def default_client_factory() -> object:
                 from groq import Groq
 
-                return Groq(api_key=self._api_key)
+                return Groq(
+                    api_key=self._api_key,
+                    timeout=10.0,
+                    max_retries=0,
+                )
 
             self._client_factory = default_client_factory
         else:
@@ -197,6 +201,7 @@ class GroqCopyProvider:
                 ],
                 response_format={"type": "json_object"},
                 reasoning_effort="low",
+                include_reasoning=False,
                 temperature=0.2,
                 max_completion_tokens=1200,
             )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -164,6 +165,8 @@ def test_request_is_lazy_bounded_structured_and_public_only(model, expected_mode
     assert request["model"] == expected_model
     assert request["response_format"] == {"type": "json_object"}
     assert request["reasoning_effort"] == "low"
+    assert request["include_reasoning"] is False
+    assert "reasoning_format" not in request
     assert 0 <= request["temperature"] <= 0.3  # type: ignore[operator]
     assert 0 < request["max_completion_tokens"] <= 2000  # type: ignore[operator]
     messages = request["messages"]
@@ -230,6 +233,30 @@ def test_client_is_constructed_once_and_reused_lazily():
     assert provider.captions(content) == candidate
     assert len(constructions) == 1
     assert len(client.completions.requests) == 2
+
+
+def test_default_client_uses_short_timeout_and_no_retry_budget(monkeypatch):
+    content = social_content()
+    candidate = valid_candidate(content)
+    client = FakeClient(response_for(candidate))
+    constructor_calls: list[dict[str, object]] = []
+
+    def fake_groq(**kwargs: object) -> object:
+        constructor_calls.append(kwargs)
+        return client
+
+    monkeypatch.setitem(sys.modules, "groq", SimpleNamespace(Groq=fake_groq))
+    provider = GroqCopyProvider(api_key="test-api-key")
+
+    assert constructor_calls == []
+    assert provider.captions(content) == candidate
+    assert constructor_calls == [
+        {
+            "api_key": "test-api-key",
+            "timeout": 10.0,
+            "max_retries": 0,
+        }
+    ]
 
 
 @pytest.mark.parametrize(

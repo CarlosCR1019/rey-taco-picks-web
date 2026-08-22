@@ -74,6 +74,7 @@ _INSTAGRAM_HASHTAGS = (
     "#ReyTacoPicks #ApuestasResponsables #PronósticosDeportivos #Deportes"
 )
 _MAX_CAPTION_FACT_CODEPOINTS = 300
+_MAX_NEUTRAL_SIDE_LABEL_CODEPOINTS = 100
 _UNSAFE_CAPTION_WORDING = (
     re.compile(r"\b(?:por\s+ciento|porcentajes?|percent(?:age)?s?)\b"),
     re.compile(r"\b(?:garant|guarant)\w*\b"),
@@ -279,9 +280,13 @@ _PERSON_REFERENCE_TOKENS = frozenset(
         "ellas",
     }
 )
-_US_OPEN_WINNER_MARKET = re.compile(
-    r"^us open winner: [^\W\d_]+(?:[ .'’\-][^\W\d_]+){0,5}$"
+_DOUBLE_CHANCE_WIN_OR_DRAW_MARKET = re.compile(
+    r"^(?P<side_label>.+) win or draw \(double chance\)$"
 )
+_US_OPEN_WINNER_MARKET = re.compile(
+    r"^US Open winner: [^\W\d_]+(?:[ .'’\-][^\W\d_]+){0,5}$"
+)
+_NEUTRAL_SIDE_LABEL_PUNCTUATION = frozenset(" .&'’+-")
 
 
 @dataclass(frozen=True)
@@ -328,11 +333,11 @@ def _utc_reference(value: datetime) -> datetime:
         raise ValueError("reference_at must be timezone-aware")
     try:
         offset = value.utcoffset()
+        if value.tzinfo is None or offset is None:
+            raise ValueError
+        return value.astimezone(timezone.utc)
     except (OverflowError, ValueError):
-        offset = None
-    if value.tzinfo is None or offset is None:
-        raise ValueError("reference_at must be timezone-aware")
-    return value.astimezone(timezone.utc)
+        raise ValueError("reference_at must be timezone-aware") from None
 
 
 def _normalized_text(value: object, *, field: str) -> str:
@@ -386,12 +391,29 @@ def _has_token_category_claim(value: str) -> bool:
     )
 
 
-def _is_canonical_neutral_market(value: str, *, folded: str) -> bool:
-    if folded == "home win or draw (double chance)":
-        return True
-    if not value.startswith("US Open winner: "):
+def _is_bounded_neutral_side_label(value: str) -> bool:
+    if not 1 <= len(value) <= _MAX_NEUTRAL_SIDE_LABEL_CODEPOINTS:
         return False
-    if _US_OPEN_WINNER_MARKET.fullmatch(folded) is None:
+    if not value[0].isalnum() or not value[-1].isalnum():
+        return False
+    return all(
+        unicode_category(character)[0] in {"L", "M", "N"}
+        or character in _NEUTRAL_SIDE_LABEL_PUNCTUATION
+        for character in value
+    )
+
+
+def _is_canonical_neutral_market(value: str, *, folded: str) -> bool:
+    double_chance = _DOUBLE_CHANCE_WIN_OR_DRAW_MARKET.fullmatch(folded)
+    if double_chance is not None:
+        side_label = double_chance.group("side_label")
+        side_tokens = frozenset(_CAPTION_WORD_TOKEN.findall(side_label))
+        return (
+            _is_bounded_neutral_side_label(side_label)
+            and side_tokens.isdisjoint(_PERSON_REFERENCE_TOKENS)
+            and side_tokens.isdisjoint(_PROBABILITY_INDICATOR_TOKENS)
+        )
+    if _US_OPEN_WINNER_MARKET.fullmatch(value) is None:
         return False
     tokens = frozenset(_CAPTION_WORD_TOKEN.findall(folded))
     return (
@@ -562,9 +584,13 @@ def content_from_public_pick(
 def _observation_label(observed_at: datetime) -> str:
     if not isinstance(observed_at, datetime):
         raise ValueError("observed_at must be timezone-aware")
-    if observed_at.tzinfo is None or observed_at.utcoffset() is None:
-        raise ValueError("observed_at must be timezone-aware")
-    local = observed_at.astimezone(_MEXICO_CITY)
+    try:
+        offset = observed_at.utcoffset()
+        if observed_at.tzinfo is None or offset is None:
+            raise ValueError
+        local = observed_at.astimezone(_MEXICO_CITY)
+    except (OverflowError, ValueError):
+        raise ValueError("observed_at must be timezone-aware") from None
     month = _SPANISH_MONTHS[local.month - 1]
     return (
         f"Observado: {local.day} de {month} de {local.year}, "

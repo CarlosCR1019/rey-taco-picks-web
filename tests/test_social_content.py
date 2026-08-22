@@ -1,5 +1,5 @@
 from dataclasses import FrozenInstanceError, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import re
 
@@ -176,11 +176,22 @@ SAFE_PERSON_REFERENCE_PHRASES = (
 )
 CANONICAL_NEUTRAL_MARKETS = (
     "Home win or draw (double chance)",
+    "Away win or draw (double chance)",
+    "Tigres win or draw (double chance)",
+    "América Femenil win or draw (double chance)",
+    "České Budějovice win or draw (double chance)",
     "US Open winner: Carlos Alcaraz",
 )
 UNSAFE_NEUTRAL_MARKET_NEIGHBORS = (
     "High chance for a home win",
     "Home win or draw (double chance) guaranteed",
+    "Our pick win or draw (double chance)",
+    "You win or draw (double chance)",
+    "Maybe Tigres win or draw (double chance)",
+    "Sure Tigres win or draw (double chance)",
+    "Tigres win or draw (double chance) today",
+    "Tigres win or draw double chance",
+    "Tigres win or draw (double chance",
     "US Open winner: You win",
     "us open winner: Carlos Alcaraz",
     "WIN WITH US",
@@ -286,6 +297,28 @@ def test_builds_normalized_immutable_content_from_one_current_public_row():
 def test_rejects_reference_without_timezone(reference_at):
     with pytest.raises(ValueError, match="reference_at"):
         content_from_public_pick(valid_row(), reference_at=reference_at)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("consumer", ["persisted", "demo"])
+def test_rejects_reference_utc_conversion_overflow(consumer):
+    extreme_reference = datetime(
+        9999,
+        12,
+        31,
+        23,
+        59,
+        59,
+        tzinfo=timezone(-timedelta(hours=23, minutes=59)),
+    )
+
+    with pytest.raises(ValueError, match="reference_at"):
+        if consumer == "persisted":
+            content_from_public_pick(
+                valid_row(),
+                reference_at=extreme_reference,
+            )
+        else:
+            demo_social_content(reference_at=extreme_reference)
 
 
 @pytest.mark.parametrize("row", [None, "row", 7, [], [valid_row(), valid_row()]])
@@ -847,6 +880,29 @@ def test_accepts_canonical_neutral_markets_at_each_boundary(
 
 
 @pytest.mark.parametrize("boundary", ["persisted", "manual"])
+def test_accepts_a_100_code_point_unicode_double_chance_side_label(boundary):
+    safe_selection = f"{'Á' * 100} win or draw (double chance)"
+
+    captions = build_captions_at_boundary(
+        boundary=boundary,
+        field="selection",
+        value=safe_selection,
+    )
+
+    assert safe_selection in captions.facebook
+
+
+@pytest.mark.parametrize("boundary", ["persisted", "manual"])
+def test_rejects_a_double_chance_side_label_above_100_code_points(boundary):
+    with pytest.raises(ValueError):
+        build_captions_at_boundary(
+            boundary=boundary,
+            field="selection",
+            value=f"{'Á' * 101} win or draw (double chance)",
+        )
+
+
+@pytest.mark.parametrize("boundary", ["persisted", "manual"])
 @pytest.mark.parametrize("unsafe_selection", UNSAFE_NEUTRAL_MARKET_NEIGHBORS)
 def test_rejects_unsafe_near_neighbors_of_neutral_markets(
     boundary,
@@ -999,6 +1055,22 @@ def test_caption_builder_rejects_nonboolean_value_signal(nonboolean_value):
     )
 
     with pytest.raises(ValueError, match="has_value_signal"):
+        build_fallback_captions(content)
+
+
+def test_caption_builder_rejects_observation_timezone_conversion_overflow():
+    extreme_observation = datetime(
+        1,
+        1,
+        1,
+        tzinfo=timezone(timedelta(hours=23, minutes=59)),
+    )
+    content = replace(
+        content_from_public_pick(valid_row(), reference_at=NOW),
+        observed_at=extreme_observation,
+    )
+
+    with pytest.raises(ValueError, match="observed_at"):
         build_fallback_captions(content)
 
 

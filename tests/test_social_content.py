@@ -77,6 +77,52 @@ FUTURE_MODAL_WIN_CLAIMS = (
     "Este pick debería ganar",
     "América será ganadora",
 )
+ENGLISH_POSSIBILITY_MODAL_CLAIMS = (
+    "America may win",
+    "America might win",
+    "America could win",
+    "America can win",
+    "America may be a winner",
+    "America might still be the winner",
+    "America could end up winning",
+)
+POSSIBILITY_OF_WIN_CLAIMS = (
+    "Good possibility of winning",
+    "Possibility to win",
+    "Several possibilities of winning",
+    "Possibilities to win",
+)
+SPANISH_POSSIBILITY_CLAIMS = (
+    "América podría ganar",
+    "América podría volver a ganar",
+    "Ellas podrían ganar",
+    "América puede ganar",
+    "América puede todavía ganar",
+    "Los equipos pueden ganar",
+    "Posiblemente gane América",
+    "Probablemente ganará América",
+)
+RECIPIENT_WINNER_CLAIMS = (
+    "You are a winner",
+    "You really are a winner",
+    "We are winners",
+    "I am a winner",
+    "They are the winners",
+    "Eres ganador",
+    "Tú eres una ganadora",
+    "Tú realmente eres una ganadora",
+    "Somos ganadores",
+    "Nosotras somos ganadoras",
+    "Ustedes son los ganadores",
+)
+SAFE_NON_WINNING_MODAL_PHRASES = (
+    "America may draw",
+    "America might play tomorrow",
+    "America could qualify",
+    "America can score",
+    "América puede empatar",
+    "América podría jugar mañana",
+)
 EXPECTED_FIELDS = frozenset(
     {
         "id",
@@ -549,6 +595,57 @@ def test_persisted_rows_reject_future_modal_win_structures(claim):
 @pytest.mark.parametrize("claim", FUTURE_MODAL_WIN_CLAIMS)
 def test_manual_content_rejects_future_modal_win_structures(claim):
     assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", ENGLISH_POSSIBILITY_MODAL_CLAIMS)
+def test_persisted_rows_reject_english_possibility_modals(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", ENGLISH_POSSIBILITY_MODAL_CLAIMS)
+def test_manual_content_rejects_english_possibility_modals(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", POSSIBILITY_OF_WIN_CLAIMS)
+def test_persisted_rows_reject_possibility_of_win_structures(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", POSSIBILITY_OF_WIN_CLAIMS)
+def test_manual_content_rejects_possibility_of_win_structures(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", SPANISH_POSSIBILITY_CLAIMS)
+def test_persisted_rows_reject_spanish_possibility_claims(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", SPANISH_POSSIBILITY_CLAIMS)
+def test_manual_content_rejects_spanish_possibility_claims(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", RECIPIENT_WINNER_CLAIMS)
+def test_persisted_rows_reject_recipient_winner_claims(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", RECIPIENT_WINNER_CLAIMS)
+def test_manual_content_rejects_recipient_winner_claims(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("safe_phrase", SAFE_NON_WINNING_MODAL_PHRASES)
+def test_accepts_modals_without_a_win_or_winner_outcome(safe_phrase):
+    content = content_from_public_pick(
+        valid_row(pick=safe_phrase),
+        reference_at=NOW,
+    )
+
+    assert content.selection == safe_phrase
+    assert safe_phrase in build_fallback_captions(content).instagram
 
 
 @pytest.mark.parametrize(

@@ -105,6 +105,47 @@ _CHANCE_OF_WIN_WORDING = (
     re.compile(r"\bchances?\s+(?:to\s+win|of\s+winning|de\s+ganar)\b"),
     re.compile(r"\bposibilidad(?:es)?\s+de\s+ganar\b"),
 )
+_ENGLISH_POSSIBILITY_OUTCOME = (
+    r"(?:win(?:ning)?|be(?:\s+\w+){0,2}\s+winners?)"
+)
+_ENGLISH_POSSIBILITY_WORDING = (
+    re.compile(
+        rf"\b(?:may|might|could|can)(?:\s+\w+){{0,3}}\s+"
+        rf"{_ENGLISH_POSSIBILITY_OUTCOME}\b"
+    ),
+    re.compile(
+        r"\bpossibilit(?:y|ies)\s+(?:of|to)\s+(?:win|winning)\b"
+    ),
+)
+_SPANISH_POSSIBILITY_WORDING = (
+    re.compile(
+        r"\b(?:puede|pueden|podr[ií]a|podr[ií]an)"
+        r"(?:\s+\w+){0,3}\s+ganar\b"
+    ),
+    re.compile(
+        r"\b(?:posible|probable)mente(?:\s+\w+){0,2}\s+"
+        r"(?:gane|ganar(?:á|án))\b"
+    ),
+)
+_RECIPIENT_WINNER_WORDING = (
+    re.compile(
+        r"\b(?:(?:you|we|they)(?:\s+\w+){0,2}\s+are|"
+        r"i(?:\s+\w+){0,2}\s+am|(?:he|she)(?:\s+\w+){0,2}\s+is)\s+"
+        r"(?:(?:a|the)\s+)?winners?\b"
+    ),
+    re.compile(
+        r"\b(?:t[uú]\s+)?eres\s+(?:(?:un|una|el|la)\s+)?"
+        r"ganador(?:a|es|as)?\b"
+    ),
+    re.compile(
+        r"\b(?:(?:nosotros|nosotras)\s+)?somos\s+"
+        r"(?:(?:un|una|el|la|los|las)\s+)?ganador(?:a|es|as)?\b"
+    ),
+    re.compile(
+        r"\b(?:usted(?:es)?|ellos|ellas)\s+(?:es|son)\s+"
+        r"(?:(?:un|una|el|la|los|las)\s+)?ganador(?:a|es|as)?\b"
+    ),
+)
 _ENGLISH_WIN_OUTCOME = r"(?:win|be(?:\s+\w+){0,2}\s+winners?)"
 _FUTURE_WIN_WORDING = (
     re.compile(
@@ -124,6 +165,9 @@ _PREDICTIVE_CAPTION_RULES = (
     _PROMOTIONAL_CONTENT_SUBJECTS,
     _PROBABILITY_CLAIM_WORDING,
     _CHANCE_OF_WIN_WORDING,
+    _ENGLISH_POSSIBILITY_WORDING,
+    _SPANISH_POSSIBILITY_WORDING,
+    _RECIPIENT_WINNER_WORDING,
     _FUTURE_WIN_WORDING,
 )
 

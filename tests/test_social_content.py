@@ -145,6 +145,35 @@ SAFE_PROBABILITY_WITHOUT_WIN_PHRASES = (
     "There is a chance of a draw",
     "Es posible que América empate",
 )
+ADDITIONAL_PROBABILITY_AND_WIN_CLAIMS = (
+    "Maybe America wins",
+    "Perhaps America wins",
+    "Quizá gane América",
+    "Quizás gane América",
+    "Tal vez gane América",
+)
+POSSESSIVE_OBJECT_WIN_CLAIMS = (
+    "Your win is coming",
+    "Win with us",
+    "Our win",
+    "Their win",
+    "Tu victoria",
+    "Tu ganar",
+)
+SAFE_ADDITIONAL_PROBABILITY_PHRASES = (
+    "Maybe America draws",
+    "Perhaps America draws",
+    "Quizá América empate",
+    "Quizás América empate",
+    "Tal vez América empate",
+)
+SAFE_PERSON_REFERENCE_PHRASES = (
+    "Your draw is coming",
+    "Draw with us",
+    "Our draw",
+    "Their draw",
+    "Tu empate",
+)
 EXPECTED_FIELDS = frozenset(
     {
         "id",
@@ -689,6 +718,26 @@ def test_manual_content_rejects_spanish_personal_pronoun_and_win_tokens(claim):
     assert_manual_claim_is_rejected(claim)
 
 
+@pytest.mark.parametrize("claim", ADDITIONAL_PROBABILITY_AND_WIN_CLAIMS)
+def test_persisted_rows_reject_additional_probability_and_win_tokens(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", ADDITIONAL_PROBABILITY_AND_WIN_CLAIMS)
+def test_manual_content_rejects_additional_probability_and_win_tokens(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", POSSESSIVE_OBJECT_WIN_CLAIMS)
+def test_persisted_rows_reject_person_references_and_win_tokens(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", POSSESSIVE_OBJECT_WIN_CLAIMS)
+def test_manual_content_rejects_person_references_and_win_tokens(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
 @pytest.mark.parametrize("safe_phrase", SAFE_NON_WINNING_MODAL_PHRASES)
 def test_accepts_modals_without_a_win_or_winner_outcome(safe_phrase):
     content = content_from_public_pick(
@@ -705,6 +754,31 @@ def test_accepts_modals_without_a_win_or_winner_outcome(safe_phrase):
     SAFE_PROBABILITY_WITHOUT_WIN_PHRASES,
 )
 def test_accepts_probability_indicators_without_a_win_outcome(safe_phrase):
+    content = content_from_public_pick(
+        valid_row(pick=safe_phrase),
+        reference_at=NOW,
+    )
+
+    assert content.selection == safe_phrase
+    assert safe_phrase in build_fallback_captions(content).instagram
+
+
+@pytest.mark.parametrize(
+    "safe_phrase",
+    SAFE_ADDITIONAL_PROBABILITY_PHRASES,
+)
+def test_accepts_additional_probability_indicators_without_win(safe_phrase):
+    content = content_from_public_pick(
+        valid_row(pick=safe_phrase),
+        reference_at=NOW,
+    )
+
+    assert content.selection == safe_phrase
+    assert safe_phrase in build_fallback_captions(content).instagram
+
+
+@pytest.mark.parametrize("safe_phrase", SAFE_PERSON_REFERENCE_PHRASES)
+def test_accepts_person_references_without_win(safe_phrase):
     content = content_from_public_pick(
         valid_row(pick=safe_phrase),
         reference_at=NOW,

@@ -178,6 +178,8 @@ _WIN_OUTCOME_TOKENS = frozenset(
         "winning",
         "winner",
         "winners",
+        "victory",
+        "victories",
         "ganar",
         "gano",
         "gana",
@@ -197,6 +199,8 @@ _WIN_OUTCOME_TOKENS = frozenset(
         "ganadora",
         "ganadores",
         "ganadoras",
+        "victoria",
+        "victorias",
     }
 )
 _PROBABILITY_INDICATOR_TOKENS = frozenset(
@@ -207,6 +211,8 @@ _PROBABILITY_INDICATOR_TOKENS = frozenset(
         "possibly",
         "possibility",
         "possibilities",
+        "maybe",
+        "perhaps",
         "likely",
         "likelihood",
         "probable",
@@ -218,6 +224,8 @@ _PROBABILITY_INDICATOR_TOKENS = frozenset(
         "posiblemente",
         "posibilidad",
         "posibilidades",
+        "quizá",
+        "quizás",
         "probables",
         "probablemente",
         "probabilidad",
@@ -228,7 +236,7 @@ _PROBABILITY_INDICATOR_TOKENS = frozenset(
         "esperadas",
     }
 )
-_PERSONAL_PRONOUN_TOKENS = frozenset(
+_PERSON_REFERENCE_TOKENS = frozenset(
     {
         "i",
         "you",
@@ -236,14 +244,33 @@ _PERSONAL_PRONOUN_TOKENS = frozenset(
         "she",
         "we",
         "they",
+        "my",
+        "me",
+        "your",
+        "our",
+        "us",
+        "his",
+        "her",
+        "their",
         "yo",
         "tú",
+        "mi",
+        "mis",
+        "tu",
+        "tus",
+        "su",
+        "sus",
         "usted",
         "ustedes",
         "él",
         "ella",
         "nosotros",
         "nosotras",
+        "nuestro",
+        "nuestra",
+        "nuestros",
+        "nuestras",
+        "nos",
         "vosotros",
         "vosotras",
         "ellos",
@@ -324,11 +351,19 @@ def _matches_any_rule(
 
 
 def _has_token_category_claim(value: str) -> bool:
-    tokens = frozenset(_CAPTION_WORD_TOKEN.findall(value))
+    token_sequence = tuple(_CAPTION_WORD_TOKEN.findall(value))
+    tokens = frozenset(token_sequence)
     if tokens.isdisjoint(_WIN_OUTCOME_TOKENS):
         return False
-    return not tokens.isdisjoint(
-        _PROBABILITY_INDICATOR_TOKENS | _PERSONAL_PRONOUN_TOKENS
+    has_tal_vez = any(
+        token_sequence[index : index + 2] == ("tal", "vez")
+        for index in range(len(token_sequence) - 1)
+    )
+    return (
+        not tokens.isdisjoint(
+            _PROBABILITY_INDICATOR_TOKENS | _PERSON_REFERENCE_TOKENS
+        )
+        or has_tal_vez
     )
 
 

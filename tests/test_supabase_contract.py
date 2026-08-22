@@ -1061,33 +1061,40 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("set search_path = public, pg_temp", declaration)
         self.assertIn("requested_run_id is null", body)
         self.assertIn("requested_success is null", body)
-        self.assertIn("normalized_destination not in ('facebook', 'instagram')", body)
-        self.assertIn("normalized_receipt !~ '^[a-za-z0-9_:-]{1,200}$'", body)
-        self.assertIn("normalized_error <> ''", body)
-        self.assertIn("normalized_receipt <> ''", body)
+        self.assertIn("requested_destination not in ('facebook', 'instagram')", body)
+        self.assertIn("requested_receipt is null", body)
+        self.assertIn("requested_error is null", body)
+        self.assertIn("requested_receipt !~ '^[a-za-z0-9_:-]{1,200}$'", body)
+        self.assertIn("requested_error <> ''", body)
+        self.assertIn("requested_receipt <> ''", body)
         self.assertIn(
-            "normalized_error not in ('token_invalid', 'delivery_failed', 'not_configured')",
+            "requested_error not in ('token_invalid', 'delivery_failed', 'not_configured')",
             body,
         )
 
         first_lock = body.index("for update")
         for validation in (
-            "normalized_destination not in ('facebook', 'instagram')",
-            "normalized_receipt !~ '^[a-za-z0-9_:-]{1,200}$'",
-            "normalized_error not in ('token_invalid', 'delivery_failed', 'not_configured')",
+            "requested_destination not in ('facebook', 'instagram')",
+            "requested_receipt !~ '^[a-za-z0-9_:-]{1,200}$'",
+            "requested_error not in ('token_invalid', 'delivery_failed', 'not_configured')",
         ):
             self.assertLess(body.index(validation), first_lock)
         self.assertIn("runs.id = requested_run_id", body)
         self.assertIn("runs.status in ('published', 'partial')", body)
         self.assertIn("raise exception 'unknown or unpublished scraper run %'", body)
         self.assertIn("jsonb_set(", body)
-        self.assertIn("array[normalized_destination]", body)
+        self.assertIn("array[requested_destination]", body)
+        self.assertIn("'receipt', requested_receipt", body)
+        self.assertIn("'error', requested_error", body)
         for ledger_field in ("success", "receipt", "error", "updated_at"):
             self.assertIn(f"'{ledger_field}'", body)
         self.assertIn("jsonb_each(next_delivery_status)", body)
         self.assertIn("details->>'success' is distinct from 'true'", body)
         self.assertIn("then 'published' else 'partial'", body)
         self.assertNotIn("left(", body)
+        self.assertNotIn("normalized_", body)
+        self.assertNotIn("btrim(", body)
+        self.assertNotIn("lower(", body)
         self.assertNotIn("record_scraper_delivery", body)
         self.assertNotIn("telegram", body)
 

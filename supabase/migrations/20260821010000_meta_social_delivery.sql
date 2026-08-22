@@ -140,9 +140,6 @@ set search_path = public, pg_temp
 as $$
 declare
     selected_run public.scraper_runs%rowtype;
-    normalized_destination text := lower(btrim(coalesce(requested_destination, '')));
-    normalized_receipt text := btrim(coalesce(requested_receipt, ''));
-    normalized_error text := btrim(coalesce(requested_error, ''));
     next_delivery_status jsonb;
 begin
     if requested_run_id is null then
@@ -153,17 +150,26 @@ begin
         raise exception 'requested_success must not be null';
     end if;
 
-    if normalized_destination not in ('facebook', 'instagram') then
+    if requested_destination is null
+       or requested_destination not in ('facebook', 'instagram') then
         raise exception 'requested_destination must be facebook or instagram';
     end if;
 
+    if requested_receipt is null then
+        raise exception 'requested_receipt must not be null';
+    end if;
+
+    if requested_error is null then
+        raise exception 'requested_error must not be null';
+    end if;
+
     if requested_success then
-        if normalized_receipt !~ '^[A-Za-z0-9_:-]{1,200}$'
-           or normalized_error <> '' then
+        if requested_receipt !~ '^[A-Za-z0-9_:-]{1,200}$'
+           or requested_error <> '' then
             raise exception 'successful Meta delivery requires a safe receipt and no error';
         end if;
-    elsif normalized_receipt <> ''
-       or normalized_error not in ('token_invalid', 'delivery_failed', 'not_configured') then
+    elsif requested_receipt <> ''
+       or requested_error not in ('token_invalid', 'delivery_failed', 'not_configured') then
         raise exception 'failed Meta delivery requires an allowed error and no receipt';
     end if;
 
@@ -180,11 +186,11 @@ begin
 
     next_delivery_status := jsonb_set(
         selected_run.delivery_status,
-        array[normalized_destination],
+        array[requested_destination],
         jsonb_build_object(
             'success', requested_success,
-            'receipt', normalized_receipt,
-            'error', normalized_error,
+            'receipt', requested_receipt,
+            'error', requested_error,
             'updated_at', now()
         ),
         true

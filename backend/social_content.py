@@ -170,6 +170,86 @@ _PREDICTIVE_CAPTION_RULES = (
     _RECIPIENT_WINNER_WORDING,
     _FUTURE_WIN_WORDING,
 )
+_CAPTION_WORD_TOKEN = re.compile(r"\w+")
+_WIN_OUTCOME_TOKENS = frozenset(
+    {
+        "win",
+        "wins",
+        "winning",
+        "winner",
+        "winners",
+        "ganar",
+        "gano",
+        "gana",
+        "ganas",
+        "gane",
+        "ganes",
+        "ganan",
+        "ganamos",
+        "ganando",
+        "ganaré",
+        "ganarás",
+        "ganará",
+        "ganaremos",
+        "ganaréis",
+        "ganarán",
+        "ganador",
+        "ganadora",
+        "ganadores",
+        "ganadoras",
+    }
+)
+_PROBABILITY_INDICATOR_TOKENS = frozenset(
+    {
+        "chance",
+        "chances",
+        "possible",
+        "possibly",
+        "possibility",
+        "possibilities",
+        "likely",
+        "likelihood",
+        "probable",
+        "probably",
+        "probability",
+        "probabilities",
+        "expected",
+        "posible",
+        "posiblemente",
+        "posibilidad",
+        "posibilidades",
+        "probables",
+        "probablemente",
+        "probabilidad",
+        "probabilidades",
+        "esperado",
+        "esperada",
+        "esperados",
+        "esperadas",
+    }
+)
+_PERSONAL_PRONOUN_TOKENS = frozenset(
+    {
+        "i",
+        "you",
+        "he",
+        "she",
+        "we",
+        "they",
+        "yo",
+        "tú",
+        "usted",
+        "ustedes",
+        "él",
+        "ella",
+        "nosotros",
+        "nosotras",
+        "vosotros",
+        "vosotras",
+        "ellos",
+        "ellas",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -243,6 +323,15 @@ def _matches_any_rule(
     )
 
 
+def _has_token_category_claim(value: str) -> bool:
+    tokens = frozenset(_CAPTION_WORD_TOKEN.findall(value))
+    if tokens.isdisjoint(_WIN_OUTCOME_TOKENS):
+        return False
+    return not tokens.isdisjoint(
+        _PROBABILITY_INDICATOR_TOKENS | _PERSONAL_PRONOUN_TOKENS
+    )
+
+
 def _validate_caption_fact(value: object, *, field: str) -> None:
     normalized = _normalized_text(value, field=field)
     if normalized != value:
@@ -252,11 +341,13 @@ def _validate_caption_fact(value: object, *, field: str) -> None:
         pattern.search(folded) is not None for pattern in _UNSAFE_CAPTION_WORDING
     )
     has_predictive_wording = _matches_any_rule(folded, _PREDICTIVE_CAPTION_RULES)
+    has_token_category_claim = _has_token_category_claim(folded)
     if (
         "%" in folded
         or "#" in folded
         or has_unsafe_wording
         or has_predictive_wording
+        or has_token_category_claim
     ):
         raise ValueError(f"{field} contains unsafe social caption wording")
 

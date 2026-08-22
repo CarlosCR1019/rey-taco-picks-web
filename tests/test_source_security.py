@@ -116,8 +116,8 @@ class SourceSecurityTests(unittest.TestCase):
         for relative in (
             "backend/render_html_banner.py",
             "backend/banner_template.html",
-            "backend/temp_banner.html",
             "backend/social_banner.py",
+            "backend/social_background.py",
             "backend/social_poster.py",
             "send_telegram_status_report.py",
         ):
@@ -127,8 +127,20 @@ class SourceSecurityTests(unittest.TestCase):
         social_banner = (ROOT / "backend/social_banner.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("format_evidence_support", social_banner)
+        render_banner = (ROOT / "backend/render_html_banner.py").read_text(
+            encoding="utf-8"
+        )
+        social_background = (
+            ROOT / "backend/social_background.py"
+        ).read_text(encoding="utf-8")
+        self.assertFalse((ROOT / "backend/temp_banner.html").exists())
+        self.assertIn("SocialContent", social_banner)
+        self.assertIn("render_social_jpeg", social_banner)
         self.assertNotIn(" Confianza", social_banner)
+        for contents in (social_banner, render_banner, social_background):
+            self.assertNotIn("image.pollinations.ai", contents)
+            self.assertNotIn("urllib.request", contents)
+            self.assertNotIn("picks.json", contents)
 
     def test_live_tracker_cannot_grade_or_finalize_picks(self):
         contents = (ROOT / "backend/live_tracker.py").read_text(encoding="utf-8")

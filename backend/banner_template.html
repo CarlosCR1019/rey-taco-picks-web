@@ -1,308 +1,167 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Outfit:wght@500;600;700;800;900&display=swap');
-  
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  
-  html, body {
+  html, body, #banner-root {
     width: 1080px;
     height: 1080px;
     overflow: hidden;
-    background: #030712;
   }
-
-  .banner-container {
-    width: 1080px;
-    height: 1080px;
-    background: radial-gradient(circle at 50% 8%, #1e1b4b 0%, #090c16 45%, #020617 100%);
-    font-family: 'Outfit', sans-serif;
-    color: #ffffff;
+  body {
+    background: #050814;
+    color: #fff;
+    font-family: Arial, Helvetica, "Segoe UI", sans-serif;
+  }
+  #banner-root {
     position: relative;
-    overflow: hidden;
     display: flex;
     flex-direction: column;
-    padding: 40px 50px;
+    padding: 56px 64px 48px;
+    background-color: #050814;
+    background-image:
+      radial-gradient(circle at 20% 5%, rgba(240, 187, 45, .28), transparent 36%),
+      linear-gradient(145deg, rgba(8, 16, 42, .86), rgba(4, 6, 16, .96));
+    background-position: center;
+    background-size: cover;
+    isolation: isolate;
   }
-
-  /* Efecto estadio e iluminación dorada 3D */
-  .bg-glow-gold {
+  #banner-root::before {
     position: absolute;
-    width: 700px;
-    height: 500px;
-    background: radial-gradient(circle, rgba(234, 179, 8, 0.22) 0%, rgba(34, 197, 94, 0.09) 50%, transparent 70%);
-    top: -150px;
-    left: 190px;
-    filter: blur(50px);
+    content: "";
+    inset: 22px;
+    border: 2px solid rgba(240, 187, 45, .68);
+    border-radius: 28px;
+    box-shadow: inset 0 0 32px rgba(240, 187, 45, .12);
     pointer-events: none;
+    z-index: -1;
   }
-
-  .bg-grid {
-    position: absolute;
-    inset: 0;
-    background-image: linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-                      linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
-    background-size: 36px 36px;
-    mask-image: radial-gradient(circle at center, black 50%, transparent 90%);
-    pointer-events: none;
-  }
-
-  /* Marco exterior de oro 3D */
-  .outer-frame {
-    position: absolute;
-    inset: 18px;
-    border: 2px solid rgba(212, 175, 55, 0.45);
-    border-radius: 26px;
-    box-shadow: inset 0 0 30px rgba(234, 179, 8, 0.12), 0 0 25px rgba(0, 0, 0, 0.8);
-    pointer-events: none;
-  }
-
-  /* Header */
   .header {
+    height: 160px;
+    display: flex;
+    align-items: center;
+    gap: 25px;
+  }
+  .logo {
+    width: 126px;
+    height: 126px;
+    object-fit: cover;
+    border-radius: 50%;
+    border: 4px solid #f0bb2d;
+    box-shadow: 0 0 34px rgba(240, 187, 45, .4);
+  }
+  .eyebrow {
+    color: #f0bb2d;
+    font-size: 19px;
+    font-weight: 800;
+    letter-spacing: 3px;
+  }
+  h1 {
+    font-size: 51px;
+    line-height: 1.05;
+    font-weight: 900;
+    margin: 8px 0;
+  }
+  .date {
+    color: #cbd5e1;
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+  }
+  .demo {
+    height: 54px;
+    margin: 18px 0 14px;
+    border: 2px solid #ef4444;
+    border-radius: 12px;
+    color: #fff;
+    background: rgba(127, 29, 29, .88);
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: 3px;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 20px;
-    position: relative;
-    z-index: 10;
-    height: 110px;
   }
-
-  .brand-logo-img {
-    width: 96px;
-    height: 96px;
-    border-radius: 50%;
-    border: 3px solid #facc15;
-    box-shadow: 0 0 35px rgba(234, 179, 8, 0.5);
-    object-fit: cover;
-  }
-
-  .header-text {
-    text-align: left;
-  }
-
-  .brand-badge {
-    font-size: 13px;
-    font-weight: 900;
-    letter-spacing: 3px;
-    color: #facc15;
-    text-transform: uppercase;
-    margin-bottom: 2px;
-  }
-
-  .main-title {
-    font-family: 'Montserrat', sans-serif;
-    font-size: 44px;
-    font-weight: 900;
-    letter-spacing: 1px;
-    line-height: 1;
-    color: #FFFFFF;
-    text-shadow: 0 4px 20px rgba(0,0,0,0.8);
-  }
-
-  .subtitle {
-    font-size: 13px;
-    color: #94a3b8;
-    letter-spacing: 2.5px;
-    text-transform: uppercase;
-    font-weight: 700;
-    margin-top: 5px;
-  }
-
-  /* Grid de Cards */
+  .demo:empty { display: none; }
   .cards-container {
+    flex: 1;
     display: flex;
-    flex-direction: column;
-    gap: 20px;
-    position: relative;
-    z-index: 10;
-    margin-top: 30px;
-    margin-bottom: 30px;
+    align-items: center;
   }
-
   .pick-card {
-    height: 200px;
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0%, rgba(15, 23, 42, 0.92) 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.14);
-    border-left: 8px solid #22c55e;
-    border-radius: 22px;
-    padding: 24px 32px;
+    width: 100%;
+    min-height: 515px;
+    padding: 40px 42px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    border: 2px solid rgba(240, 187, 45, .55);
+    border-left: 10px solid #f0bb2d;
+    border-radius: 26px;
+    background: linear-gradient(135deg, rgba(15, 23, 42, .96), rgba(7, 12, 29, .93));
+    box-shadow: 0 24px 52px rgba(0, 0, 0, .55);
+  }
+  .meta-row, .facts-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-    backdrop-filter: blur(14px);
+    gap: 18px;
   }
-
-  .pick-card.hot {
-    border-left-color: #facc15;
-    background: linear-gradient(135deg, rgba(234, 179, 8, 0.12) 0%, rgba(15, 23, 42, 0.95) 100%);
-    border-color: rgba(234, 179, 8, 0.4);
-    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.6), 0 0 25px rgba(234, 179, 8, 0.2);
-  }
-
-  .card-left {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    max-width: 660px;
-  }
-
-  .meta-tags {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .tag-sport {
-    font-size: 13px;
-    font-weight: 900;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    padding: 4px 12px;
-    border-radius: 6px;
-    background: rgba(56, 189, 248, 0.15);
-    color: #38bdf8;
-    border: 1px solid rgba(56, 189, 248, 0.4);
-  }
-
-  .tag-time {
-    font-size: 13px;
-    color: #94a3b8;
-    font-weight: 700;
-  }
-
-  .match-title {
-    font-size: 30px;
-    font-weight: 800;
-    color: #ffffff;
-    letter-spacing: -0.5px;
-  }
-
-  .pick-selection {
-    font-size: 24px;
-    font-weight: 800;
-    color: #facc15;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    text-shadow: 0 2px 14px rgba(234, 179, 8, 0.4);
-  }
-
-  .card-right {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 12px;
-    min-width: 170px;
-  }
-
-  .odds-box {
-    background: #0b1120;
-    border: 2px solid rgba(34, 197, 94, 0.6);
-    padding: 8px 24px;
-    border-radius: 14px;
-    text-align: right;
-    box-shadow: 0 0 25px rgba(34, 197, 94, 0.3);
-  }
-
-  .odds-label {
-    font-size: 11px;
-    font-weight: 900;
-    text-transform: uppercase;
-    color: #94a3b8;
-    letter-spacing: 1.5px;
-  }
-
-  .odds-val {
-    font-family: 'Montserrat', sans-serif;
-    font-size: 42px;
-    font-weight: 900;
-    line-height: 1;
-    color: #22c55e;
-  }
-
-  .conf-badge {
-    font-size: 13px;
-    font-weight: 800;
-    color: #22c55e;
-    background: rgba(34, 197, 94, 0.15);
-    padding: 6px 14px;
-    border-radius: 999px;
-    border: 1px solid rgba(34, 197, 94, 0.4);
-  }
-
-  /* Footer CTA */
-  .footer {
-    height: 70px;
-    background: linear-gradient(90deg, rgba(234, 179, 8, 0.2) 0%, rgba(15, 23, 42, 0.95) 50%, rgba(234, 179, 8, 0.2) 100%);
-    border: 1.5px solid rgba(234, 179, 8, 0.45);
-    border-radius: 18px;
-    padding: 0 28px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    position: relative;
-    z-index: 10;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
-  }
-
-  .footer-text {
+  .tag {
+    border: 1px solid rgba(56, 189, 248, .48);
+    border-radius: 8px;
+    background: rgba(56, 189, 248, .12);
+    color: #7dd3fc;
+    padding: 8px 14px;
     font-size: 17px;
-    font-weight: 700;
-    color: #f8fafc;
-  }
-
-  .footer-text span {
-    color: #facc15;
-    font-weight: 900;
-  }
-
-  .footer-url {
-    background: #facc15;
-    color: #090a16;
-    font-weight: 900;
-    font-size: 16px;
-    padding: 10px 24px;
-    border-radius: 10px;
-    letter-spacing: 0.5px;
+    font-weight: 850;
+    letter-spacing: 1.5px;
     text-transform: uppercase;
-    box-shadow: 0 4px 18px rgba(234, 179, 8, 0.5);
   }
+  .schedule { color: #cbd5e1; font-size: 18px; font-weight: 750; }
+  .event { font-size: 48px; line-height: 1.1; font-weight: 900; }
+  .selection { color: #facc15; font-size: 39px; line-height: 1.15; font-weight: 900; }
+  .odds {
+    min-width: 190px;
+    padding: 16px 22px;
+    border: 2px solid rgba(34, 197, 94, .58);
+    border-radius: 16px;
+    background: #08101f;
+  }
+  .odds-label { color: #a7b0c2; font-size: 16px; font-weight: 800; text-transform: uppercase; }
+  .odds-value { color: #22c55e; font-size: 53px; font-weight: 900; }
+  .evidence { color: #e2e8f0; font-size: 19px; line-height: 1.45; text-align: right; }
+  .value { color: #facc15; font-weight: 850; }
+  .observation { color: #a7b0c2; font-size: 17px; }
+  .footer {
+    height: 102px;
+    padding-top: 23px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-top: 1px solid rgba(240, 187, 45, .42);
+  }
+  .site { color: #facc15; font-size: 25px; font-weight: 900; }
+  .notice { color: #e2e8f0; font-size: 20px; font-weight: 750; text-align: right; }
 </style>
 </head>
 <body>
-
-<div class="banner-container" id="banner-root">
-  <div class="bg-glow-gold"></div>
-  <div class="bg-grid"></div>
-  <div class="outer-frame"></div>
-
-  <!-- Header con Logo Oficial -->
-  <div class="header">
-    <img src="../frontend/public/logo.jpg" class="brand-logo-img" alt="Rey Taco Picks" />
-    <div class="header-text">
-      <div class="brand-badge">REY TACO PICKS OFICIAL</div>
-      <h1 class="main-title">PRON&Oacute;STICOS DEL D&Iacute;A</h1>
-      <p class="subtitle" id="date-label">AN&Aacute;LISIS MATEM&Aacute;TICO &bull; INTELIGENCIA ARTIFICIAL</p>
+<main id="banner-root" style="{{BACKGROUND_STYLE}}">
+  <header class="header">
+    <img class="logo" src="{{LOGO_DATA_URI}}" alt="Rey Taco Picks">
+    <div>
+      <div class="eyebrow">REY TACO PICKS OFICIAL</div>
+      <h1>PICK P&Uacute;BLICO DEL D&Iacute;A</h1>
+      <div class="date">{{DATE_LABEL}}</div>
     </div>
-  </div>
-
-  <!-- Cards -->
-  <div class="cards-container" id="cards-wrapper">
-    <!-- Inject dynamically -->
-  </div>
-
-  <!-- Footer -->
-  <div class="footer">
-    <div class="footer-text">
-      Desbloquea el <span>Análisis Premium</span> y la Cartera Completa
-    </div>
-    <div class="footer-url">reytacopicks.com</div>
-  </div>
-</div>
-
+  </header>
+  <div class="demo">{{DEMO_LABEL}}</div>
+  <section class="cards-container">{{CARD_HTML}}</section>
+  <footer class="footer">
+    <div class="site">reytacopicks.com</div>
+    <div class="notice">18+<br>Apuesta con responsabilidad</div>
+  </footer>
+</main>
 </body>
 </html>

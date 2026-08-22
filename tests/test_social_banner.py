@@ -1,53 +1,66 @@
-from unittest.mock import patch
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from io import BytesIO
+from pathlib import Path
+
+from PIL import Image
 
 from backend import social_banner
+from backend.social_content import SocialContent
 
 
-class _Image:
-    def save(self, *_args, **_kwargs):
-        return None
+def _content() -> SocialContent:
+    return SocialContent(
+        pick_id="1780000000000000",
+        category="Liga MX",
+        event="América vs Tigres",
+        selection="América gana",
+        odds_text="1.80",
+        schedule="21 AGO · 20:00 CDMX",
+        observed_at=datetime(2026, 8, 21, 17, 30, tzinfo=timezone.utc),
+        starts_at=datetime(2026, 8, 22, 2, 0, tzinfo=timezone.utc),
+        league="Liga MX",
+        market="Ganador del partido",
+        risk_label="Datos limitados",
+        evidence_label="Respaldo de datos: medio",
+        has_value_signal=False,
+    )
 
 
-class _Draw:
-    def __init__(self):
-        self.labels = []
-
-    def rectangle(self, *_args, **_kwargs):
-        return None
-
-    def rounded_rectangle(self, *_args, **_kwargs):
-        return None
-
-    def text(self, _position, label, **_kwargs):
-        self.labels.append(label)
+def _jpeg() -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (1080, 1080), "navy").save(buffer, format="JPEG")
+    return buffer.getvalue()
 
 
-def test_social_banner_normalizes_productive_evidence_payload_without_network():
-    draw = _Draw()
-    pick = {
-        "categoria": "Liga MX",
-        "partido": "América vs Tigres",
-        "pick": "América",
-        "cuota": 1.80,
-        "horario": "20:00",
-        "confianza": "65% respaldo de datos",
-        "tiene_valor": False,
-    }
+def test_social_banner_compatibility_wrapper_accepts_only_social_content(
+    monkeypatch, tmp_path
+):
+    calls = []
 
-    with (
-        patch.object(social_banner.Image, "new", return_value=_Image()),
-        patch.object(social_banner.ImageDraw, "Draw", return_value=draw),
-        patch.object(social_banner.ImageFont, "truetype", return_value=object()),
-        patch.object(
-            social_banner.urllib.request,
-            "urlopen",
-            side_effect=AssertionError("network forbidden"),
-        ),
-    ):
-        social_banner.generar_banner_redes(
-            [pick], output_path="unused.png", usar_ia=False
-        )
+    def fake_render(content, **kwargs):
+        calls.append((content, kwargs))
+        return _jpeg()
 
-    assert draw.labels.count("Respaldo de datos: 65%") == 1
-    assert "Respaldo de datos: 65% respaldo de datos" not in draw.labels
-    assert not any("Señal de valor" in label for label in draw.labels)
+    monkeypatch.setattr(social_banner, "render_social_jpeg", fake_render)
+    output = tmp_path / "social.jpg"
+    result = social_banner.generar_banner_redes(
+        _content(),
+        output_path=output,
+        generated_at=datetime(2026, 8, 21, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert result == output
+    assert output.read_bytes() == _jpeg()
+    assert len(calls) == 1
+    assert isinstance(calls[0][0], SocialContent)
+
+
+def test_social_banner_has_no_remote_or_random_background_path():
+    source = Path(social_banner.__file__).read_text(encoding="utf-8")
+
+    assert "pollinations" not in source.casefold()
+    assert "urllib.request" not in source
+    assert "random" not in source
+    assert "picks.json" not in source

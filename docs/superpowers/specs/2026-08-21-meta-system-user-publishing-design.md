@@ -1,7 +1,7 @@
 # Meta System User Publishing Design
 
 **Date:** 2026-08-21  
-**Status:** Approved direction, awaiting written-spec review
+**Status:** Approved
 
 ## Goal
 

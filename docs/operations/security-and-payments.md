@@ -50,8 +50,11 @@ price from collection through publication:
 The validator can group individually verified same-day legs for analysis, but
 **no publica parlays en producción**. A parlay cannot enter the production
 catalog until its combined **cuota independiente** is observed from a source and
-the parlay itself carries the **cinco campos de auditoría** required of every
-published selection. Leg prices must never be multiplied to invent that quote.
+the parlay itself carries the **seis campos de auditoría** required of every
+published selection: `source`, `source_event_id`, `source_market_key`,
+`source_selection_key`, `source_observed_at`, and `source_starts_at`. The last
+field is the event's **instante absoluto UTC**, not a display date or human
+schedule. Leg prices must never be multiplied to invent that quote.
 
 The pipeline rejects partial periods, halves, quarters, unsupported player
 props, incomplete corner markets, ambiguous team totals, and every other market
@@ -106,6 +109,14 @@ inactivo o reemplazado, el RPC falla de forma cerrada: termina sin restaurar el
 archivo público ni Telegram y no permite que el mismo `run_key` reviva picks
 retirados. Un resultado SQL nulo significa únicamente que no existe una corrida
 completada para esa clave y, por tanto, la recolección normal puede comenzar.
+
+La publicación inicial, el replay y la reanudación también fallan cerrados si
+falta el inicio absoluto o si cualquier `source_starts_at` es menor o igual al
+reloj UTC. Python vuelve a comprobar ese instante antes de escribir el archivo
+público y otra vez justo antes de Telegram. Si el evento vence entre ambas
+operaciones, elimina el archivo recién restaurado y termina sin Telegram,
+registro de entrega, navegador ni publicación social. `fecha_evento` y
+`horario` son solo presentación y nunca sustituyen este control.
 
 La publicación externa conserva un **supuesto operativo de escritor único**:
 el lock de la transacción protege la decisión en base de datos, mientras el

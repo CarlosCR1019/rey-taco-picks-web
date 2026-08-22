@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import re
 from tempfile import NamedTemporaryFile
-from typing import Mapping, Protocol, Sequence, TypedDict
+from typing import Callable, Mapping, Protocol, Sequence, TypedDict
 
 from backend.publishing_policy import public_payload
 
@@ -41,9 +42,18 @@ PERSISTED_PICK_COLUMNS = frozenset(
         "source_market_key",
         "source_selection_key",
         "source_observed_at",
+        "source_starts_at",
     }
 )
 RETURNED_PICK_COLUMNS = PERSISTED_PICK_COLUMNS | {"id"}
+_UTC_SOURCE_TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:[.][0-9]{1,6})?(?:Z|[+]00:00)$"
+)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +126,7 @@ class AuditedBatchPublisher:
     repository: BatchRepository
     run_key: str
     public_path: str | Path
+    clock: Callable[[], datetime] = _utc_now
 
     def publish(
         self,
@@ -130,6 +141,7 @@ class AuditedBatchPublisher:
             self.run_key,
             self.public_path,
             dry_run=dry_run,
+            clock=self.clock,
         )
 
     def resume(self, *, dry_run: bool) -> PublicationResult | None:
@@ -144,7 +156,10 @@ class AuditedBatchPublisher:
         response = self.repository.resume(self.run_key)
         if response is None:
             return None
-        normalized = _normalized_resume_response(response)
+        normalized = _normalized_resume_response(
+            response,
+            reference_at=self.clock(),
+        )
         if normalized is None:
             return None
         result = _publication_result(normalized)
@@ -158,8 +173,14 @@ class AuditedBatchPublisher:
 class SupabaseBatchRepository:
     """Supabase RPC implementation of the batch repository boundary."""
 
-    def __init__(self, client: _SupabaseClient) -> None:
+    def __init__(
+        self,
+        client: _SupabaseClient,
+        *,
+        clock: Callable[[], datetime] = _utc_now,
+    ) -> None:
         self._client = client
+        self._clock = clock
 
     def publish(
         self, run_key: str, source_hash: str, picks: Sequence[Mapping[str, object]]
@@ -172,14 +193,20 @@ class SupabaseBatchRepository:
                 "requested_picks": picks,
             },
         ).execute()
-        return _normalized_publish_response(response.data)
+        return _normalized_publish_response(
+            response.data,
+            reference_at=self._clock(),
+        )
 
     def resume(self, run_key: str) -> PublishResponse | None:
         response = self._client.rpc(
             "resume_pick_batch",
             {"requested_run_key": run_key},
         ).execute()
-        return _normalized_resume_response(response.data)
+        return _normalized_resume_response(
+            response.data,
+            reference_at=self._clock(),
+        )
 
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""
@@ -225,6 +252,8 @@ def publish_batch(
     public_path: str | Path,
     *,
     dry_run: bool = False,
+    reference_at: datetime | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> PublicationResult:
     """Publish a database batch before atomically exposing its public selection."""
     if type(dry_run) is not bool:
@@ -233,11 +262,18 @@ def publish_batch(
         raise ValueError("picks must not be empty")
     if not isinstance(run_key, str) or not run_key.strip():
         raise ValueError("run_key must not be empty")
+    if reference_at is not None and clock is not None:
+        raise ValueError("provide reference_at or clock, not both")
     if dry_run:
         return PublicationResult(None, None, False, {}, picks=(), dry_run=True)
 
     response = repository.publish(run_key, source_hash_for(picks), picks)
-    result = _publication_result(_normalized_publish_response(response))
+    result = _publication_result(
+        _normalized_publish_response(
+            response,
+            reference_at=clock() if clock is not None else reference_at,
+        )
+    )
     _write_public_payload(
         public_path,
         _safe_public_payload(result.picks),
@@ -245,7 +281,11 @@ def publish_batch(
     return result
 
 
-def _normalized_publish_response(data: object) -> PublishResponse:
+def _normalized_publish_response(
+    data: object,
+    *,
+    reference_at: datetime | None = None,
+) -> PublishResponse:
     if isinstance(data, list) and len(data) == 1:
         data = data[0]
     response = _string_keyed_dict(data)
@@ -265,7 +305,10 @@ def _normalized_publish_response(data: object) -> PublishResponse:
     if delivery_status is None:
         raise RuntimeError("publish_pick_batch returned an invalid delivery_status")
 
-    persisted_picks = _validated_persisted_picks(response.get("picks"))
+    persisted_picks = _validated_persisted_picks(
+        response.get("picks"),
+        reference_at=reference_at,
+    )
 
     return {
         "run_id": run_id,
@@ -276,11 +319,15 @@ def _normalized_publish_response(data: object) -> PublishResponse:
     }
 
 
-def _normalized_resume_response(data: object) -> PublishResponse | None:
+def _normalized_resume_response(
+    data: object,
+    *,
+    reference_at: datetime | None = None,
+) -> PublishResponse | None:
     if data is None:
         return None
     try:
-        response = _normalized_publish_response(data)
+        response = _normalized_publish_response(data, reference_at=reference_at)
     except RuntimeError:
         raise RuntimeError("resume_pick_batch returned an invalid response") from None
     if response["created"] is not False:
@@ -288,7 +335,12 @@ def _normalized_resume_response(data: object) -> PublishResponse | None:
     return response
 
 
-def _validated_persisted_picks(value: object) -> tuple[PersistedPick, ...]:
+def _validated_persisted_picks(
+    value: object,
+    *,
+    reference_at: datetime | None = None,
+) -> tuple[PersistedPick, ...]:
+    reference = _utc_reference(reference_at)
     if isinstance(value, tuple) and value and all(
         isinstance(row, PersistedPick) for row in value
     ):
@@ -321,14 +373,15 @@ def _validated_persisted_picks(value: object) -> tuple[PersistedPick, ...]:
             if not isinstance(field_value, str) or not field_value.strip():
                 raise RuntimeError("publish_pick_batch returned invalid source audit")
 
-        observed_at = row["source_observed_at"]
-        if not isinstance(observed_at, str) or not observed_at.endswith(("Z", "+00:00")):
-            raise RuntimeError("publish_pick_batch returned invalid source audit")
-        try:
-            observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise RuntimeError("publish_pick_batch returned invalid source audit") from error
-        if observed.utcoffset() != timedelta(0):
+        observed = _utc_datetime(row["source_observed_at"])
+        starts = _utc_datetime(row["source_starts_at"])
+        if (
+            observed is None
+            or starts is None
+            or observed > reference
+            or starts <= observed
+            or starts <= reference
+        ):
             raise RuntimeError("publish_pick_batch returned invalid source audit")
 
         visibility = row["visibility"]
@@ -346,6 +399,37 @@ def _validated_persisted_picks(value: object) -> tuple[PersistedPick, ...]:
     if public_count != 1:
         raise RuntimeError("publish_pick_batch returned invalid public policy")
     return tuple(normalized)
+
+
+def revalidate_persisted_picks(
+    picks: Sequence[Mapping[str, object]],
+    *,
+    reference_at: datetime | None = None,
+) -> tuple[PersistedPick, ...]:
+    """Revalidate exact persisted rows against one stable UTC reference."""
+    return _validated_persisted_picks(
+        [dict(row) for row in picks],
+        reference_at=reference_at,
+    )
+
+
+def _utc_reference(value: datetime | None) -> datetime:
+    reference = datetime.now(timezone.utc) if value is None else value
+    if reference.tzinfo is None or reference.utcoffset() is None:
+        raise ValueError("reference_at must be timezone-aware")
+    return reference.astimezone(timezone.utc)
+
+
+def _utc_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or _UTC_SOURCE_TIMESTAMP.fullmatch(value) is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 def _safe_public_payload(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -397,6 +398,7 @@ def stub_successful_legacy_phases(monkeypatch, picks=None):
             "source_market_key": "h2h|full_time|",
             "source_selection_key": "home",
             "source_observed_at": "2026-08-20T20:00:00Z",
+            "source_starts_at": "2099-08-21T01:00:00Z",
         }
     ]
     monkeypatch.setattr(scraper, "fase1_escaneo_superficie", lambda _driver, **_kw: ["event"])
@@ -505,6 +507,7 @@ def resumed_response(*, delivery_status):
         "source_market_key": "h2h|full_time|",
         "source_selection_key": "home",
         "source_observed_at": "2026-08-20T20:00:00Z",
+        "source_starts_at": "2099-08-21T01:00:00Z",
     }
     row = {column: source.get(column) for column in PERSISTED_PICK_COLUMNS}
     row["id"] = 77
@@ -653,6 +656,40 @@ def test_legacy_dry_run_never_calls_repository_resume(tmp_path, monkeypatch):
 
     assert result.persisted is False
     assert repository.resume_calls == []
+
+
+def test_resume_expiring_between_rpc_and_delivery_removes_file_and_sends_nothing(
+    tmp_path, monkeypatch
+):
+    response = resumed_response(delivery_status={})
+    response["picks"][0]["source_starts_at"] = "2026-08-21T01:00:00Z"
+    repository = ResumeRepository(response)
+    sent = []
+    moments = iter(
+        (
+            datetime(2026, 8, 21, 0, 59, 59, tzinfo=timezone.utc),
+            datetime(2026, 8, 21, 1, 0, 0, tzinfo=timezone.utc),
+        )
+    )
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: lambda destination, text: sent.append((destination, text)),
+    )
+
+    with pytest.raises(scraper.PersistenceFailure, match="stale persisted picks"):
+        LegacyPipeline(
+            settings(tmp_path, dry_run=False),
+            repository=repository,
+            driver_factory=lambda: (_ for _ in ()).throw(
+                AssertionError("driver must not start")
+            ),
+            clock=lambda: next(moments),
+        ).run()
+
+    assert not settings(tmp_path, dry_run=False).public_picks_path.exists()
+    assert sent == []
+    assert repository.delivery_calls == []
 
 
 def test_real_delivery_record_failure_maps_to_exit_6_without_leaking(

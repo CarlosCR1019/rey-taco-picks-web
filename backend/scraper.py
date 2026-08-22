@@ -12,7 +12,7 @@ import sys
 import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +40,7 @@ from backend.pick_publisher import (
     AuditedBatchPublisher,
     PERSISTED_PICK_COLUMNS,
     SupabaseBatchRepository,
+    revalidate_persisted_picks,
 )
 from backend.pick_selection import (
     CandidatePick,
@@ -1363,6 +1364,10 @@ def _candidate_schedule(candidate: CandidatePick) -> str:
     return start.strftime("%d/%m %H:%M hrs")
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _legacy_ranked_pick_projection(
     ranked_pick: RankedPick,
     evidence_score: EvidenceScore,
@@ -1397,6 +1402,9 @@ def _legacy_ranked_pick_projection(
         "source_market_key": _source_market_audit_key(candidate),
         "source_selection_key": candidate.selection_key,
         "source_observed_at": candidate.observed_at.astimezone(
+            timezone.utc
+        ).isoformat().replace("+00:00", "Z"),
+        "source_starts_at": candidate.starts_at.astimezone(
             timezone.utc
         ).isoformat().replace("+00:00", "Z"),
         "razonamiento": ranked_pick.rationale,
@@ -1556,6 +1564,7 @@ def fase7_guardar_y_notificar(
     settings=None,
     transport=None,
     run_key,
+    clock: Callable[[], datetime] | None = None,
 ):
     """Publish one atomic batch, then deliver each Telegram destination independently."""
     print("\n" + "="*60)
@@ -1618,10 +1627,12 @@ def fase7_guardar_y_notificar(
         )
 
     try:
+        active_clock = clock or _utc_now
         publication = AuditedBatchPublisher(
             repository=repository,
             run_key=active_run_key,
             public_path=active_settings.public_picks_path,
+            clock=active_clock,
         ).publish(
             picks,
             dry_run=False,
@@ -1634,6 +1645,7 @@ def fase7_guardar_y_notificar(
         repository,
         active_settings,
         transport=transport,
+        clock=active_clock,
     )
     return publication, deliveries
 
@@ -1644,9 +1656,21 @@ def _deliver_persisted_publication(
     settings,
     *,
     transport=None,
+    clock: Callable[[], datetime] | None = None,
 ):
     """Deliver only destinations absent from the persisted success ledger."""
-    delivery_picks = [dict(row) for row in publication.picks]
+    try:
+        validated_picks = revalidate_persisted_picks(
+            publication.picks,
+            reference_at=(clock or _utc_now)(),
+        )
+    except (RuntimeError, TypeError, ValueError):
+        try:
+            Path(settings.public_picks_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise PersistenceFailure("stale persisted picks") from None
+    delivery_picks = [dict(row) for row in validated_picks]
 
     destinations = [
         TelegramDestination("admin", settings.telegram_admin_id, "all")
@@ -1871,7 +1895,7 @@ def run_structured_pipeline(
                 return PipelineResult(event_count, 0, False, ())
             score = score_evidence(evidence)
             row = _source_backed_pick_row(ranked_pick, score, reference)
-            if not _valid_source_audit_row(row):
+            if not _valid_source_audit_row(row, reference_at=reference):
                 return PipelineResult(event_count, 0, False, ())
             source_backed_rows.append(row)
         visible_rows = assign_visibility(source_backed_rows)
@@ -1889,7 +1913,7 @@ def run_structured_pipeline(
     except Exception:
         return PipelineResult(event_count, 0, False, ())
 
-    if not _valid_visible_source_rows(visible_rows):
+    if not _valid_visible_source_rows(visible_rows, reference_at=reference):
         return PipelineResult(event_count, 0, False, ())
 
     frozen_rows = _freeze_pipeline_picks(visible_rows)
@@ -1948,6 +1972,9 @@ def _source_backed_pick_row(
             "source_observed_at": candidate.observed_at.astimezone(
                 timezone.utc
             ).isoformat().replace("+00:00", "Z"),
+            "source_starts_at": candidate.starts_at.astimezone(
+                timezone.utc
+            ).isoformat().replace("+00:00", "Z"),
             "fecha_generacion": reference_at.astimezone(
                 ZoneInfo("America/Mexico_City")
             ).date().isoformat(),
@@ -1961,7 +1988,11 @@ def _source_backed_pick_row(
     return row
 
 
-def _valid_source_audit_row(row: object) -> bool:
+def _valid_source_audit_row(
+    row: object,
+    *,
+    reference_at: datetime | None = None,
+) -> bool:
     if not isinstance(row, Mapping):
         return False
     text_limits = {
@@ -1970,6 +2001,7 @@ def _valid_source_audit_row(row: object) -> bool:
         "source_market_key": 1000,
         "source_selection_key": 500,
         "source_observed_at": 100,
+        "source_starts_at": 100,
     }
     for field, maximum_length in text_limits.items():
         value = row.get(field)
@@ -1980,13 +2012,33 @@ def _valid_source_audit_row(row: object) -> bool:
         ):
             return False
     observed_at = row.get("source_observed_at")
-    if not isinstance(observed_at, str):
+    starts_at = row.get("source_starts_at")
+    utc_pattern = re.compile(
+        r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+        r"(?:[.][0-9]{1,6})?(?:Z|[+]00:00)$"
+    )
+    if (
+        not isinstance(observed_at, str)
+        or not isinstance(starts_at, str)
+        or utc_pattern.fullmatch(observed_at) is None
+        or utc_pattern.fullmatch(starts_at) is None
+    ):
         return False
     try:
         parsed_observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        parsed_starts_at = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+        reference = _utc_now() if reference_at is None else reference_at
     except (AttributeError, TypeError, ValueError):
         return False
-    if parsed_observed_at.tzinfo is None or parsed_observed_at.utcoffset() is None:
+    if (
+        parsed_observed_at.utcoffset() != timedelta(0)
+        or parsed_starts_at.utcoffset() != timedelta(0)
+        or reference.tzinfo is None
+        or reference.utcoffset() is None
+        or parsed_observed_at > reference.astimezone(timezone.utc)
+        or parsed_starts_at <= parsed_observed_at
+        or parsed_starts_at <= reference.astimezone(timezone.utc)
+    ):
         return False
     price = row.get("cuota")
     return (
@@ -2000,10 +2052,17 @@ def _valid_source_audit_row(row: object) -> bool:
     )
 
 
-def _valid_visible_source_rows(rows: object) -> bool:
+def _valid_visible_source_rows(
+    rows: object,
+    *,
+    reference_at: datetime | None = None,
+) -> bool:
     if not isinstance(rows, list) or not rows:
         return False
-    if not all(_valid_source_audit_row(row) for row in rows):
+    if not all(
+        _valid_source_audit_row(row, reference_at=reference_at)
+        for row in rows
+    ):
         return False
     public_rows = [row for row in rows if row.get("visibility") == "public"]
     return (
@@ -2168,11 +2227,13 @@ class LegacyPipeline:
         repository=None,
         history_client=None,
         driver_factory=None,
+        clock: Callable[[], datetime] | None = None,
     ):
         self.settings = settings
         self.repository = repository
         self.history_client = history_client
         self.driver_factory = driver_factory or get_chrome_driver
+        self.clock = clock or _utc_now
 
     def run(self):
         print("\n" + "=" * 60)
@@ -2190,6 +2251,7 @@ class LegacyPipeline:
                     repository=self.repository,
                     run_key=self.settings.run_key,
                     public_path=self.settings.public_picks_path,
+                    clock=self.clock,
                 ).resume(dry_run=False)
             except Exception:
                 raise PersistenceFailure("scraper batch persistence failed") from None
@@ -2199,6 +2261,7 @@ class LegacyPipeline:
                     publication,
                     self.repository,
                     self.settings,
+                    clock=self.clock,
                 )
                 failed = tuple(
                     sorted(
@@ -2254,6 +2317,7 @@ class LegacyPipeline:
                 repository=self.repository,
                 settings=self.settings,
                 run_key=self.settings.run_key,
+                clock=self.clock,
             )
             failed = tuple(
                 sorted(

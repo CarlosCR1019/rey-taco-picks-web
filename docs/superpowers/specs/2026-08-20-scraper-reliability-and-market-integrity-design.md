@@ -75,11 +75,11 @@ Prices must be valid decimal odds observed from Playdoit or The Odds API. The cu
 
 ### Candidate pick
 
-A candidate references the exact event, market, outcome, price, and observation timestamp from which it was constructed. Its display text is derived from those fields. AI output cannot replace the event, selection, line, or price.
+A candidate references the exact event, market, outcome, price, observation timestamp, and absolute UTC start timestamp from which it was constructed. Its display text is derived from those fields. AI output cannot replace the event, selection, line, price, or `source_starts_at`.
 
 ### Publication batch
 
-A batch has a UUID, run key, creation timestamp, source snapshot hash, active flag, and picks. A pick also stores the batch identifier and whether it is public or premium.
+A batch has a UUID, run key, creation timestamp, source snapshot hash, active flag, and picks. A pick also stores the batch identifier, whether it is public or premium, and immutable `source_starts_at` audit evidence. Create, replay, resume, public-file writing, and Telegram delivery reject a pick whose absolute start is missing, non-UTC, ambiguous, or no longer in the future.
 
 ## 6. Reliability Release
 

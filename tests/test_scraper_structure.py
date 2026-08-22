@@ -170,6 +170,7 @@ def single_pick(selection):
             "source_market_key": "h2h|full_time|",
             "source_selection_key": "home",
             "source_observed_at": "2026-08-20T20:00:00Z",
+            "source_starts_at": "2099-08-21T01:00:00Z",
         }
     ]
 

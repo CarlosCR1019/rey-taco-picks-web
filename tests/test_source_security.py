@@ -26,7 +26,9 @@ class SourceSecurityTests(unittest.TestCase):
         self.assertIn("filas ya persistidas", runbook)
         self.assertIn("no publica parlays en producción", runbook)
         self.assertIn("cuota independiente", runbook)
-        self.assertIn("cinco campos de auditoría", runbook)
+        self.assertIn("seis campos de auditoría", runbook)
+        self.assertIn("source_starts_at", runbook)
+        self.assertIn("instante absoluto utc", runbook)
         self.assertNotIn(
             "same-day parlays assembled only from individually verified legs",
             runbook,
@@ -45,6 +47,7 @@ class SourceSecurityTests(unittest.TestCase):
         self.assertIn("solo las entregas faltantes", runbook)
         self.assertIn("inactivo o reemplazado", runbook)
         self.assertIn("sin restaurar el archivo público ni telegram", runbook)
+        self.assertIn("source_starts_at` es menor o igual al reloj utc", runbook)
         self.assertIn("omite la publicación social", runbook)
         self.assertIn("supuesto operativo de escritor único", runbook)
         self.assertIn("no debe solaparse", runbook)

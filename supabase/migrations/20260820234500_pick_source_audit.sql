@@ -6,6 +6,7 @@ alter table public.picks
     add column if not exists source_market_key text,
     add column if not exists source_selection_key text,
     add column if not exists source_observed_at timestamptz,
+    add column if not exists source_starts_at timestamptz,
     add column if not exists source_audit_version smallint;
 
 -- Existing rows predate the audit contract. Keep settled history intact, but
@@ -25,11 +26,14 @@ with retired_batches as (
                 or nullif(btrim(legacy_picks.source_market_key), '') is null
                 or nullif(btrim(legacy_picks.source_selection_key), '') is null
                 or legacy_picks.source_observed_at is null
+                or legacy_picks.source_starts_at is null
                 or length(btrim(legacy_picks.source)) not between 1 and 100
                 or length(btrim(legacy_picks.source_event_id)) not between 1 and 500
                 or length(btrim(legacy_picks.source_market_key)) not between 1 and 1000
                 or length(btrim(legacy_picks.source_selection_key)) not between 1 and 500
                 or legacy_picks.source_observed_at > now()
+                or legacy_picks.source_starts_at <= legacy_picks.source_observed_at
+                or legacy_picks.source_starts_at <= now()
             )
       )
     returning legacy_batches.id
@@ -61,11 +65,14 @@ where (
       or nullif(btrim(legacy_picks.source_market_key), '') is null
       or nullif(btrim(legacy_picks.source_selection_key), '') is null
       or legacy_picks.source_observed_at is null
+      or legacy_picks.source_starts_at is null
       or length(btrim(legacy_picks.source)) not between 1 and 100
       or length(btrim(legacy_picks.source_event_id)) not between 1 and 500
       or length(btrim(legacy_picks.source_market_key)) not between 1 and 1000
       or length(btrim(legacy_picks.source_selection_key)) not between 1 and 500
       or legacy_picks.source_observed_at > now()
+      or legacy_picks.source_starts_at <= legacy_picks.source_observed_at
+      or legacy_picks.source_starts_at <= now()
   );
 
 update public.picks
@@ -123,7 +130,8 @@ begin
            or new.source_event_id is distinct from old.source_event_id
            or new.source_market_key is distinct from old.source_market_key
            or new.source_selection_key is distinct from old.source_selection_key
-           or new.source_observed_at is distinct from old.source_observed_at then
+           or new.source_observed_at is distinct from old.source_observed_at
+           or new.source_starts_at is distinct from old.source_starts_at then
             raise exception 'published source audit is immutable';
         end if;
         new.source_audit_version := 1;
@@ -134,7 +142,8 @@ begin
        or new.source_event_id is distinct from old.source_event_id
        or new.source_market_key is distinct from old.source_market_key
        or new.source_selection_key is distinct from old.source_selection_key
-       or new.source_observed_at is distinct from old.source_observed_at then
+       or new.source_observed_at is distinct from old.source_observed_at
+       or new.source_starts_at is distinct from old.source_starts_at then
         new.source_audit_version := 1;
     end if;
     return new;
@@ -172,6 +181,8 @@ begin
                     and source_market_key is not null
                     and source_selection_key is not null
                     and source_observed_at is not null
+                    and source_starts_at is not null
+                    and source_starts_at > source_observed_at
                     and length(btrim(source)) between 1 and 100
                     and length(btrim(source_event_id)) between 1 and 500
                     and length(btrim(source_market_key)) between 1 and 1000
@@ -208,6 +219,8 @@ begin
                 and source_market_key is not null
                 and source_selection_key is not null
                 and source_observed_at is not null
+                and source_starts_at is not null
+                and source_starts_at > source_observed_at
                 and length(btrim(source)) between 1 and 100
                 and length(btrim(source_event_id)) between 1 and 500
                 and length(btrim(source_market_key)) between 1 and 1000
@@ -265,6 +278,14 @@ begin
               in lower(pg_get_constraintdef(installed_audit_constraint.oid))
           ) > 0
           and position(
+              'source_starts_at is not null'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
+              'source_starts_at > source_observed_at'
+              in lower(pg_get_constraintdef(installed_audit_constraint.oid))
+          ) > 0
+          and position(
               'length(btrim(source)) >= 1'
               in lower(pg_get_constraintdef(installed_audit_constraint.oid))
           ) > 0
@@ -307,7 +328,8 @@ select
     source_event_id,
     source_market_key,
     source_selection_key,
-    source_observed_at
+    source_observed_at,
+    source_starts_at
 from public.picks
 where visibility = 'public';
 
@@ -336,6 +358,7 @@ declare
     public_parlay_count bigint;
     audit_entry jsonb;
     observed_at_value timestamptz;
+    starts_at_value timestamptz;
     persisted_picks jsonb;
 begin
     if requested_run_key is null or btrim(requested_run_key) = '' then
@@ -369,6 +392,7 @@ begin
            or nullif(btrim(value->>'source_market_key'), '') is null
            or nullif(btrim(value->>'source_selection_key'), '') is null
            or nullif(btrim(value->>'source_observed_at'), '') is null
+           or nullif(btrim(value->>'source_starts_at'), '') is null
            or length(btrim(value->>'source')) not between 1 and 100
            or length(btrim(value->>'source_event_id')) not between 1 and 500
            or length(btrim(value->>'source_market_key')) not between 1 and 1000
@@ -393,6 +417,19 @@ begin
         if observed_at_value > now() then
             raise exception 'source_observed_at must be UTC and not in the future';
         end if;
+        if (audit_entry->>'source_starts_at') !~
+           '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,6})?(Z|[+]00:00)$' then
+            raise exception 'source_starts_at must be UTC, after source_observed_at, and in the future';
+        end if;
+        begin
+            starts_at_value := (audit_entry->>'source_starts_at')::timestamptz;
+        exception
+            when invalid_datetime_format or datetime_field_overflow then
+                raise exception 'source_starts_at must be UTC, after source_observed_at, and in the future';
+        end;
+        if starts_at_value <= observed_at_value or starts_at_value <= now() then
+            raise exception 'source_starts_at must be UTC, after source_observed_at, and in the future';
+        end if;
     end loop;
 
     select
@@ -409,6 +446,14 @@ begin
     end if;
 
     perform pg_advisory_xact_lock(20260820233000);
+
+    if exists (
+        select 1
+        from jsonb_array_elements(requested_picks) as entry(value)
+        where (value->>'source_starts_at')::timestamptz <= clock_timestamp()
+    ) then
+        raise exception 'source_starts_at expired while waiting for publication lock';
+    end if;
 
     insert into public.scraper_runs (run_key, source_hash)
     values (requested_run_key, requested_source_hash)
@@ -434,6 +479,18 @@ begin
             raise exception 'scraper run batch is inactive or superseded';
         end if;
         created_batch := resumed_batch.id;
+
+        if exists (
+            select 1
+            from public.picks as persisted_row
+            where persisted_row.batch_id = created_batch
+              and (
+                  persisted_row.source_starts_at is null
+                  or persisted_row.source_starts_at <= clock_timestamp()
+              )
+        ) then
+            raise exception 'persisted pick event is stale';
+        end if;
 
         select coalesce(jsonb_agg(jsonb_build_object(
             'id', persisted_row.id,
@@ -461,7 +518,8 @@ begin
             'source_event_id', persisted_row.source_event_id,
             'source_market_key', persisted_row.source_market_key,
             'source_selection_key', persisted_row.source_selection_key,
-            'source_observed_at', persisted_row.source_observed_at
+            'source_observed_at', persisted_row.source_observed_at,
+            'source_starts_at', persisted_row.source_starts_at
         ) order by persisted_row.id), '[]'::jsonb)
         into persisted_picks
         from public.picks as persisted_row
@@ -536,6 +594,7 @@ begin
         source_market_key,
         source_selection_key,
         source_observed_at,
+        source_starts_at,
         batch_id,
         active
     )
@@ -569,9 +628,19 @@ begin
         (requested_rows.populated).source_market_key,
         (requested_rows.populated).source_selection_key,
         (requested_rows.populated).source_observed_at,
+        (requested_rows.populated).source_starts_at,
         created_batch,
         true
     from requested_rows;
+
+    if exists (
+        select 1
+        from public.picks as persisted_row
+        where persisted_row.batch_id = created_batch
+          and persisted_row.source_starts_at <= clock_timestamp()
+    ) then
+        raise exception 'source_starts_at expired during batch persistence';
+    end if;
 
     update public.scraper_runs
     set status = 'published', finished_at = now()
@@ -603,7 +672,8 @@ begin
         'source_event_id', persisted_row.source_event_id,
         'source_market_key', persisted_row.source_market_key,
         'source_selection_key', persisted_row.source_selection_key,
-        'source_observed_at', persisted_row.source_observed_at
+        'source_observed_at', persisted_row.source_observed_at,
+        'source_starts_at', persisted_row.source_starts_at
     ) order by persisted_row.id), '[]'::jsonb)
     into persisted_picks
     from public.picks as persisted_row
@@ -667,6 +737,18 @@ begin
         raise exception 'scraper run batch is inactive or superseded';
     end if;
 
+    if exists (
+        select 1
+        from public.picks as persisted_row
+        where persisted_row.batch_id = resumed_batch.id
+          and (
+              persisted_row.source_starts_at is null
+              or persisted_row.source_starts_at <= clock_timestamp()
+          )
+    ) then
+        raise exception 'persisted pick event is stale';
+    end if;
+
     select coalesce(jsonb_agg(jsonb_build_object(
         'id', persisted_row.id,
         'categoria', persisted_row.categoria,
@@ -693,7 +775,8 @@ begin
         'source_event_id', persisted_row.source_event_id,
         'source_market_key', persisted_row.source_market_key,
         'source_selection_key', persisted_row.source_selection_key,
-        'source_observed_at', persisted_row.source_observed_at
+        'source_observed_at', persisted_row.source_observed_at,
+        'source_starts_at', persisted_row.source_starts_at
     ) order by persisted_row.id), '[]'::jsonb)
     into persisted_picks
     from public.picks as persisted_row
@@ -835,6 +918,36 @@ as $$
                       in lower(pg_get_functiondef(publish_rpc.oid))
                   ) > 0
                   and position(
+                      'source_starts_at must be utc, after source_observed_at, and in the future'
+                      in lower(pg_get_functiondef(publish_rpc.oid))
+                  ) > 0
+                  and position(
+                      'source_starts_at expired while waiting for publication lock'
+                      in lower(pg_get_functiondef(publish_rpc.oid))
+                  ) > 0
+                  and position(
+                      'source_starts_at expired during batch persistence'
+                      in lower(pg_get_functiondef(publish_rpc.oid))
+                  ) > 0
+                  and position(
+                      'where persisted_row.batch_id = created_batch and persisted_row.source_starts_at <= clock_timestamp()'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(publish_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
+                      'persisted_row.source_starts_at <= clock_timestamp()'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(publish_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
                       'not resumed_batch.active'
                       in regexp_replace(
                           lower(pg_get_functiondef(publish_rpc.oid)),
@@ -949,6 +1062,19 @@ as $$
                       in lower(pg_get_functiondef(resume_rpc.oid))
                   ) > 0
                   and position(
+                      'persisted_row.source_starts_at <= clock_timestamp()'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(resume_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
+                      'persisted pick event is stale'
+                      in lower(pg_get_functiondef(resume_rpc.oid))
+                  ) > 0
+                  and position(
                       'where persisted_row.batch_id = resumed_batch.id'
                       in regexp_replace(
                           lower(pg_get_functiondef(resume_rpc.oid)),
@@ -999,7 +1125,8 @@ as $$
                               'source_event_id',
                               'source_market_key',
                               'source_selection_key',
-                              'source_observed_at'
+                              'source_observed_at',
+                              'source_starts_at'
                           ]::text[]
                       ) as returned_field(field_name)
                       where position(
@@ -1015,7 +1142,7 @@ as $$
                               'g'
                           )
                       ) > 0
-                  ) = 26
+                  ) = 27
                   and (
                       select count(*)
                       from regexp_matches(
@@ -1028,7 +1155,7 @@ as $$
                           '''[a-z_][a-z0-9_]*'', persisted_row\.[a-z_][a-z0-9_]*',
                           'g'
                       )
-                  ) = 26
+                  ) = 27
             ),
         'source_audit',
             exists (
@@ -1055,6 +1182,12 @@ as $$
                 select 1 from information_schema.columns
                 where table_schema = 'public' and table_name = 'picks'
                   and column_name = 'source_observed_at'
+                  and data_type = 'timestamp with time zone'
+            )
+            and exists (
+                select 1 from information_schema.columns
+                where table_schema = 'public' and table_name = 'picks'
+                  and column_name = 'source_starts_at'
                   and data_type = 'timestamp with time zone'
             )
             and exists (
@@ -1136,6 +1269,10 @@ as $$
                       in lower(pg_get_functiondef(audit_trigger.tgfoid))
                   ) > 0
                   and position(
+                      'new.source_starts_at is distinct from old.source_starts_at'
+                      in lower(pg_get_functiondef(audit_trigger.tgfoid))
+                  ) > 0
+                  and position(
                       'new.visibility = ''public'''
                       in lower(pg_get_functiondef(audit_trigger.tgfoid))
                   ) > 0
@@ -1176,6 +1313,14 @@ as $$
                   ) > 0
                   and position(
                       'source_observed_at is not null'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
+                  and position(
+                      'source_starts_at is not null'
+                      in lower(pg_get_constraintdef(audit_constraint.oid))
+                  ) > 0
+                  and position(
+                      'source_starts_at > source_observed_at'
                       in lower(pg_get_constraintdef(audit_constraint.oid))
                   ) > 0
             )

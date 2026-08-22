@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -54,6 +55,7 @@ def picks():
             "source_market_key": "h2h|full_time|",
             "source_selection_key": "home",
             "source_observed_at": "2026-08-20T20:00:00+00:00",
+            "source_starts_at": "2099-08-21T01:00:00Z",
         },
         {
             "pick": "Solo VIP",
@@ -65,6 +67,7 @@ def picks():
             "source_market_key": "h2h|full_time|",
             "source_selection_key": "away",
             "source_observed_at": "2026-08-20T20:00:00Z",
+            "source_starts_at": "2099-08-21T03:00:00+00:00",
         },
     ]
 
@@ -383,6 +386,85 @@ def test_audited_publisher_resume_dry_run_never_queries_or_writes(tmp_path):
     assert result is None
     assert repository.resume_calls == []
     assert not destination.exists()
+
+
+def test_resume_rejects_a_persisted_2020_event_before_writing_public_file(tmp_path):
+    destination = tmp_path / "picks.json"
+    stored = persisted_picks()
+    stored[0]["source_starts_at"] = "2020-01-02T00:00:00Z"
+    repository = FakeRepository(
+        resume_response=publish_response(stored, created=False)
+    )
+    publisher = AuditedBatchPublisher(
+        repository,
+        "run-1",
+        destination,
+        clock=lambda: datetime(2026, 8, 21, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(RuntimeError, match="resume_pick_batch"):
+        publisher.resume(dry_run=False)
+
+    assert not destination.exists()
+
+
+def test_fresh_publish_rechecks_clock_after_repository_returns(tmp_path):
+    destination = tmp_path / "picks.json"
+    expired = False
+
+    class ExpiringRepository(FakeRepository):
+        def publish(self, run_key, source_hash, requested):
+            nonlocal expired
+            response = super().publish(run_key, source_hash, requested)
+            expired = True
+            return response
+
+    repository = ExpiringRepository()
+    with pytest.raises(RuntimeError, match="source audit"):
+        AuditedBatchPublisher(
+            repository,
+            "run-1",
+            destination,
+            clock=lambda: datetime(
+                2099,
+                8,
+                22 if expired else 20,
+                tzinfo=timezone.utc,
+            ),
+        ).publish(picks(), dry_run=False)
+
+    assert repository.calls
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "starts_at",
+    [
+        None,
+        "",
+        "not-a-datetime",
+        "2026-08-21 03:00:00Z",
+        "2026-08-21T03:00:00.1234567Z",
+        "2026-08-21T03:00:00-06:00",
+        "2026-08-20T20:00:00Z",
+    ],
+)
+def test_resume_rejects_missing_malformed_offset_or_non_future_start(
+    starts_at, tmp_path
+):
+    stored = persisted_picks()
+    stored[0]["source_starts_at"] = starts_at
+    repository = FakeRepository(
+        resume_response=publish_response(stored, created=False)
+    )
+
+    with pytest.raises(RuntimeError, match="resume_pick_batch"):
+        AuditedBatchPublisher(
+            repository,
+            "run-1",
+            tmp_path / "picks.json",
+            clock=lambda: datetime(2026, 8, 21, tzinfo=timezone.utc),
+        ).resume(dry_run=False)
 
 
 @pytest.mark.parametrize("response_data", [

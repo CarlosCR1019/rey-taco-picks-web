@@ -61,6 +61,7 @@ create table if not exists public.picks (
     fecha_generacion date,
     odds_mercado numeric,
     tiene_valor boolean not null default false,
+    source_starts_at timestamptz,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
 );
@@ -83,6 +84,7 @@ alter table public.picks
     add column if not exists fecha_generacion date,
     add column if not exists odds_mercado numeric,
     add column if not exists tiene_valor boolean not null default false,
+    add column if not exists source_starts_at timestamptz,
     add column if not exists created_at timestamptz not null default now(),
     add column if not exists updated_at timestamptz not null default now();
 

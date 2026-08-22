@@ -78,6 +78,9 @@ def test_structured_pipeline_publishes_only_catalog_backed_rows(event_fixture):
     assert row["source_observed_at"] == (
         candidate.observed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     )
+    assert row["source_starts_at"] == (
+        candidate.starts_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
     assert row["cuota"] == candidate.price
     assert row["confianza"] == "65% respaldo de datos"
     assert row["riesgo"] == "Datos limitados"
@@ -456,9 +459,10 @@ def test_structured_pipeline_real_adapter_reaches_rpc_with_only_db_columns(
 ):
     client = _FakeSupabaseClient()
     adapter = AuditedBatchPublisher(
-        SupabaseBatchRepository(client),
+        SupabaseBatchRepository(client, clock=lambda: REFERENCE_AT),
         run_key="run-key-1",
         public_path=tmp_path / "picks.json",
+        clock=lambda: REFERENCE_AT,
     )
 
     result = run_structured_pipeline(

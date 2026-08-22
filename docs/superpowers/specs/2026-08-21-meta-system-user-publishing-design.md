@@ -53,7 +53,12 @@ Production loads configuration only at runtime:
 - `IG_USER_ID`: the connected professional Instagram account ID;
 - `META_GRAPH_VERSION`: defaults to `v26.0`;
 - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`: retrieve the audited batch,
-  upload the public image, and record delivery receipts.
+  upload the public image, and record delivery receipts;
+- `GROQ_API_KEY`: optional structured copy drafting, using the key already
+  configured for analysis;
+- `GROQ_CONTENT_MODEL`: defaults to `openai/gpt-oss-20b`;
+- `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AI_API_TOKEN`: optional Workers AI
+  background generation. Their absence never blocks publication.
 
 The same system-user token authenticates both destinations, but destination IDs,
 requests, receipts, and failure results remain independent. Empty credentials
@@ -98,6 +103,37 @@ Only already-public pick artwork may enter this bucket. Premium selections,
 reasoning, receipts, tokens, logs, source HTML, and sportsbook evidence pages are
 forbidden. The object is retained after publication because Meta may fetch it
 asynchronously.
+
+## Optional Creative Enhancement
+
+The branded local renderer is the required production path. It produces a
+complete image from the logo palette and audited pick without any image API.
+External AI is an optional decorator and can never become a publishing
+dependency.
+
+When Cloudflare Workers AI credentials are configured, the background provider
+may request one text-free, logo-free, generic sports atmosphere from a
+the `@cf/black-forest-labs/flux-2-dev` model. The prompt must not contain team,
+league, bookmaker, or athlete trademarks. The generated bitmap is darkened and
+cropped locally; the deterministic renderer then overlays every word, number,
+brand element, and responsible-use notice. A timeout, rate limit, invalid image,
+or unavailable model immediately selects the local branded background.
+
+Pollinations is removed from the production path. Its former unauthenticated
+endpoint no longer matches the current key-and-credit API and is unsuitable as
+an unattended dependency.
+
+Groq may draft platform-specific text for Instagram and Facebook plus reusable
+article, carousel, and short-video outlines. It receives only the public content
+package, never premium reasoning or tokens. Requests require JSON structured
+output. A local validator then requires every factual field, rejects any number
+not present in the public package, rejects omitted demo/staleness labels,
+guarantees, invented probabilities, unsafe calls to action, and excess
+hashtags, and enforces the responsible-use footer. Any malformed, incomplete,
+or unsafe result is discarded in favor of a deterministic Spanish template.
+
+The Psalms feature remains an independent content source. AI generation cannot
+delete, rewrite, replace, or suppress the configured Psalm content.
 
 ## Meta Delivery
 
@@ -176,6 +212,9 @@ own failure status.
   HTTP code query arbitrary tables directly.
 - Make the banner renderer accept exactly one explicit public pick and emit a
   JPEG suitable for both destinations.
+- Add optional Cloudflare background and Groq copy adapters behind strict
+  validators and deterministic local fallbacks; remove Pollinations from the
+  production renderer.
 - Add a migration for the public JPEG bucket, exact-run social batch RPC, and a
   receipt-bearing social delivery RPC limited to `facebook` and `instagram`.
 - Update `.github/workflows/scraper.yml` to pass the new token and Supabase
@@ -194,6 +233,9 @@ Implementation follows test-driven development:
   receipt IDs are recorded without changing the Telegram RPC contract;
 - renderer tests reject zero, multiple, premium, parlay, or unsafe picks and
   verify a 1080-by-1080 JPEG;
+- creative-provider tests prove Cloudflare/Groq timeouts, malformed output,
+  missing required facts, unsafe claims, and rate limits select local fallbacks
+  without blocking delivery;
 - storage tests verify the deterministic public JPEG key, MIME type, upsert, and
   rejection of non-public payloads;
 - transport tests assert the Graph host/version and Facebook/Instagram request
@@ -225,6 +267,8 @@ verification in Meta, Supabase, and GitHub Actions.
    screenshots, or chat.
 9. Existing scraper, Telegram, frontend, Psalms, membership, result checking,
    and payment behavior remain unchanged.
+10. Cloudflare and Groq are optional enhancements; a failure or missing key
+    still produces a valid local image and deterministic safe caption.
 
 ## Out of Scope
 
@@ -233,5 +277,7 @@ verification in Meta, Supabase, and GitHub Actions.
 - reels, stories, carousels, video, branded content, shopping, or hashtag tools;
 - automatic deletion of published social images;
 - promising Meta review, verification, monetization, or future policy approval;
+- AI-generated team crests, athletes, bookmaker marks, text, or numeric pick
+  details;
 - changes to scraper markets, frontend layout, Psalms, subscriptions, or result
   grading.

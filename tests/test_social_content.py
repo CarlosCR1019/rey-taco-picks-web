@@ -17,6 +17,13 @@ from backend.social_content import (
 
 NOW = datetime(2026, 8, 21, 20, 0, tzinfo=timezone.utc)
 CANONICAL_BATCH_ID = "11111111-1111-4111-8111-111111111111"
+DIRECT_PREDICTIVE_CLAIMS = (
+    "This pick will win",
+    "High chance of winning",
+    "Chance of winning",
+    "Este pick va a ganar",
+    "Este pick ganará",
+)
 EXPECTED_FIELDS = frozenset(
     {
         "id",
@@ -412,8 +419,60 @@ def test_fallback_captions_include_only_required_factual_persisted_copy():
 
     assert len(re.findall(r"(?<!\w)#[\wÁ-ú]+", captions.facebook)) <= 2
     assert len(re.findall(r"(?<!\w)#[\wÁ-ú]+", captions.instagram)) <= 4
+    assert captions.facebook.splitlines()[-1] == (
+        "#ReyTacoPicks #ApuestasResponsables"
+    )
+    assert captions.instagram.splitlines()[-1] == (
+        "#ReyTacoPicks #ApuestasResponsables "
+        "#PronósticosDeportivos #Deportes"
+    )
+    assert re.findall(r"(?<!\w)#[\wÁ-ú]+", captions.facebook) == [
+        "#ReyTacoPicks",
+        "#ApuestasResponsables",
+    ]
+    assert re.findall(r"(?<!\w)#[\wÁ-ú]+", captions.instagram) == [
+        "#ReyTacoPicks",
+        "#ApuestasResponsables",
+        "#PronósticosDeportivos",
+        "#Deportes",
+    ]
     with pytest.raises(FrozenInstanceError):
         captions.facebook = "Cambio"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("predictive_claim", DIRECT_PREDICTIVE_CLAIMS)
+def test_rejects_each_direct_predictive_claim_from_a_persisted_row(
+    predictive_claim,
+):
+    with pytest.raises(ValueError, match="pick"):
+        content_from_public_pick(
+            valid_row(pick=predictive_claim),
+            reference_at=NOW,
+        )
+
+
+@pytest.mark.parametrize("predictive_claim", DIRECT_PREDICTIVE_CLAIMS)
+def test_rejects_each_direct_predictive_claim_from_manual_content(
+    predictive_claim,
+):
+    content = replace(
+        content_from_public_pick(valid_row(), reference_at=NOW),
+        selection=predictive_claim,
+    )
+
+    with pytest.raises(ValueError, match="selection"):
+        build_fallback_captions(content)
+
+
+@pytest.mark.parametrize("safe_selection", ["América gana", "Victoria de América"])
+def test_accepts_neutral_standalone_market_selections(safe_selection):
+    content = content_from_public_pick(
+        valid_row(pick=safe_selection),
+        reference_at=NOW,
+    )
+
+    assert content.selection == safe_selection
+    assert safe_selection in build_fallback_captions(content).facebook
 
 
 @pytest.mark.parametrize(

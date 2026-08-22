@@ -80,6 +80,10 @@ _UNSAFE_CAPTION_WORDING = (
     re.compile(r"\bsin\s+riesgo\b"),
     re.compile(r"\b(?:patrocin\w*|sponsor\w*)\b"),
     re.compile(r"\b(?:promes\w*|promet\w*|promis\w*)\b"),
+    re.compile(r"\bwill\s+win\b"),
+    re.compile(r"\bchance\s+of\s+winning\b"),
+    re.compile(r"\bva\s+a\s+ganar\b"),
+    re.compile(r"\bganará\b"),
     re.compile(r"\bdemo\s+no\s+vigente\b"),
 )
 

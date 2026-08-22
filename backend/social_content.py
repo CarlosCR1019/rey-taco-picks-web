@@ -73,27 +73,58 @@ _INSTAGRAM_HASHTAGS = (
     "#ReyTacoPicks #ApuestasResponsables #PronósticosDeportivos #Deportes"
 )
 _UNSAFE_CAPTION_WORDING = (
-    re.compile(r"\b(?:probabilidad(?:es)?|probabilit(?:y|ies))\b"),
     re.compile(r"\b(?:por\s+ciento|porcentajes?|percent(?:age)?s?)\b"),
-    re.compile(r"\bsegur[oa]s?\b"),
     re.compile(r"\b(?:garant|guarant)\w*\b"),
     re.compile(r"\bsin\s+riesgo\b"),
     re.compile(r"\b(?:patrocin\w*|sponsor\w*)\b"),
     re.compile(r"\b(?:promes\w*|promet\w*|promis\w*)\b"),
     re.compile(r"\bdemo\s+no\s+vigente\b"),
 )
-_CONTENT_SUBJECT = r"(?:this|the)\s+(?:pick|bet|selection)"
-_PREDICTIVE_CAPTION_WORDING = (
-    re.compile(r"\b(?:will|should|must)(?:\s+\w+){0,2}\s+win\b"),
-    re.compile(r"\b(?:is|are)\s+going\s+to\s+win\b"),
-    re.compile(r"\b(?:bound|expected|likely)\s+to\s+win\b"),
-    re.compile(r"\bchance\s+(?:to\s+win|of\s+winning)\b"),
-    re.compile(rf"\b{_CONTENT_SUBJECT}\s+(?:wins|is\s+(?:a|the)\s+winner)\b"),
-    re.compile(r"\bva\s+a\s+ganar\b"),
-    re.compile(r"\bganará\b"),
-    re.compile(r"\bdeber[ií]a\s+ganar\b"),
+_PROMOTIONAL_CONTENT_SUBJECTS = (
+    re.compile(
+        r"\b(?:this|that|these|those|the|my|your|his|her|its|our|their)\s+"
+        r"(?:picks?|bets?|selections?)\b"
+    ),
+    re.compile(
+        r"\b(?:este|esta|estos|estas|el|la|los|las|mi|mis|tu|tus|"
+        r"su|sus|nuestro|nuestra|nuestros|nuestras)\s+"
+        r"(?:picks?|apuestas?|selecci[oó]n|selecciones|pron[oó]sticos?)\b"
+    ),
+)
+_PROBABILITY_CLAIM_WORDING = (
+    re.compile(
+        r"\b(?:probabilit(?:y|ies)|probabl(?:e|y)|likelihood|likely|expected|"
+        r"sure(?:ly)?|certain(?:ly|ty)?)\b"
+    ),
+    re.compile(
+        r"\b(?:probabilidad(?:es)?|probable(?:s|mente)?|esperad[oa]s?|"
+        r"segur(?:[oa]s?|amente|idad)|ciert(?:[oa]s?|amente)|certeza)\b"
+    ),
+)
+_CHANCE_OF_WIN_WORDING = (
+    re.compile(r"\bchances?\s+(?:to\s+win|of\s+winning|de\s+ganar)\b"),
+    re.compile(r"\bposibilidad(?:es)?\s+de\s+ganar\b"),
+)
+_ENGLISH_WIN_OUTCOME = r"(?:win|be(?:\s+\w+){0,2}\s+winners?)"
+_FUTURE_WIN_WORDING = (
+    re.compile(
+        rf"\b(?:will|should|must)(?:\s+\w+){{0,3}}\s+"
+        rf"{_ENGLISH_WIN_OUTCOME}\b"
+    ),
+    re.compile(
+        rf"\bgoing\s+to(?:\s+\w+){{0,3}}\s+{_ENGLISH_WIN_OUTCOME}\b"
+    ),
+    re.compile(r"\b(?:va|van)\s+a(?:\s+\w+){0,3}\s+ganar\b"),
+    re.compile(r"\bganar(?:á|án)\b"),
+    re.compile(r"\bdeber[ií]a(?:n)?(?:\s+\w+){0,2}\s+ganar\b"),
+    re.compile(r"\bser(?:á|án)(?:\s+\w+){0,2}\s+ganador(?:a|es|as)?\b"),
     re.compile(r"\bprobable\s+que\s+gane\b"),
-    re.compile(r"\b(?:posibilidad(?:es)?|chance)\s+de\s+ganar\b"),
+)
+_PREDICTIVE_CAPTION_RULES = (
+    _PROMOTIONAL_CONTENT_SUBJECTS,
+    _PROBABILITY_CLAIM_WORDING,
+    _CHANCE_OF_WIN_WORDING,
+    _FUTURE_WIN_WORDING,
 )
 
 
@@ -157,6 +188,17 @@ def _normalized_text(value: object, *, field: str) -> str:
     return normalized
 
 
+def _matches_any_rule(
+    value: str,
+    rule_groups: tuple[tuple[re.Pattern[str], ...], ...],
+) -> bool:
+    return any(
+        pattern.search(value) is not None
+        for rule_group in rule_groups
+        for pattern in rule_group
+    )
+
+
 def _validate_caption_fact(value: object, *, field: str) -> None:
     normalized = _normalized_text(value, field=field)
     if normalized != value:
@@ -165,10 +207,7 @@ def _validate_caption_fact(value: object, *, field: str) -> None:
     has_unsafe_wording = any(
         pattern.search(folded) is not None for pattern in _UNSAFE_CAPTION_WORDING
     )
-    has_predictive_wording = any(
-        pattern.search(folded) is not None
-        for pattern in _PREDICTIVE_CAPTION_WORDING
-    )
+    has_predictive_wording = _matches_any_rule(folded, _PREDICTIVE_CAPTION_RULES)
     if (
         "%" in folded
         or "#" in folded

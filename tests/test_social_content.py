@@ -17,28 +17,65 @@ from backend.social_content import (
 
 NOW = datetime(2026, 8, 21, 20, 0, tzinfo=timezone.utc)
 CANONICAL_BATCH_ID = "11111111-1111-4111-8111-111111111111"
-PREDICTIVE_CLAIM_FAMILIES = (
+PROMOTIONAL_SUBJECT_CLAIMS = (
+    "This pick is sure to win",
+    "This pick will be a winner",
+    "This pick wins",
+    "The bet wins",
+    "This selection is a winner",
+    "Our pick wins",
+    "His bet for today",
+    "Their selection wins",
+    "The selection for today",
+    "Este pick gana",
+    "Este pick será ganador",
+    "Nuestro pronóstico de hoy",
+    "Su apuesta de hoy",
+)
+PROBABILITY_LEXICON_CLAIMS = (
+    "High likelihood of winning",
+    "Likely to win",
+    "This pick is expected to win",
+    "Expected outcome",
+    "Sure result",
+    "Surely a winner",
+    "Certain result",
+    "Certainly a winner",
+    "Probably wins",
+    "Probable que gane",
+    "Probablemente gana",
+    "Resultado esperado",
+    "Resultado seguro",
+    "Seguramente gana",
+    "Resultado cierto",
+    "Ciertamente gana",
+    "Con certeza",
+)
+CHANCE_OF_WIN_CLAIMS = (
+    "High chance to win",
+    "High chance of winning",
+    "Chance of winning",
+    "Very high chance of winning",
+    "Several chances to win",
+    "Muchas chances de ganar",
+    "Alta posibilidad de ganar",
+    "Varias posibilidades de ganar",
+    "Buena chance de ganar",
+)
+FUTURE_MODAL_WIN_CLAIMS = (
     "This pick will win",
     "This pick is going to win",
     "These bets are going to win",
     "This pick should win",
     "This bet must win",
     "This selection is bound to win",
-    "This pick is expected to win",
-    "Likely to win",
-    "High chance to win",
-    "High chance of winning",
-    "Chance of winning",
-    "Very high chance of winning",
-    "This pick wins",
-    "The bet wins",
-    "This selection is a winner",
+    "America will definitely win",
+    "America will be a winner",
+    "America is going to be a winner",
     "Este pick va a ganar",
     "Este pick ganará",
     "Este pick debería ganar",
-    "Probable que gane",
-    "Alta posibilidad de ganar",
-    "Buena chance de ganar",
+    "América será ganadora",
 )
 EXPECTED_FIELDS = frozenset(
     {
@@ -456,10 +493,7 @@ def test_fallback_captions_include_only_required_factual_persisted_copy():
         captions.facebook = "Cambio"  # type: ignore[misc]
 
 
-@pytest.mark.parametrize("predictive_claim", PREDICTIVE_CLAIM_FAMILIES)
-def test_rejects_each_direct_predictive_claim_from_a_persisted_row(
-    predictive_claim,
-):
+def assert_persisted_claim_is_rejected(predictive_claim):
     with pytest.raises(ValueError, match="pick"):
         content_from_public_pick(
             valid_row(pick=predictive_claim),
@@ -467,10 +501,7 @@ def test_rejects_each_direct_predictive_claim_from_a_persisted_row(
         )
 
 
-@pytest.mark.parametrize("predictive_claim", PREDICTIVE_CLAIM_FAMILIES)
-def test_rejects_each_direct_predictive_claim_from_manual_content(
-    predictive_claim,
-):
+def assert_manual_claim_is_rejected(predictive_claim):
     content = replace(
         content_from_public_pick(valid_row(), reference_at=NOW),
         selection=predictive_claim,
@@ -480,9 +511,56 @@ def test_rejects_each_direct_predictive_claim_from_manual_content(
         build_fallback_captions(content)
 
 
+@pytest.mark.parametrize("claim", PROMOTIONAL_SUBJECT_CLAIMS)
+def test_persisted_rows_reject_promotional_content_subjects(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", PROMOTIONAL_SUBJECT_CLAIMS)
+def test_manual_content_rejects_promotional_content_subjects(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", PROBABILITY_LEXICON_CLAIMS)
+def test_persisted_rows_reject_probability_lexicon(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", PROBABILITY_LEXICON_CLAIMS)
+def test_manual_content_rejects_probability_lexicon(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", CHANCE_OF_WIN_CLAIMS)
+def test_persisted_rows_reject_chance_of_win_structures(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", CHANCE_OF_WIN_CLAIMS)
+def test_manual_content_rejects_chance_of_win_structures(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", FUTURE_MODAL_WIN_CLAIMS)
+def test_persisted_rows_reject_future_modal_win_structures(claim):
+    assert_persisted_claim_is_rejected(claim)
+
+
+@pytest.mark.parametrize("claim", FUTURE_MODAL_WIN_CLAIMS)
+def test_manual_content_rejects_future_modal_win_structures(claim):
+    assert_manual_claim_is_rejected(claim)
+
+
 @pytest.mark.parametrize(
     "safe_selection",
-    ["América gana", "Victoria de América", "America wins", "America to win"],
+    [
+        "América gana",
+        "Victoria de América",
+        "America wins",
+        "America to win",
+        "Pick: America wins",
+        "Double chance: America or draw",
+    ],
 )
 def test_accepts_neutral_standalone_market_selections(safe_selection):
     content = content_from_public_pick(

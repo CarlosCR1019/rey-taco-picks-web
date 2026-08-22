@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 import subprocess
@@ -46,9 +47,27 @@ def _png_bytes(size: tuple[int, int] = (1080, 1080)) -> bytes:
 
 
 class _FakeDriver:
-    def __init__(self, screenshot: bytes | None = None, *, fail: bool = False):
+    def __init__(
+        self,
+        screenshot: bytes | None = None,
+        *,
+        fail: bool = False,
+        quit_error: Exception | None = None,
+        dom_metrics: dict[str, object] | None = None,
+    ):
         self.screenshot = screenshot or _png_bytes()
         self.fail = fail
+        self.quit_error = quit_error
+        self.dom_metrics = dom_metrics or {
+            "viewportWidth": 1080,
+            "viewportHeight": 1080,
+            "rootWidth": 1080,
+            "rootHeight": 1080,
+            "rootScrollWidth": 1080,
+            "rootScrollHeight": 1080,
+            "allRequiredInside": True,
+            "hasTextOverflow": False,
+        }
         self.quit_called = False
         self.cdp_calls: list[tuple[str, dict[str, object]]] = []
         self.loaded_html_path: Path | None = None
@@ -64,15 +83,19 @@ class _FakeDriver:
             raise RuntimeError("driver failed with private provider body")
 
     def execute_script(self, script: str):
-        assert script == "return document.readyState"
-        self.ready_state_checks += 1
-        return "complete"
+        if script == "return document.readyState":
+            self.ready_state_checks += 1
+            return "complete"
+        assert "allRequiredInside" in script
+        return self.dom_metrics
 
     def get_screenshot_as_png(self) -> bytes:
         return self.screenshot
 
     def quit(self):
         self.quit_called = True
+        if self.quit_error is not None:
+            raise self.quit_error
 
 
 def test_build_social_html_is_self_contained_escaped_and_one_card():
@@ -104,6 +127,34 @@ def test_build_social_html_marks_demo_before_any_value_signal():
     assert "DEMO NO VIGENTE" in demo_html
     assert "Señal de valor comparada" not in demo_html
     assert "DEMO NO VIGENTE" not in ordinary_html
+
+
+def test_build_social_html_preserves_literal_braces_in_user_facts():
+    content = replace(
+        _content(),
+        event="Club {{literal}} vs Club Rival",
+        selection="Mercado {con llaves}",
+    )
+
+    html = build_social_html(content, generated_at=NOW)
+
+    assert "Club {{literal}} vs Club Rival" in html
+    assert "Mercado {con llaves}" in html
+
+
+def test_maximum_fact_lengths_use_dense_fit_without_truncation():
+    event = "W" * 300
+    selection = "M" * 300
+    html = build_social_html(
+        replace(_content(), event=event, selection=selection),
+        generated_at=NOW,
+    )
+
+    assert event in html
+    assert selection in html
+    assert "--event-size: 16px" in html
+    assert "--selection-size: 16px" in html
+    assert "text-overflow: ellipsis" not in html
 
 
 def test_renderer_requires_an_explicit_social_content():
@@ -180,6 +231,42 @@ def test_renderer_rejects_wrong_screenshot_dimensions():
     driver = _FakeDriver(_png_bytes((1080, 1079)))
 
     with pytest.raises(ValueError, match="1080x1080"):
+        render_social_jpeg(
+            _content(), generated_at=NOW, driver_factory=lambda _options: driver
+        )
+
+    assert driver.quit_called is True
+
+
+def test_renderer_fails_closed_when_required_dom_content_overflows():
+    driver = _FakeDriver(
+        dom_metrics={
+            "viewportWidth": 1080,
+            "viewportHeight": 1080,
+            "rootWidth": 1080,
+            "rootHeight": 1080,
+            "rootScrollWidth": 1080,
+            "rootScrollHeight": 1081,
+            "allRequiredInside": False,
+            "hasTextOverflow": True,
+        }
+    )
+
+    with pytest.raises(ValueError, match="DOM layout overflow"):
+        render_social_jpeg(
+            _content(), generated_at=NOW, driver_factory=lambda _options: driver
+        )
+
+    assert driver.quit_called is True
+
+
+def test_primary_render_error_survives_a_secondary_quit_error():
+    driver = _FakeDriver(
+        fail=True,
+        quit_error=RuntimeError("secondary quit failure"),
+    )
+
+    with pytest.raises(RuntimeError, match="driver failed with private provider body"):
         render_social_jpeg(
             _content(), generated_at=NOW, driver_factory=lambda _options: driver
         )

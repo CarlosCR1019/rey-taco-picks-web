@@ -26,6 +26,36 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_PATH = Path(__file__).with_name("banner_template.html")
 LOGO_PATH = ROOT / "frontend" / "public" / "logo.jpg"
 _MEXICO_CITY = ZoneInfo("America/Mexico_City")
+_DOM_METRICS_SCRIPT = """
+return (() => {
+  const root = document.getElementById('banner-root');
+  const selectors = [
+    '.header', '.pick-card', '.event', '.selection', '.odds',
+    '.evidence', '.observation', '.footer', '.site', '.notice'
+  ];
+  const required = selectors.map((selector) => root.querySelector(selector));
+  const rootRect = root.getBoundingClientRect();
+  const allRequiredInside = required.every((element) => {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.left >= rootRect.left && rect.top >= rootRect.top &&
+      rect.right <= rootRect.right && rect.bottom <= rootRect.bottom;
+  });
+  const hasTextOverflow = required.some((element) => element &&
+    element.scrollWidth > element.clientWidth + 2
+  );
+  return {
+    viewportWidth: Math.round(window.innerWidth),
+    viewportHeight: Math.round(window.innerHeight),
+    rootWidth: Math.round(rootRect.width),
+    rootHeight: Math.round(rootRect.height),
+    rootScrollWidth: root.scrollWidth,
+    rootScrollHeight: root.scrollHeight,
+    allRequiredInside,
+    hasTextOverflow
+  };
+})();
+"""
 
 
 def banner_date_label(generated_at: datetime | None = None) -> str:
@@ -73,6 +103,19 @@ def _background_style(background_bytes: bytes | None) -> str:
     )
 
 
+def _fact_font_size(value: str, *, ordinary_size: int) -> int:
+    length = len(value)
+    if length > 240:
+        return 16
+    if length > 180:
+        return 20
+    if length > 120:
+        return 24
+    if length > 70:
+        return 30
+    return ordinary_size
+
+
 def _card_html(content: SocialContent) -> str:
     if content.is_demo is True:
         value_signal = ""
@@ -80,8 +123,13 @@ def _card_html(content: SocialContent) -> str:
         value_signal = '<div class="value">Señal de valor comparada</div>'
     else:
         value_signal = ""
+    event_size = _fact_font_size(content.event, ordinary_size=48)
+    selection_size = _fact_font_size(content.selection, ordinary_size=39)
+    dense = len(content.event) + len(content.selection) > 360
+    card_padding = "24px 28px" if dense else "40px 42px"
+    card_gap = "10px" if dense else "18px"
     return f"""
-    <article class="pick-card">
+    <article class="pick-card" style="--event-size: {event_size}px; --selection-size: {selection_size}px; --card-padding: {card_padding}; --card-gap: {card_gap}">
       <div class="meta-row">
         <span class="tag">{escape(content.category)}</span>
         <span class="schedule">{escape(content.schedule)}</span>
@@ -124,10 +172,13 @@ def build_social_html(
         "{{DEMO_LABEL}}": "DEMO NO VIGENTE" if content.is_demo is True else "",
         "{{CARD_HTML}}": _card_html(content),
     }
+    invalid_markers = [
+        marker for marker in replacements if template.count(marker) != 1
+    ]
+    if invalid_markers:
+        raise ValueError("banner template markers must each appear exactly once")
     for marker, value in replacements.items():
-        template = template.replace(marker, value)
-    if "{{" in template or "}}" in template:
-        raise ValueError("banner template has unresolved markers")
+        template = template.replace(marker, value, 1)
     return template
 
 
@@ -138,6 +189,29 @@ def _chrome_options() -> webdriver.ChromeOptions:
     options.add_argument("--force-device-scale-factor=1")
     options.add_argument("--window-size=1080,1080")
     return options
+
+
+def _validate_dom_metrics(metrics: object) -> None:
+    if not isinstance(metrics, dict):
+        raise ValueError("DOM layout overflow")
+    dimensions = (
+        "viewportWidth",
+        "viewportHeight",
+        "rootWidth",
+        "rootHeight",
+        "rootScrollWidth",
+        "rootScrollHeight",
+    )
+    if any(type(metrics.get(key)) is not int for key in dimensions):
+        raise ValueError("DOM layout overflow")
+    if any(metrics[key] != 1080 for key in dimensions[:4]):
+        raise ValueError("DOM layout overflow")
+    if metrics["rootScrollWidth"] > 1080 or metrics["rootScrollHeight"] > 1080:
+        raise ValueError("DOM layout overflow")
+    if metrics.get("allRequiredInside") is not True:
+        raise ValueError("DOM layout overflow")
+    if metrics.get("hasTextOverflow") is not False:
+        raise ValueError("DOM layout overflow")
 
 
 def render_social_jpeg(
@@ -164,6 +238,7 @@ def render_social_jpeg(
         html_path = directory / "social.html"
         png_path = directory / "social.png"
         html_path.write_text(html, encoding="utf-8")
+        primary_error: BaseException | None = None
         try:
             driver = make_driver(options)
             driver.execute_cdp_cmd(
@@ -182,6 +257,7 @@ def render_social_jpeg(
                 )
                 == "complete"
             )
+            _validate_dom_metrics(driver.execute_script(_DOM_METRICS_SCRIPT))
             png_path.write_bytes(driver.get_screenshot_as_png())
             with Image.open(png_path) as screenshot:
                 screenshot.load()
@@ -191,9 +267,16 @@ def render_social_jpeg(
                 output = BytesIO()
                 rgb.save(output, format="JPEG", quality=92)
                 return output.getvalue()
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
             if driver is not None:
-                driver.quit()
+                try:
+                    driver.quit()
+                except BaseException:
+                    if primary_error is None:
+                        raise
 
 
 def renderizar_banner_estudio(

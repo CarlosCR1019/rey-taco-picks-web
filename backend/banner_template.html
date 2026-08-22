@@ -92,7 +92,7 @@
   .pick-card {
     width: 100%;
     min-height: 515px;
-    padding: 40px 42px;
+    padding: var(--card-padding, 40px 42px);
     display: flex;
     flex-direction: column;
     justify-content: space-between;
@@ -101,6 +101,7 @@
     border-radius: 26px;
     background: linear-gradient(135deg, rgba(15, 23, 42, .96), rgba(7, 12, 29, .93));
     box-shadow: 0 24px 52px rgba(0, 0, 0, .55);
+    gap: var(--card-gap, 18px);
   }
   .meta-row, .facts-row {
     display: flex;
@@ -120,8 +121,21 @@
     text-transform: uppercase;
   }
   .schedule { color: #cbd5e1; font-size: 18px; font-weight: 750; }
-  .event { font-size: 48px; line-height: 1.1; font-weight: 900; }
-  .selection { color: #facc15; font-size: 39px; line-height: 1.15; font-weight: 900; }
+  .event {
+    font-size: var(--event-size, 48px);
+    line-height: 1.08;
+    font-weight: 900;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .selection {
+    color: #facc15;
+    font-size: var(--selection-size, 39px);
+    line-height: 1.1;
+    font-weight: 900;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
   .odds {
     min-width: 190px;
     padding: 16px 22px;

@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import base64
-from binascii import Error as Base64Error
 from io import BytesIO
+import json
 import logging
 import re
 from typing import Any
+import warnings
 
 from PIL import Image, ImageEnhance, UnidentifiedImageError
 
 
 LOGGER = logging.getLogger(__name__)
+MAX_DECODED_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_ENCODED_IMAGE_CHARS = (
+    ((MAX_DECODED_IMAGE_BYTES + 2) // 3) * 4 + 4
+)
+MAX_JSON_RESPONSE_BYTES = MAX_ENCODED_IMAGE_CHARS + 16 * 1024
+MAX_IMAGE_SIDE = 4096
+MAX_IMAGE_PIXELS = 16_000_000
+_STREAM_CHUNK_BYTES = 64 * 1024
 
 
 class _CloudflareBackgroundError(Exception):
@@ -61,12 +70,22 @@ class CloudflareBackgroundProvider:
                     "height": (None, "1080"),
                 },
                 timeout=20,
+                stream=True,
             )
-            if getattr(response, "status_code", None) != 200:
-                raise _CloudflareBackgroundError
-            payload = response.json()
+            try:
+                if getattr(response, "status_code", None) != 200:
+                    raise _CloudflareBackgroundError
+                payload = self._read_payload(response)
+            finally:
+                close = getattr(response, "close", None)
+                if callable(close):
+                    close()
             encoded = self._encoded_image(payload)
+            if len(encoded) > MAX_ENCODED_IMAGE_CHARS:
+                raise _CloudflareBackgroundError
             raw = base64.b64decode(encoded, validate=True)
+            if len(raw) > MAX_DECODED_IMAGE_BYTES:
+                raise _CloudflareBackgroundError
             return self._normalize(raw)
         except Exception as exc:
             LOGGER.info(
@@ -74,6 +93,45 @@ class CloudflareBackgroundProvider:
                 type(exc).__name__,
             )
             return None
+
+    @staticmethod
+    def _read_payload(response: object) -> Any:
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            raise _CloudflareBackgroundError
+        get_header = getattr(headers, "get", None)
+        if not callable(get_header):
+            raise _CloudflareBackgroundError
+        declared = get_header("Content-Length")
+        if declared is not None:
+            if (
+                not isinstance(declared, str)
+                or not declared.isascii()
+                or not declared.isdigit()
+            ):
+                raise _CloudflareBackgroundError
+            if int(declared) > MAX_JSON_RESPONSE_BYTES:
+                raise _CloudflareBackgroundError
+
+        iter_content = getattr(response, "iter_content", None)
+        if not callable(iter_content):
+            raise _CloudflareBackgroundError
+        chunks = iter_content(chunk_size=_STREAM_CHUNK_BYTES)
+        body = bytearray()
+        for chunk in chunks:
+            if not isinstance(chunk, bytes):
+                raise _CloudflareBackgroundError
+            if not chunk:
+                continue
+            if len(body) + len(chunk) > MAX_JSON_RESPONSE_BYTES:
+                raise _CloudflareBackgroundError
+            body.extend(chunk)
+        if not body:
+            raise _CloudflareBackgroundError
+        try:
+            return json.loads(bytes(body).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise _CloudflareBackgroundError from None
 
     @staticmethod
     def _encoded_image(payload: Any) -> str:
@@ -90,19 +148,38 @@ class CloudflareBackgroundProvider:
     @staticmethod
     def _normalize(raw: bytes) -> bytes:
         try:
-            with Image.open(BytesIO(raw)) as source:
-                source.load()
-                if source.width < 512 or source.height < 512:
-                    raise _CloudflareBackgroundError
-                side = min(source.size)
-                left = (source.width - side) // 2
-                top = (source.height - side) // 2
-                square = source.crop((left, top, left + side, top + side))
-                square = square.resize((1080, 1080), Image.Resampling.LANCZOS)
-                rgb = square.convert("RGB")
-                darkened = ImageEnhance.Brightness(rgb).enhance(0.35)
-                output = BytesIO()
-                darkened.save(output, format="JPEG", quality=90)
-                return output.getvalue()
-        except (OSError, UnidentifiedImageError, ValueError, Base64Error):
+            if len(raw) > MAX_DECODED_IMAGE_BYTES:
+                raise _CloudflareBackgroundError
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(BytesIO(raw)) as source:
+                    width, height = source.size
+                    if (
+                        width > MAX_IMAGE_SIDE
+                        or height > MAX_IMAGE_SIDE
+                        or width * height > MAX_IMAGE_PIXELS
+                    ):
+                        raise _CloudflareBackgroundError
+                    source.load()
+                    if source.width < 512 or source.height < 512:
+                        raise _CloudflareBackgroundError
+                    side = min(source.size)
+                    left = (source.width - side) // 2
+                    top = (source.height - side) // 2
+                    square = source.crop((left, top, left + side, top + side))
+                    square = square.resize(
+                        (1080, 1080), Image.Resampling.LANCZOS
+                    )
+                    rgb = square.convert("RGB")
+                    darkened = ImageEnhance.Brightness(rgb).enhance(0.35)
+                    output = BytesIO()
+                    darkened.save(output, format="JPEG", quality=90)
+                    return output.getvalue()
+        except (
+            OSError,
+            UnidentifiedImageError,
+            ValueError,
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+        ):
             raise _CloudflareBackgroundError from None

@@ -226,14 +226,11 @@ def _public_payload(content: SocialContent) -> dict[str, object]:
 
 
 def _conditional_caption_lines(content: SocialContent) -> tuple[str, ...]:
-    return tuple(
-        label
-        for enabled, label in (
-            (content.is_demo, "DEMO NO VIGENTE"),
-            (content.has_value_signal, "Señal de valor comparada"),
-        )
-        if enabled
-    )
+    if content.is_demo:
+        return ("DEMO NO VIGENTE",)
+    if content.has_value_signal:
+        return ("Señal de valor comparada",)
+    return ()
 
 
 def _required_caption_lines(
@@ -358,13 +355,16 @@ def _validate_caption(
     if content.is_demo:
         if "DEMO NO VIGENTE" not in candidate_lines:
             raise ValueError("provider caption omits the demo label")
+        if "señal de valor comparada" in folded:
+            raise ValueError("provider caption adds a value label to demo copy")
     elif "demo no vigente" in folded:
         raise ValueError("provider caption leaks the demo label")
-    if content.has_value_signal:
-        if "Señal de valor comparada" not in candidate_lines:
-            raise ValueError("provider caption omits the value label")
-    elif "señal de valor comparada" in folded:
-        raise ValueError("provider caption invents a value label")
+    else:
+        if content.has_value_signal:
+            if "Señal de valor comparada" not in candidate_lines:
+                raise ValueError("provider caption omits the value label")
+        elif "señal de valor comparada" in folded:
+            raise ValueError("provider caption invents a value label")
 
     if any(required not in candidate_lines for required in required_lines):
         raise ValueError("provider caption omits a required exact line")

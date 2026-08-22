@@ -693,6 +693,29 @@ def test_demo_label_leaking_into_production_falls_back():
     assert caption_result(content, candidate) == build_fallback_captions(content)
 
 
+def test_demo_with_value_flag_accepts_canonical_demo_copy_without_value_line():
+    content = social_content(is_demo=True, has_value_signal=True)
+    candidate = valid_candidate(content)
+
+    assert "DEMO NO VIGENTE" in candidate.facebook
+    assert "Señal de valor comparada" not in candidate.instagram
+    assert caption_result(content, candidate) == candidate
+
+
+def test_demo_with_value_flag_rejects_value_line_in_either_caption():
+    content = social_content(is_demo=True, has_value_signal=True)
+    candidate = valid_candidate(content)
+    leaked_value_candidate = SocialCaptions(
+        facebook=f"{candidate.facebook}\nSeñal de valor comparada",
+        instagram=f"{candidate.instagram}\nSeñal de valor comparada",
+    )
+
+    assert caption_result(
+        content,
+        leaked_value_candidate,
+    ) == build_fallback_captions(content)
+
+
 @pytest.mark.parametrize("platform", ["facebook", "instagram"])
 def test_true_value_signal_requires_exact_label_in_each_caption(platform):
     content = social_content(has_value_signal=True)

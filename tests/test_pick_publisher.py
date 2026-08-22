@@ -4,6 +4,7 @@ import pytest
 
 import backend.pick_publisher as pick_publisher
 from backend.pick_publisher import (
+    AuditedBatchPublisher,
     PERSISTED_PICK_COLUMNS,
     SupabaseBatchRepository,
     publish_batch,
@@ -12,11 +13,13 @@ from backend.pick_publisher import (
 
 
 class FakeRepository:
-    def __init__(self, response=None, error=None, public_path=None):
+    def __init__(self, response=None, error=None, public_path=None, resume_response=None):
         self.response = response
         self.error = error
         self.public_path = public_path
+        self.resume_response = resume_response
         self.calls = []
+        self.resume_calls = []
         self.delivery_calls = []
 
     def publish(self, run_key, source_hash, picks):
@@ -31,6 +34,12 @@ class FakeRepository:
 
     def record_delivery(self, run_id, destination, success, error=""):
         self.delivery_calls.append((run_id, destination, success, error))
+
+    def resume(self, run_key):
+        self.resume_calls.append(run_key)
+        if self.error is not None:
+            raise self.error
+        return self.resume_response
 
 
 def picks():
@@ -297,6 +306,83 @@ def test_supabase_repository_uses_rpc_arguments_and_normalizes_response(response
             "requested_error": "",
         }),
     ]
+
+
+def test_supabase_repository_resume_uses_exact_rpc_argument_and_freezes_rows():
+    stored = persisted_picks()
+    client = FakeClient([
+        publish_response(stored, created=False, delivery_status={"admin": {"success": True}})
+    ])
+    repository = SupabaseBatchRepository(client)
+
+    result = repository.resume("run-1")
+    stored[0]["pick"] = "hostile mutation"
+
+    assert result is not None
+    assert result["created"] is False
+    assert result["picks"][0]["pick"] == "Gratis"
+    assert client.calls == [
+        ("resume_pick_batch", {"requested_run_key": "run-1"})
+    ]
+
+
+def test_supabase_repository_resume_accepts_database_null():
+    repository = SupabaseBatchRepository(FakeClient([None]))
+
+    assert repository.resume("run-1") is None
+
+
+@pytest.mark.parametrize(
+    "response_data",
+    [
+        {},
+        [],
+        publish_response(persisted_picks(), created=True),
+        {**publish_response(persisted_picks(), created=False), "picks": []},
+    ],
+)
+def test_supabase_repository_resume_rejects_malformed_or_created_response(
+    response_data,
+):
+    repository = SupabaseBatchRepository(FakeClient([response_data]))
+
+    with pytest.raises(RuntimeError, match="resume_pick_batch"):
+        repository.resume("run-1")
+
+
+def test_audited_publisher_resume_rewrites_public_file_from_persisted_rows(tmp_path):
+    destination = tmp_path / "public" / "picks.json"
+    destination.parent.mkdir(parents=True)
+    destination.write_text('[{"pick":"stale"}]', encoding="utf-8")
+    stored = persisted_picks()
+    repository = FakeRepository(
+        resume_response=publish_response(stored, created=False, delivery_status={})
+    )
+    publisher = AuditedBatchPublisher(repository, "run-1", destination)
+
+    result = publisher.resume(dry_run=False)
+
+    assert result is not None
+    assert result.created is False
+    assert [dict(row) for row in result.picks] == stored
+    assert json.loads(destination.read_text(encoding="utf-8")) == [
+        {key: value for key, value in stored[0].items() if key != "razonamiento"}
+    ]
+
+
+def test_audited_publisher_resume_dry_run_never_queries_or_writes(tmp_path):
+    destination = tmp_path / "picks.json"
+    repository = FakeRepository(
+        resume_response=publish_response(persisted_picks(), created=False)
+    )
+
+    result = AuditedBatchPublisher(repository, "run-1", destination).resume(
+        dry_run=True
+    )
+
+    assert result is None
+    assert repository.resume_calls == []
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize("response_data", [

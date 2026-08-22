@@ -243,6 +243,7 @@ def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
         {
             "public_picks": True,
             "publish_pick_batch": True,
+            "resume_pick_batch": True,
             "source_audit": True,
             "version": 2,
         }
@@ -272,7 +273,15 @@ def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
         {
             "public_picks": True,
             "publish_pick_batch": True,
+            "resume_pick_batch": True,
             "source_audit": False,
+            "version": 2,
+        },
+        {
+            "public_picks": True,
+            "publish_pick_batch": True,
+            "resume_pick_batch": False,
+            "source_audit": True,
             "version": 2,
         },
         {"public_picks": False, "publish_pick_batch": True, "version": 1},
@@ -407,6 +416,9 @@ def production_values():
 
 
 class PublishFailureRepository:
+    def resume(self, _run_key):
+        return None
+
     def publish(self, _run_key, _source_hash, _picks):
         raise RuntimeError("database provider leaked service-role-secret")
 
@@ -436,6 +448,9 @@ def test_real_phase7_persistence_failure_maps_to_exit_5_without_leaking(
 
 
 class DeliveryRecordFailureRepository:
+    def resume(self, _run_key):
+        return None
+
     def publish(self, _run_key, _source_hash, picks):
         stored = []
         for index, pick in enumerate(picks, start=1):
@@ -454,6 +469,190 @@ class DeliveryRecordFailureRepository:
 
     def record_delivery(self, *_args, **_kwargs):
         raise RuntimeError("delivery provider leaked telegram-secret")
+
+
+class ResumeRepository:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.resume_calls = []
+        self.delivery_calls = []
+
+    def resume(self, run_key):
+        self.resume_calls.append(run_key)
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+    def publish(self, *_args, **_kwargs):
+        raise AssertionError("a resumed run must not publish a new batch")
+
+    def record_delivery(self, run_id, destination, success, error=""):
+        self.delivery_calls.append((run_id, destination, success, error))
+
+
+def resumed_response(*, delivery_status):
+    source = {
+        "partido": "Pumas vs Atlas",
+        "pick": "Pumas gana (persistido)",
+        "cuota": 1.8,
+        "confianza": "85% respaldo de datos",
+        "razonamiento": None,
+        "es_parlay": False,
+        "visibility": "public",
+        "source": "the-odds-api",
+        "source_event_id": "event-pumas-atlas",
+        "source_market_key": "h2h|full_time|",
+        "source_selection_key": "home",
+        "source_observed_at": "2026-08-20T20:00:00Z",
+    }
+    row = {column: source.get(column) for column in PERSISTED_PICK_COLUMNS}
+    row["id"] = 77
+    return {
+        "run_id": "run-resumed",
+        "batch_id": "batch-resumed",
+        "created": False,
+        "delivery_status": delivery_status,
+        "picks": [row],
+    }
+
+
+def test_production_resumes_before_driver_and_sends_only_missing_persisted_delivery(
+    tmp_path, monkeypatch, capsys
+):
+    repository = ResumeRepository(
+        resumed_response(
+            delivery_status={
+                "admin": {"success": True},
+                "free": {"success": True},
+                "vip": {"success": False},
+            }
+        )
+    )
+    sent = []
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: lambda destination, text: sent.append((destination.name, text)),
+    )
+
+    result = LegacyPipeline(
+        settings(tmp_path, dry_run=False),
+        repository=repository,
+        history_client=object(),
+        driver_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("driver must not start for resume")
+        ),
+    ).run()
+
+    assert result.persisted is True
+    assert result.event_count == result.pick_count == 1
+    assert result.failed_deliveries == ()
+    assert result.picks[0]["pick"] == "Pumas gana (persistido)"
+    assert [name for name, _text in sent] == ["vip"]
+    assert "Pumas gana (persistido)" in sent[0][1]
+    assert repository.resume_calls == ["test-run"]
+    assert repository.delivery_calls == [("run-resumed", "vip", True, "")]
+    assert "resume_only=true" in capsys.readouterr().out
+
+
+def test_production_resume_with_all_deliveries_complete_sends_nothing(
+    tmp_path, monkeypatch
+):
+    repository = ResumeRepository(
+        resumed_response(
+            delivery_status={
+                name: {"success": True} for name in ("admin", "vip", "free")
+            }
+        )
+    )
+    transports = []
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: transports.append(True),
+    )
+
+    result = LegacyPipeline(
+        settings(tmp_path, dry_run=False),
+        repository=repository,
+        driver_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("driver must not start for resume")
+        ),
+    ).run()
+
+    assert result.persisted is True
+    assert result.failed_deliveries == ()
+    assert transports == []
+    assert repository.delivery_calls == []
+
+
+def test_absent_resume_continues_normal_scrape(tmp_path, monkeypatch):
+    repository = ResumeRepository(None)
+    driver = FakeDriver()
+    stub_successful_legacy_phases(monkeypatch)
+    monkeypatch.setattr(
+        scraper,
+        "fase7_guardar_y_notificar",
+        lambda *_a, **_kw: (FakePublication("fresh-run"), {}),
+    )
+
+    result = LegacyPipeline(
+        settings(tmp_path, dry_run=False),
+        repository=repository,
+        history_client=object(),
+        driver_factory=lambda: driver,
+    ).run()
+
+    assert repository.resume_calls == ["test-run"]
+    assert result.persisted is True
+    assert driver.quit_calls == 1
+
+
+def test_inactive_or_malformed_resume_fails_before_driver_file_or_delivery(
+    tmp_path, monkeypatch
+):
+    destination = tmp_path / "picks.json"
+    destination.write_text('[{"pick":"existing"}]', encoding="utf-8")
+    repository = ResumeRepository(
+        error=RuntimeError("scraper run batch is inactive or superseded provider-secret")
+    )
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: (_ for _ in ()).throw(
+            AssertionError("delivery must not start")
+        ),
+    )
+
+    with pytest.raises(scraper.PersistenceFailure, match="scraper batch persistence failed"):
+        LegacyPipeline(
+            settings(tmp_path, dry_run=False),
+            repository=repository,
+            driver_factory=lambda: (_ for _ in ()).throw(
+                AssertionError("driver must not start")
+            ),
+        ).run()
+
+    assert destination.read_text(encoding="utf-8") == '[{"pick":"existing"}]'
+    assert repository.delivery_calls == []
+
+
+def test_legacy_dry_run_never_calls_repository_resume(tmp_path, monkeypatch):
+    repository = ResumeRepository(
+        error=AssertionError("dry-run must not query resume")
+    )
+    driver = FakeDriver()
+    stub_successful_legacy_phases(monkeypatch)
+
+    result = LegacyPipeline(
+        settings(tmp_path, dry_run=True),
+        repository=repository,
+        driver_factory=lambda: driver,
+    ).run()
+
+    assert result.persisted is False
+    assert repository.resume_calls == []
 
 
 def test_real_delivery_record_failure_maps_to_exit_6_without_leaking(
@@ -519,7 +718,7 @@ class FakeDelivery:
 
 def test_legacy_production_maps_publication_and_failed_deliveries(tmp_path, monkeypatch):
     driver = FakeDriver()
-    repository = object()
+    repository = ResumeRepository(None)
     monkeypatch.setattr(scraper, "fase1_escaneo_superficie", lambda _driver, **_kw: ["event"])
     monkeypatch.setattr(scraper, "fase2_comparacion_mercado", lambda *_a, **_kw: {})
     monkeypatch.setattr(scraper, "fase3_filtro_inteligente", lambda *_a, **_kw: ["target"])

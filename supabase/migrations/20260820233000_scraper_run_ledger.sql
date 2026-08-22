@@ -86,6 +86,7 @@ set search_path = public, pg_temp
 as $$
 declare
     claimed_run public.scraper_runs%rowtype;
+    resumed_batch public.pick_batches%rowtype;
     created_batch uuid;
     first_pick_id bigint;
     public_pick_count bigint;
@@ -179,10 +180,19 @@ begin
     for update;
 
     if claimed_run.status in ('published', 'partial') then
-        select id
-        into created_batch
+        select *
+        into resumed_batch
         from public.pick_batches
-        where run_id = claimed_run.id;
+        where run_id = claimed_run.id
+        for update;
+
+        if not found then
+            raise exception 'completed scraper run has no persisted pick batch';
+        end if;
+        if not resumed_batch.active then
+            raise exception 'scraper run batch is inactive or superseded';
+        end if;
+        created_batch := resumed_batch.id;
 
         select coalesce(jsonb_agg(jsonb_build_object(
             'id', persisted_row.id,
@@ -216,7 +226,7 @@ begin
         from public.picks as persisted_row
         where persisted_row.batch_id = created_batch;
 
-        if created_batch is null or jsonb_array_length(persisted_picks) = 0 then
+        if jsonb_array_length(persisted_picks) = 0 then
             raise exception 'completed scraper run has no persisted pick batch';
         end if;
 
@@ -374,6 +384,96 @@ begin
 end;
 $$;
 
+create or replace function public.resume_pick_batch(
+    requested_run_key text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+    claimed_run public.scraper_runs%rowtype;
+    resumed_batch public.pick_batches%rowtype;
+    persisted_picks jsonb;
+begin
+    if requested_run_key is null or btrim(requested_run_key) = '' then
+        raise exception 'requested_run_key must not be empty';
+    end if;
+
+    perform pg_advisory_xact_lock(20260820233000);
+
+    select *
+    into claimed_run
+    from public.scraper_runs
+    where run_key = requested_run_key
+    for update;
+
+    if not found then
+        return null;
+    end if;
+    if claimed_run.status not in ('published', 'partial') then
+        return null;
+    end if;
+
+    select *
+    into resumed_batch
+    from public.pick_batches
+    where run_id = claimed_run.id
+    for update;
+
+    if not found then
+        raise exception 'completed scraper run has no persisted pick batch';
+    end if;
+    if not resumed_batch.active then
+        raise exception 'scraper run batch is inactive or superseded';
+    end if;
+
+    select coalesce(jsonb_agg(jsonb_build_object(
+        'id', persisted_row.id,
+        'categoria', persisted_row.categoria,
+        'partido', persisted_row.partido,
+        'pick', persisted_row.pick,
+        'cuota', persisted_row.cuota,
+        'confianza', persisted_row.confianza,
+        'razonamiento', persisted_row.razonamiento,
+        'marcador', persisted_row.marcador,
+        'estado', persisted_row.estado,
+        'es_parlay', persisted_row.es_parlay,
+        'liga', persisted_row.liga,
+        'mercado', persisted_row.mercado,
+        'riesgo', persisted_row.riesgo,
+        'resultado_apuesta', persisted_row.resultado_apuesta,
+        'ganancia_simulada', persisted_row.ganancia_simulada,
+        'fecha_generacion', persisted_row.fecha_generacion,
+        'fecha_evento', persisted_row.fecha_evento,
+        'horario', persisted_row.horario,
+        'odds_mercado', persisted_row.odds_mercado,
+        'tiene_valor', persisted_row.tiene_valor,
+        'visibility', persisted_row.visibility,
+        'source', persisted_row.source,
+        'source_event_id', persisted_row.source_event_id,
+        'source_market_key', persisted_row.source_market_key,
+        'source_selection_key', persisted_row.source_selection_key,
+        'source_observed_at', persisted_row.source_observed_at
+    ) order by persisted_row.id), '[]'::jsonb)
+    into persisted_picks
+    from public.picks as persisted_row
+    where persisted_row.batch_id = resumed_batch.id;
+
+    if jsonb_array_length(persisted_picks) = 0 then
+        raise exception 'completed scraper run has no persisted pick batch';
+    end if;
+
+    return jsonb_build_object(
+        'run_id', claimed_run.id,
+        'batch_id', resumed_batch.id,
+        'created', false,
+        'delivery_status', claimed_run.delivery_status,
+        'picks', persisted_picks
+    );
+end;
+$$;
+
 create or replace function public.get_visible_picks()
 returns setof public.picks
 language sql
@@ -518,6 +618,8 @@ as $$
         'public_picks', to_regclass('public.public_picks') is not null,
         'publish_pick_batch',
             to_regprocedure('public.publish_pick_batch(text,text,jsonb)') is not null,
+        'resume_pick_batch',
+            to_regprocedure('public.resume_pick_batch(text)') is not null,
         'source_audit', false
     );
 $$;
@@ -529,8 +631,10 @@ grant all on table public.pick_batches to service_role;
 grant select on public.public_picks to anon, authenticated;
 
 revoke all on function public.publish_pick_batch(text, text, jsonb) from public, anon, authenticated;
+revoke all on function public.resume_pick_batch(text) from public, anon, authenticated;
 revoke all on function public.record_scraper_delivery(uuid, text, boolean, text) from public, anon, authenticated;
 grant execute on function public.publish_pick_batch(text, text, jsonb) to service_role;
+grant execute on function public.resume_pick_batch(text) to service_role;
 grant execute on function public.record_scraper_delivery(uuid, text, boolean, text) to service_role;
 
 revoke all on function public.scraper_schema_status() from public, anon, authenticated;

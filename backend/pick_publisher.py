@@ -92,6 +92,8 @@ class BatchRepository(Protocol):
         self, run_key: str, source_hash: str, picks: Sequence[Mapping[str, object]]
     ) -> PublishResponse: ...
 
+    def resume(self, run_key: str) -> PublishResponse | None: ...
+
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""
     ) -> None: ...
@@ -130,6 +132,28 @@ class AuditedBatchPublisher:
             dry_run=dry_run,
         )
 
+    def resume(self, *, dry_run: bool) -> PublicationResult | None:
+        """Restore the active persisted batch without accepting new pick rows."""
+        if type(dry_run) is not bool:
+            raise ValueError("dry_run must be a boolean")
+        if not isinstance(self.run_key, str) or not self.run_key.strip():
+            raise ValueError("run_key must not be empty")
+        if dry_run:
+            return None
+
+        response = self.repository.resume(self.run_key)
+        if response is None:
+            return None
+        normalized = _normalized_resume_response(response)
+        if normalized is None:
+            return None
+        result = _publication_result(normalized)
+        _write_public_payload(
+            self.public_path,
+            _safe_public_payload(result.picks),
+        )
+        return result
+
 
 class SupabaseBatchRepository:
     """Supabase RPC implementation of the batch repository boundary."""
@@ -149,6 +173,13 @@ class SupabaseBatchRepository:
             },
         ).execute()
         return _normalized_publish_response(response.data)
+
+    def resume(self, run_key: str) -> PublishResponse | None:
+        response = self._client.rpc(
+            "resume_pick_batch",
+            {"requested_run_key": run_key},
+        ).execute()
+        return _normalized_resume_response(response.data)
 
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""
@@ -243,6 +274,18 @@ def _normalized_publish_response(data: object) -> PublishResponse:
         "delivery_status": delivery_status,
         "picks": persisted_picks,
     }
+
+
+def _normalized_resume_response(data: object) -> PublishResponse | None:
+    if data is None:
+        return None
+    try:
+        response = _normalized_publish_response(data)
+    except RuntimeError:
+        raise RuntimeError("resume_pick_batch returned an invalid response") from None
+    if response["created"] is not False:
+        raise RuntimeError("resume_pick_batch returned an invalid response")
+    return response
 
 
 def _validated_persisted_picks(value: object) -> tuple[PersistedPick, ...]:

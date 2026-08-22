@@ -1629,24 +1629,41 @@ def fase7_guardar_y_notificar(
     except Exception:
         raise PersistenceFailure("scraper batch persistence failed") from None
     print(f"   ✅ Lote {publication.batch_id} publicado atómicamente.")
+    deliveries = _deliver_persisted_publication(
+        publication,
+        repository,
+        active_settings,
+        transport=transport,
+    )
+    return publication, deliveries
+
+
+def _deliver_persisted_publication(
+    publication,
+    repository,
+    settings,
+    *,
+    transport=None,
+):
+    """Deliver only destinations absent from the persisted success ledger."""
     delivery_picks = [dict(row) for row in publication.picks]
 
     destinations = [
-        TelegramDestination("admin", active_settings.telegram_admin_id, "all")
-        if active_settings.telegram_admin_id
+        TelegramDestination("admin", settings.telegram_admin_id, "all")
+        if settings.telegram_admin_id
         else None,
-        TelegramDestination("vip", active_settings.telegram_vip_id, "all")
-        if active_settings.telegram_vip_id
+        TelegramDestination("vip", settings.telegram_vip_id, "all")
+        if settings.telegram_vip_id
         else None,
-        TelegramDestination("free", active_settings.telegram_free_id, "public")
-        if active_settings.telegram_free_id
+        TelegramDestination("free", settings.telegram_free_id, "public")
+        if settings.telegram_free_id
         else None,
     ]
     active_destinations = [destination for destination in destinations if destination]
 
     if not active_destinations:
         print("   ℹ️ No hay destinos de Telegram configurados.")
-        return publication, {}
+        return {}
 
     completed = frozenset(
         name
@@ -1654,7 +1671,18 @@ def fase7_guardar_y_notificar(
         if status is True
         or (isinstance(status, dict) and status.get('success') is True)
     )
-    if transport is None and not active_settings.telegram_token:
+    pending_destinations = [
+        destination
+        for destination in active_destinations
+        if destination.name not in completed
+    ]
+    if not pending_destinations:
+        return {
+            destination.name: DeliveryResult(success=True, skipped=True)
+            for destination in active_destinations
+        }
+
+    if transport is None and not settings.telegram_token:
         print("   ❌ Falta el token de Telegram; se registraron las entregas como fallidas.")
         deliveries = {
             destination.name: (
@@ -1669,7 +1697,7 @@ def fase7_guardar_y_notificar(
         }
     else:
         if transport is None:
-            transport = TelegramHttpTransport(active_settings.telegram_token)
+            transport = TelegramHttpTransport(settings.telegram_token)
         deliveries = deliver_batch(
             delivery_picks,
             active_destinations,
@@ -1703,7 +1731,7 @@ def fase7_guardar_y_notificar(
             + ", ".join(record_failures)
         )
 
-    return publication, deliveries
+    return deliveries
 
 # ============================================================
 #  MAIN: SAFE COMMAND BOUNDARY AND LEGACY PIPELINE ADAPTER
@@ -2104,6 +2132,7 @@ def probe_secure_schema(client):
         or status.get("version") != 2
         or status.get("public_picks") is not True
         or status.get("publish_pick_batch") is not True
+        or status.get("resume_pick_batch") is not True
         or status.get("source_audit") is not True
     ):
         raise ConfigError("secure Supabase scraper migration is not applied")
@@ -2154,6 +2183,38 @@ class LegacyPipeline:
         )
         print("=" * 60)
         print(f"dry_run={str(self.settings.dry_run).lower()}")
+
+        if not self.settings.dry_run:
+            try:
+                publication = AuditedBatchPublisher(
+                    repository=self.repository,
+                    run_key=self.settings.run_key,
+                    public_path=self.settings.public_picks_path,
+                ).resume(dry_run=False)
+            except Exception:
+                raise PersistenceFailure("scraper batch persistence failed") from None
+            if publication is not None:
+                print("resume_only=true")
+                deliveries = _deliver_persisted_publication(
+                    publication,
+                    self.repository,
+                    self.settings,
+                )
+                failed = tuple(
+                    sorted(
+                        name
+                        for name, result in deliveries.items()
+                        if not result.success
+                    )
+                )
+                persisted_rows = tuple(dict(row) for row in publication.picks)
+                return PipelineResult(
+                    len(persisted_rows),
+                    len(persisted_rows),
+                    True,
+                    failed,
+                    persisted_rows,
+                )
 
         driver = self.driver_factory()
         try:

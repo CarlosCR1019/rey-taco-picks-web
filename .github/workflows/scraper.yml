@@ -85,6 +85,7 @@ jobs:
           pip install -r backend/requirements.txt
           
       - name: Run Scraper (Multi-Sport & KBO)
+        id: scraper
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -97,10 +98,21 @@ jobs:
           TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
         run: |
           cd backend
-          python scraper.py
+          scraper_output="$(mktemp)"
+          set +e
+          python scraper.py 2>&1 | tee "$scraper_output"
+          scraper_status=${PIPESTATUS[0]}
+          set -e
+          if grep -Fxq 'resume_only=true' "$scraper_output"; then
+            echo "resumed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "resumed=false" >> "$GITHUB_OUTPUT"
+          fi
+          rm -f "$scraper_output"
+          exit "$scraper_status"
 
       - name: Auto-Post Social Media Banner (Facebook & Instagram)
-        if: success()
+        if: success() && steps.scraper.outputs.resumed != 'true'
         env:
           FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}

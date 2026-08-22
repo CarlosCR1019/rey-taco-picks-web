@@ -153,7 +153,8 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertLess(replay_position, hash_check_position)
         self.assertIn("claimed_run.status in ('published', 'partial')", text)
         self.assertIn("'run_id', claimed_run.id", text)
-        self.assertIn("select id into created_batch from public.pick_batches", text)
+        self.assertIn("select * into resumed_batch from public.pick_batches", text)
+        self.assertIn("created_batch := resumed_batch.id", text)
         self.assertIn("where run_id = claimed_run.id", text)
         self.assertIn("'delivery_status', claimed_run.delivery_status", text)
         self.assertIn("'created', false", text)
@@ -191,7 +192,11 @@ class SupabaseContractTests(unittest.TestCase):
         for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):
             text = " ".join(migration.read_text(encoding="utf-8").lower().split())
             start = text.index("create or replace function public.publish_pick_batch")
-            function = text[start:]
+            end = text.index(
+                "create or replace function public.resume_pick_batch",
+                start,
+            )
+            function = text[start:end]
             replay = function.index("if claimed_run.status in ('published', 'partial')")
             hash_guard = function.index(
                 "if claimed_run.source_hash <> requested_source_hash"
@@ -213,6 +218,63 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("jsonb_populate_record(null::public.picks", text)
         self.assertIn("set status = 'published', finished_at = now()", text)
         self.assertIn("'created', true", text)
+
+    def test_resume_rpc_is_service_only_and_returns_exact_active_persisted_rows(self):
+        expected_fields = (
+            "id", "categoria", "partido", "pick", "cuota", "confianza",
+            "razonamiento", "marcador", "estado", "es_parlay", "liga",
+            "mercado", "riesgo", "resultado_apuesta", "ganancia_simulada",
+            "fecha_generacion", "fecha_evento", "horario", "odds_mercado",
+            "tiene_valor", "visibility", "source", "source_event_id",
+            "source_market_key", "source_selection_key", "source_observed_at",
+        )
+        for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):
+            text = " ".join(migration.read_text(encoding="utf-8").lower().split())
+            start = text.index("create or replace function public.resume_pick_batch")
+            end = text.index("$$;", start)
+            function = text[start:end]
+
+            self.assertIn("resume_pick_batch( requested_run_key text ) returns jsonb", function)
+            self.assertIn("language plpgsql security definer", function)
+            self.assertIn("set search_path = public, pg_temp", function)
+            self.assertIn("perform pg_advisory_xact_lock(20260820233000)", function)
+            self.assertIn("claimed_run.status not in ('published', 'partial')", function)
+            self.assertIn("return null", function)
+            self.assertIn("resumed_batch.active", function)
+            self.assertIn("scraper run batch is inactive or superseded", function)
+            self.assertIn("for update", function)
+            self.assertIn("'created', false", function)
+            self.assertNotIn("to_jsonb(persisted_row)", function)
+            for field in expected_fields:
+                self.assertIn(f"'{field}', persisted_row.{field}", function)
+
+            signature = "public.resume_pick_batch(text)"
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature} to service_role",
+                text,
+            )
+
+    def test_publish_replay_requires_the_original_batch_to_still_be_active(self):
+        for migration in (RUN_LEDGER_SQL, SOURCE_AUDIT_SQL):
+            text = " ".join(migration.read_text(encoding="utf-8").lower().split())
+            start = text.index("create or replace function public.publish_pick_batch")
+            replay_start = text.index("if claimed_run.status in ('published', 'partial')", start)
+            replay_end = text.index(
+                "if claimed_run.source_hash <> requested_source_hash",
+                replay_start,
+            )
+            replay = text[replay_start:replay_end]
+
+            self.assertIn("resumed_batch.active", replay)
+            self.assertIn("scraper run batch is inactive or superseded", replay)
+            self.assertLess(
+                replay.index("scraper run batch is inactive or superseded"),
+                replay.index("return jsonb_build_object"),
+            )
 
     def test_visible_picks_only_exposes_active_pending_or_settled_public_rows(self):
         text = " ".join(RUN_LEDGER_SQL.read_text(encoding="utf-8").lower().split())
@@ -261,6 +323,10 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("to_regclass('public.public_picks') is not null", text)
         self.assertIn(
             "to_regprocedure('public.publish_pick_batch(text,text,jsonb)') is not null",
+            text,
+        )
+        self.assertIn(
+            "to_regprocedure('public.resume_pick_batch(text)') is not null",
             text,
         )
         self.assertIn("'version', 1", text)
@@ -690,6 +756,28 @@ class SupabaseContractTests(unittest.TestCase):
         )
         self.assertIn("service_role.rolname = 'service_role'", probe)
         self.assertIn("pg_get_functiondef", probe)
+        self.assertIn("'not resumed_batch.active'", probe)
+        self.assertEqual(probe.count("'not resumed_batch.active'"), 2)
+        self.assertIn("'scraper run batch is inactive or superseded'", probe)
+
+        self.assertIn("'resume_pick_batch'", probe)
+        self.assertIn("resume_rpc.prosecdef", probe)
+        self.assertIn("resume_rpc.prorettype = 'jsonb'::regtype", probe)
+        self.assertIn("resume_language.lanname = 'plpgsql'", probe)
+        self.assertIn("resume_acl.grantee = 0", probe)
+        self.assertIn("resume_role.rolname <> 'service_role'", probe)
+        self.assertIn("service_resume_role.rolname = 'service_role'", probe)
+        self.assertIn("pg_get_functiondef(resume_rpc.oid)", probe)
+        self.assertIn("scraper run batch is inactive or superseded", probe)
+        self.assertIn("where persisted_row.batch_id = resumed_batch.id", probe)
+        self.assertIn("jsonb_array_length(persisted_picks) = 0", probe)
+        self.assertIn("to_jsonb(persisted_row)", probe)
+        self.assertIn("= 0", probe)
+        self.assertIn("from unnest( array[", probe)
+        self.assertIn("format( '''%s'', persisted_row.%s'", probe)
+        self.assertIn("from regexp_matches(", probe)
+        self.assertIn("persisted_row\\.[a-z_]", probe)
+        self.assertIn(") = 26", probe)
 
         self.assertIn("picks_table.relrowsecurity", probe)
         self.assertIn(

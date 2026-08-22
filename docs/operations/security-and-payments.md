@@ -94,6 +94,27 @@ recorded success. A retry always rebuilds the public file and remaining Telegram
 messages from the **filas ya persistidas** for that run; a new scrape payload or
 hash never replaces the batch already accepted by the database.
 
+En producción, `resume_pick_batch` se consulta antes de abrir Chrome o consultar
+fuentes. Si la misma clave identifica una corrida completada y activa, el proceso
+restaura el archivo público exclusivamente desde sus filas persistidas, intenta
+solo las entregas faltantes y termina sin iniciar Chrome, Odds API ni Groq. El
+marcador `resume_only=true` también hace que el workflow omite la publicación
+social, porque no se produjo un lote nuevo para anunciar.
+
+La reanudación exige que el lote siga siendo el único activo. Si el lote está
+inactivo o reemplazado, el RPC falla de forma cerrada: termina sin restaurar el
+archivo público ni Telegram y no permite que el mismo `run_key` reviva picks
+retirados. Un resultado SQL nulo significa únicamente que no existe una corrida
+completada para esa clave y, por tanto, la recolección normal puede comenzar.
+
+La publicación externa conserva un **supuesto operativo de escritor único**:
+el lock de la transacción protege la decisión en base de datos, mientras el
+archivo y Telegram se completan después. La concurrencia del workflow impide
+dos Actions simultáneas; además, una ejecución local directa no debe solaparse
+con ninguna Action programada, manual o reintentada. Si no puede garantizarse
+esa exclusión, no ejecute producción hasta implementar una concesión persistente
+que abarque también los efectos externos.
+
 ### 1. Configure secrets before production work
 
 Store real values in the local process/provider secret store, never in a command
@@ -154,7 +175,7 @@ The pending set must include, in this order:
 2. `supabase/migrations/20260820220000_secure_membership.sql`, which creates and
    protects `public_picks` and membership data.
 3. `supabase/migrations/20260820233000_scraper_run_ledger.sql`, which creates the
-   run ledger, atomic publisher, delivery recorder, and the intermediate
+   run ledger, atomic publisher, secure resume RPC, delivery recorder, and the intermediate
    fail-closed schema probe.
 4. `supabase/migrations/20260820234500_pick_source_audit.sql`, which adds the
    immutable source-audit fields, replaces the publisher contract, and promotes
@@ -227,7 +248,7 @@ tests.
 
 Before opening Chrome in production mode, the scraper calls the read-only
 `scraper_schema_status` RPC with the service-role client. A missing/404 RPC,
-missing `public_picks`, missing atomic publisher, or wrong schema version fails
+missing `public_picks`, missing atomic publisher/resume RPC, or wrong schema version fails
 closed with exit `2`; it does not claim a run or create a batch. Dry-run skips
 this production-only preflight.
 

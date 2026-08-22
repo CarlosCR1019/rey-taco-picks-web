@@ -56,7 +56,9 @@ def test_scraper_waits_for_verification_and_social_requires_success():
     )
 
     social = _step(scraper, "Auto-Post Social Media Banner (Facebook & Instagram)")
-    assert social["if"] == "success()"
+    assert social["if"] == (
+        "success() && steps.scraper.outputs.resumed != 'true'"
+    )
 
 
 def test_workflow_keeps_all_schedules_and_python_311():

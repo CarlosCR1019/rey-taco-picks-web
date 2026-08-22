@@ -15,9 +15,12 @@ FORBIDDEN = (
 
 class SourceSecurityTests(unittest.TestCase):
     def test_runbook_documents_baseline_persisted_retry_and_no_live_parlay_claim(self):
-        runbook = (ROOT / "docs/operations/security-and-payments.md").read_text(
-            encoding="utf-8"
-        ).lower()
+        runbook = " ".join(
+            (ROOT / "docs/operations/security-and-payments.md")
+            .read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
 
         self.assertIn("20260820210000_base_profiles_picks.sql", runbook)
         self.assertIn("filas ya persistidas", runbook)
@@ -28,6 +31,23 @@ class SourceSecurityTests(unittest.TestCase):
             "same-day parlays assembled only from individually verified legs",
             runbook,
         )
+
+    def test_runbook_documents_pre_scrape_resume_and_inactive_fail_closed(self):
+        runbook = " ".join(
+            (ROOT / "docs/operations/security-and-payments.md")
+            .read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertIn("antes de abrir chrome o consultar fuentes", runbook)
+        self.assertIn("corrida completada y activa", runbook)
+        self.assertIn("solo las entregas faltantes", runbook)
+        self.assertIn("inactivo o reemplazado", runbook)
+        self.assertIn("sin restaurar el archivo público ni telegram", runbook)
+        self.assertIn("omite la publicación social", runbook)
+        self.assertIn("supuesto operativo de escritor único", runbook)
+        self.assertIn("no debe solaparse", runbook)
 
     def test_tracked_public_fallback_is_empty_and_cannot_leak_pick_details(self):
         for relative in ("frontend/public/picks.json", "dist/picks.json"):

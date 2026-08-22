@@ -49,7 +49,15 @@ def test_phase7_delegates_persistence_and_delivery_without_legacy_side_effects()
     }
 
     assert "AuditedBatchPublisher" in called_names
-    assert "deliver_batch" in called_names
+    delivery = _top_level_function(tree, "_deliver_persisted_publication")
+    delivery_calls = {
+        node.func.id
+        for node in ast.walk(delivery)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "_deliver_persisted_publication" in called_names
+    assert "deliver_batch" in delivery_calls
     assert not {"open", "urlopen", "_guardar_local", "_enviar_telegram"} & called_names
 
     function_names = {
@@ -57,6 +65,17 @@ def test_phase7_delegates_persistence_and_delivery_without_legacy_side_effects()
     }
     assert "_guardar_local" not in function_names
     assert "_enviar_telegram" not in function_names
+
+
+def test_workflow_skips_social_posting_for_resume_only_runs():
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "scraper.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "id: scraper" in workflow
+    assert "tee" in workflow
+    assert "GITHUB_OUTPUT" in workflow
+    assert "steps.scraper.outputs.resumed != 'true'" in workflow
 
 
 def test_scraper_script_can_import_extracted_publishers_from_repo_root():
@@ -112,6 +131,9 @@ class FakeRepository:
             "delivery_status": {},
             "picks": stored_rows(picks),
         }
+
+    def resume(self, _run_key):
+        return None
 
     def record_delivery(self, run_id, destination, success, error=""):
         self.deliveries.append((run_id, destination, success, error))

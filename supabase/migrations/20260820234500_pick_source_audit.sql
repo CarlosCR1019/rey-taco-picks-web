@@ -329,6 +329,7 @@ set search_path = public, pg_temp
 as $$
 declare
     claimed_run public.scraper_runs%rowtype;
+    resumed_batch public.pick_batches%rowtype;
     created_batch uuid;
     first_pick_id bigint;
     public_pick_count bigint;
@@ -420,10 +421,19 @@ begin
     for update;
 
     if claimed_run.status in ('published', 'partial') then
-        select id
-        into created_batch
+        select *
+        into resumed_batch
         from public.pick_batches
-        where run_id = claimed_run.id;
+        where run_id = claimed_run.id
+        for update;
+
+        if not found then
+            raise exception 'completed scraper run has no persisted pick batch';
+        end if;
+        if not resumed_batch.active then
+            raise exception 'scraper run batch is inactive or superseded';
+        end if;
+        created_batch := resumed_batch.id;
 
         select coalesce(jsonb_agg(jsonb_build_object(
             'id', persisted_row.id,
@@ -457,7 +467,7 @@ begin
         from public.picks as persisted_row
         where persisted_row.batch_id = created_batch;
 
-        if created_batch is null or jsonb_array_length(persisted_picks) = 0 then
+        if jsonb_array_length(persisted_picks) = 0 then
             raise exception 'completed scraper run has no persisted pick batch';
         end if;
 
@@ -613,9 +623,103 @@ begin
 end;
 $$;
 
+create or replace function public.resume_pick_batch(
+    requested_run_key text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+    claimed_run public.scraper_runs%rowtype;
+    resumed_batch public.pick_batches%rowtype;
+    persisted_picks jsonb;
+begin
+    if requested_run_key is null or btrim(requested_run_key) = '' then
+        raise exception 'requested_run_key must not be empty';
+    end if;
+
+    perform pg_advisory_xact_lock(20260820233000);
+
+    select *
+    into claimed_run
+    from public.scraper_runs
+    where run_key = requested_run_key
+    for update;
+
+    if not found then
+        return null;
+    end if;
+    if claimed_run.status not in ('published', 'partial') then
+        return null;
+    end if;
+
+    select *
+    into resumed_batch
+    from public.pick_batches
+    where run_id = claimed_run.id
+    for update;
+
+    if not found then
+        raise exception 'completed scraper run has no persisted pick batch';
+    end if;
+    if not resumed_batch.active then
+        raise exception 'scraper run batch is inactive or superseded';
+    end if;
+
+    select coalesce(jsonb_agg(jsonb_build_object(
+        'id', persisted_row.id,
+        'categoria', persisted_row.categoria,
+        'partido', persisted_row.partido,
+        'pick', persisted_row.pick,
+        'cuota', persisted_row.cuota,
+        'confianza', persisted_row.confianza,
+        'razonamiento', persisted_row.razonamiento,
+        'marcador', persisted_row.marcador,
+        'estado', persisted_row.estado,
+        'es_parlay', persisted_row.es_parlay,
+        'liga', persisted_row.liga,
+        'mercado', persisted_row.mercado,
+        'riesgo', persisted_row.riesgo,
+        'resultado_apuesta', persisted_row.resultado_apuesta,
+        'ganancia_simulada', persisted_row.ganancia_simulada,
+        'fecha_generacion', persisted_row.fecha_generacion,
+        'fecha_evento', persisted_row.fecha_evento,
+        'horario', persisted_row.horario,
+        'odds_mercado', persisted_row.odds_mercado,
+        'tiene_valor', persisted_row.tiene_valor,
+        'visibility', persisted_row.visibility,
+        'source', persisted_row.source,
+        'source_event_id', persisted_row.source_event_id,
+        'source_market_key', persisted_row.source_market_key,
+        'source_selection_key', persisted_row.source_selection_key,
+        'source_observed_at', persisted_row.source_observed_at
+    ) order by persisted_row.id), '[]'::jsonb)
+    into persisted_picks
+    from public.picks as persisted_row
+    where persisted_row.batch_id = resumed_batch.id;
+
+    if jsonb_array_length(persisted_picks) = 0 then
+        raise exception 'completed scraper run has no persisted pick batch';
+    end if;
+
+    return jsonb_build_object(
+        'run_id', claimed_run.id,
+        'batch_id', resumed_batch.id,
+        'created', false,
+        'delivery_status', claimed_run.delivery_status,
+        'picks', persisted_picks
+    );
+end;
+$$;
+
 revoke all on function public.publish_pick_batch(text, text, jsonb)
     from public, anon, authenticated;
 grant execute on function public.publish_pick_batch(text, text, jsonb)
+    to service_role;
+revoke all on function public.resume_pick_batch(text)
+    from public, anon, authenticated;
+grant execute on function public.resume_pick_batch(text)
     to service_role;
 
 create or replace function public.scraper_schema_status()
@@ -731,6 +835,19 @@ as $$
                       in lower(pg_get_functiondef(publish_rpc.oid))
                   ) > 0
                   and position(
+                      'not resumed_batch.active'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(publish_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
+                      'scraper run batch is inactive or superseded'
+                      in lower(pg_get_functiondef(publish_rpc.oid))
+                  ) > 0
+                  and position(
                       'visibility = ''public'' then null'
                       in regexp_replace(
                           lower(pg_get_functiondef(publish_rpc.oid)),
@@ -743,6 +860,175 @@ as $$
                       'insert into public.picks'
                       in lower(pg_get_functiondef(publish_rpc.oid))
                   ) > 0
+            ),
+        'resume_pick_batch',
+            exists (
+                select 1
+                from pg_proc as resume_rpc
+                join pg_namespace as resume_schema
+                  on resume_schema.oid = resume_rpc.pronamespace
+                join pg_language as resume_language
+                  on resume_language.oid = resume_rpc.prolang
+                where resume_rpc.oid = to_regprocedure(
+                    'public.resume_pick_batch(text)'
+                )
+                  and resume_schema.nspname = 'public'
+                  and resume_rpc.prosecdef
+                  and resume_rpc.prorettype = 'jsonb'::regtype
+                  and resume_language.lanname = 'plpgsql'
+                  and coalesce(resume_rpc.proconfig, '{}'::text[])
+                      @> array['search_path=public, pg_temp']
+                  and not exists (
+                      select 1
+                      from aclexplode(
+                          coalesce(
+                              resume_rpc.proacl,
+                              acldefault('f', resume_rpc.proowner)
+                          )
+                      ) as resume_acl
+                      left join pg_roles as resume_role
+                        on resume_role.oid = resume_acl.grantee
+                      where resume_acl.privilege_type = 'EXECUTE'
+                        and (
+                            resume_acl.grantee = 0
+                            or (
+                                resume_acl.grantee <> resume_rpc.proowner
+                                and resume_role.rolname <> 'service_role'
+                            )
+                        )
+                  )
+                  and not exists (
+                      select 1
+                      from pg_roles as resume_executable_role
+                      where not resume_executable_role.rolsuper
+                        and resume_executable_role.oid <> resume_rpc.proowner
+                        and resume_executable_role.rolname <> 'service_role'
+                        and has_function_privilege(
+                            resume_executable_role.oid,
+                            resume_rpc.oid,
+                            'EXECUTE'
+                        )
+                  )
+                  and exists (
+                      select 1
+                      from aclexplode(
+                          coalesce(
+                              resume_rpc.proacl,
+                              acldefault('f', resume_rpc.proowner)
+                          )
+                      ) as service_resume_acl
+                      join pg_roles as service_resume_role
+                        on service_resume_role.oid = service_resume_acl.grantee
+                      where service_resume_acl.privilege_type = 'EXECUTE'
+                        and service_resume_role.rolname = 'service_role'
+                  )
+                  and position(
+                      'pg_advisory_xact_lock'
+                      in lower(pg_get_functiondef(resume_rpc.oid))
+                  ) > 0
+                  and position(
+                      'claimed_run.status not in (''published'', ''partial'')'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(resume_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
+                      'not resumed_batch.active'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(resume_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
+                      'scraper run batch is inactive or superseded'
+                      in lower(pg_get_functiondef(resume_rpc.oid))
+                  ) > 0
+                  and position(
+                      'where persisted_row.batch_id = resumed_batch.id'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(resume_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
+                      'jsonb_array_length(persisted_picks) = 0'
+                      in regexp_replace(
+                          lower(pg_get_functiondef(resume_rpc.oid)),
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                      )
+                  ) > 0
+                  and position(
+                      'to_jsonb(persisted_row)'
+                      in lower(pg_get_functiondef(resume_rpc.oid))
+                  ) = 0
+                  and (
+                      select count(*)
+                      from unnest(
+                          array[
+                              'id',
+                              'categoria',
+                              'partido',
+                              'pick',
+                              'cuota',
+                              'confianza',
+                              'razonamiento',
+                              'marcador',
+                              'estado',
+                              'es_parlay',
+                              'liga',
+                              'mercado',
+                              'riesgo',
+                              'resultado_apuesta',
+                              'ganancia_simulada',
+                              'fecha_generacion',
+                              'fecha_evento',
+                              'horario',
+                              'odds_mercado',
+                              'tiene_valor',
+                              'visibility',
+                              'source',
+                              'source_event_id',
+                              'source_market_key',
+                              'source_selection_key',
+                              'source_observed_at'
+                          ]::text[]
+                      ) as returned_field(field_name)
+                      where position(
+                          format(
+                              '''%s'', persisted_row.%s',
+                              returned_field.field_name,
+                              returned_field.field_name
+                          )
+                          in regexp_replace(
+                              lower(pg_get_functiondef(resume_rpc.oid)),
+                              '[[:space:]]+',
+                              ' ',
+                              'g'
+                          )
+                      ) > 0
+                  ) = 26
+                  and (
+                      select count(*)
+                      from regexp_matches(
+                          regexp_replace(
+                              lower(pg_get_functiondef(resume_rpc.oid)),
+                              '[[:space:]]+',
+                              ' ',
+                              'g'
+                          ),
+                          '''[a-z_][a-z0-9_]*'', persisted_row\.[a-z_][a-z0-9_]*',
+                          'g'
+                      )
+                  ) = 26
             ),
         'source_audit',
             exists (

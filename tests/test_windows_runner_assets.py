@@ -6,6 +6,10 @@ WINDOWS_SCRIPTS = ROOT / "scripts" / "windows"
 INSTALLER = WINDOWS_SCRIPTS / "Install-ReyTacoRunner.ps1"
 PYTHON_BOOTSTRAP = WINDOWS_SCRIPTS / "Initialize-ReyTacoPythonToolcache.ps1"
 DRY_RUN = WINDOWS_SCRIPTS / "Invoke-ReyTacoDryRun.ps1"
+INTERACTIVE_LAUNCHER = WINDOWS_SCRIPTS / "Start-ReyTacoInteractiveRunner.ps1"
+STARTUP_REGISTRAR = WINDOWS_SCRIPTS / "Register-ReyTacoInteractiveStartup.ps1"
+INTERACTIVE_MIGRATOR = WINDOWS_SCRIPTS / "Convert-ReyTacoRunnerToInteractive.ps1"
+SERVICE_ROLLBACK = WINDOWS_SCRIPTS / "Restore-ReyTacoRunnerService.ps1"
 RUNBOOK = ROOT / "docs" / "operations" / "windows-runners.md"
 
 
@@ -22,8 +26,9 @@ def test_installer_requires_admin_private_repo_and_official_runner():
     assert "RunnerSha256" in text
     assert "Get-FileHash" in text
     assert "Read-Host -AsSecureString" in text
-    assert "playdoit-residential" in text
-    assert "--runasservice" in text
+    assert '--labels "playdoit-residential,$RunnerName"' in text
+    assert "--runasservice" not in text
+    assert "Register-ReyTacoInteractiveStartup.ps1" in text
     assert "C:\\actions-runner" in text
 
 
@@ -63,6 +68,42 @@ def test_runner_installer_warms_python_before_registering_service():
     warm_index = text.index("Initialize-ReyTacoPythonToolcache.ps1")
     configure_index = text.index("& .\\config.cmd")
     assert warm_index < configure_index
+
+
+def test_interactive_launcher_is_non_admin_hidden_and_token_free():
+    text = source(INTERACTIVE_LAUNCHER)
+    assert "REY_TACO_BROWSER_MODE" in text
+    assert "interactive" in text
+    assert "run.cmd" in text
+    assert "WindowsPrincipal" not in text
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in text
+    assert "TELEGRAM_BOT_TOKEN" not in text
+    assert "META_SYSTEM_USER_ACCESS_TOKEN" not in text
+
+
+def test_startup_task_is_interactive_limited_and_idempotent():
+    text = source(STARTUP_REGISTRAR)
+    assert "-LogonType Interactive" in text
+    assert "-RunLevel Limited" in text
+    assert "AtLogOn" in text
+    assert "Register-ScheduledTask" in text
+    assert "-Force" in text
+
+
+def test_migration_preserves_registration_and_removes_only_service():
+    text = source(INTERACTIVE_MIGRATOR)
+    assert ".runner" in text
+    assert "svc.cmd uninstall" in text
+    assert "Remove-Item" not in text
+    assert "config.cmd remove" not in text
+
+
+def test_rollback_restores_service_without_deleting_runner_state():
+    text = source(SERVICE_ROLLBACK)
+    assert "Unregister-ScheduledTask" in text
+    assert "svc.cmd install" in text
+    assert "svc.cmd start" in text
+    assert "Remove-Item" not in text
 
 
 def test_dry_run_finds_repository_and_cannot_publish():

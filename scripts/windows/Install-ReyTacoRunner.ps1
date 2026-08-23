@@ -94,11 +94,10 @@ try {
             --url $RepositoryUrl `
             --token $PlainRegistrationToken `
             --name $RunnerName `
-            --labels "playdoit-residential" `
+            --labels "playdoit-residential,$RunnerName" `
             --work "_work" `
             --unattended `
-            --replace `
-            --runasservice
+            --replace
         if ($LASTEXITCODE -ne 0) {
             throw "GitHub no pudo registrar el runner."
         }
@@ -106,17 +105,21 @@ try {
         Pop-Location
     }
 
-    Start-Sleep -Seconds 2
-    $RunnerServices = @(Get-Service -Name "actions.runner.*" -ErrorAction SilentlyContinue)
-    if ($RunnerServices.Count -ne 1) {
-        throw "No se encontro exactamente un servicio actions.runner.*."
+    $StartupRegistrar = Join-Path $PSScriptRoot `
+        "Register-ReyTacoInteractiveStartup.ps1"
+    if (-not (Test-Path -LiteralPath $StartupRegistrar)) {
+        throw "Falta Register-ReyTacoInteractiveStartup.ps1 junto al instalador."
     }
-    if ($RunnerServices[0].Status -ne "Running") {
-        Start-Service -InputObject $RunnerServices[0]
-        $RunnerServices[0].WaitForStatus("Running", [TimeSpan]::FromSeconds(20))
+    & powershell.exe -NoLogo -NoProfile -NonInteractive `
+        -ExecutionPolicy Bypass -File $StartupRegistrar `
+        -RunnerDirectory $RunnerDirectory
+    if ($LASTEXITCODE -ne 0) {
+        throw "No se pudo registrar el inicio interactivo."
     }
+    $TaskName = "Rey Taco Picks Interactive Runner"
+    Start-ScheduledTask -TaskName $TaskName
 
-    Write-Output "RESULT=RUNNER_INSTALLED NAME=$RunnerName SERVICE=$($RunnerServices[0].Name)"
+    Write-Output "RESULT=RUNNER_INSTALLED_INTERACTIVE NAME=$RunnerName TASK=$TaskName"
 } finally {
     $PlainRegistrationToken = $null
     if ($TokenPointer -ne [IntPtr]::Zero) {

@@ -16,13 +16,24 @@ if (-not $Principal.IsInRole(
 }
 
 $Registration = Join-Path $RunnerDirectory ".runner"
-$ServiceCommand = Join-Path $RunnerDirectory "svc.cmd"
+$ServiceIdentity = Join-Path $RunnerDirectory ".service"
+$ServiceBinary = Join-Path $RunnerDirectory "bin\RunnerService.exe"
 if (-not (Test-Path -LiteralPath $Registration)) {
     throw "Runner no registrado; no se cambiara nada."
 }
-if (-not (Test-Path -LiteralPath $ServiceCommand)) {
-    throw "Falta svc.cmd; no se cambiara nada."
+if (-not (Test-Path -LiteralPath $ServiceIdentity)) {
+    throw "Falta .service; no se cambiara nada."
 }
+if (-not (Test-Path -LiteralPath $ServiceBinary)) {
+    throw "Falta RunnerService.exe; no se cambiara nada."
+}
+
+$ServiceName = (Get-Content -LiteralPath $ServiceIdentity -Raw).Trim()
+if ($ServiceName -notmatch '^actions\.runner\.[A-Za-z0-9._-]+$') {
+    throw "El nombre guardado en .service no es valido; no se cambiara nada."
+}
+$DisplaySuffix = $ServiceName.Substring('actions.runner.'.Length)
+$DisplayName = "GitHub Actions Runner ($DisplaySuffix)"
 
 $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($null -ne $Task) {
@@ -30,30 +41,48 @@ if ($null -ne $Task) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-Push-Location -LiteralPath $RunnerDirectory
-try {
-    $ExistingServices = @(
-        Get-CimInstance -ClassName Win32_Service |
-            Where-Object {
-                $_.Name -like "actions.runner.*" -and
-                $_.PathName -like "*$RunnerDirectory*"
-            }
-    )
-    if ($ExistingServices.Count -eq 0) {
-        & .\svc.cmd install
-        if ($LASTEXITCODE -ne 0) {
-            throw "No se pudo reinstalar el servicio del runner."
+$ExistingServices = @(
+    Get-CimInstance -ClassName Win32_Service |
+        Where-Object {
+            $_.Name -like "actions.runner.*" -and
+            $_.PathName -like "*$RunnerDirectory*"
         }
-    } elseif ($ExistingServices.Count -ne 1) {
-        throw "Se encontro mas de un servicio para el runner."
+)
+if ($ExistingServices.Count -eq 0) {
+    & sc.exe create $ServiceName `
+        binPath= "`"$ServiceBinary`"" `
+        start= delayed-auto `
+        obj= "NT AUTHORITY\NETWORK SERVICE" `
+        DisplayName= $DisplayName
+    if ($LASTEXITCODE -ne 0) {
+        throw "No se pudo reinstalar el servicio del runner."
     }
+} elseif ($ExistingServices.Count -ne 1 -or $ExistingServices[0].Name -ne $ServiceName) {
+    throw "Se encontro un servicio inesperado para el runner."
+}
 
-    & .\svc.cmd start
+& sc.exe config $ServiceName `
+    binPath= "`"$ServiceBinary`"" `
+    start= delayed-auto `
+    obj= "NT AUTHORITY\NETWORK SERVICE" `
+    DisplayName= $DisplayName
+if ($LASTEXITCODE -ne 0) {
+    throw "No se pudo restaurar la configuracion del servicio."
+}
+& sc.exe failure $ServiceName `
+    reset= 0 `
+    actions= "restart/0/restart/60000/restart/60000"
+if ($LASTEXITCODE -ne 0) {
+    throw "No se pudieron restaurar las acciones de recuperacion."
+}
+
+$CurrentService = Get-Service -Name $ServiceName
+if ($CurrentService.Status -ne "Running") {
+    & sc.exe start $ServiceName
     if ($LASTEXITCODE -ne 0) {
         throw "No se pudo iniciar el servicio del runner."
     }
-} finally {
-    Pop-Location
+    $CurrentService.WaitForStatus("Running", [TimeSpan]::FromSeconds(30))
 }
 
 $RunnerServices = @(

@@ -32,16 +32,29 @@ function Get-MatchingRunnerServices {
 
 Assert-Administrator
 $Registration = Join-Path $RunnerDirectory ".runner"
-$ServiceCommand = Join-Path $RunnerDirectory "svc.cmd"
+$ServiceIdentity = Join-Path $RunnerDirectory ".service"
+$ServiceBinary = Join-Path $RunnerDirectory "bin\RunnerService.exe"
 $Registrar = Join-Path $PSScriptRoot "Register-ReyTacoInteractiveStartup.ps1"
+$Rollback = Join-Path $PSScriptRoot "Restore-ReyTacoRunnerService.ps1"
 if (-not (Test-Path -LiteralPath $Registration)) {
     throw "Runner no registrado; no se cambiara nada."
 }
-if (-not (Test-Path -LiteralPath $ServiceCommand)) {
-    throw "Falta svc.cmd; no se cambiara nada."
+if (-not (Test-Path -LiteralPath $ServiceIdentity)) {
+    throw "Falta .service; no se cambiara nada."
+}
+if (-not (Test-Path -LiteralPath $ServiceBinary)) {
+    throw "Falta RunnerService.exe; no se cambiara nada."
 }
 if (-not (Test-Path -LiteralPath $Registrar)) {
     throw "Falta el registrador interactivo; no se cambiara nada."
+}
+if (-not (Test-Path -LiteralPath $Rollback)) {
+    throw "Falta el rollback del servicio; no se cambiara nada."
+}
+
+$ExpectedServiceName = (Get-Content -LiteralPath $ServiceIdentity -Raw).Trim()
+if ($ExpectedServiceName -notmatch '^actions\.runner\.[A-Za-z0-9._-]+$') {
+    throw "El nombre guardado en .service no es valido; no se cambiara nada."
 }
 
 $RunnerServices = @(Get-MatchingRunnerServices -ExpectedDirectory $RunnerDirectory)
@@ -49,23 +62,36 @@ if ($RunnerServices.Count -ne 1) {
     throw "Se requiere exactamente un servicio del runner en C:\actions-runner."
 }
 $ServiceName = $RunnerServices[0].Name
+if ($ServiceName -cne $ExpectedServiceName) {
+    throw "El servicio encontrado no coincide con .service; no se cambiara nada."
+}
+if ($RunnerServices[0].StartName -ine 'NT AUTHORITY\NETWORK SERVICE') {
+    throw "La cuenta del servicio no es NETWORK SERVICE; no se cambiara nada."
+}
 $Service = Get-Service -Name $ServiceName
 if ($Service.Status -ne "Stopped") {
     Stop-Service -InputObject $Service
     $Service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
 }
 
-Push-Location -LiteralPath $RunnerDirectory
 try {
-    & .\svc.cmd uninstall
+    & sc.exe delete $ServiceName
     if ($LASTEXITCODE -ne 0) {
-        throw "No se pudo desinstalar el servicio del runner."
+        throw "No se pudo eliminar el registro del servicio del runner."
     }
-} finally {
-    Pop-Location
-}
+    for ($Attempt = 0; $Attempt -lt 30; $Attempt++) {
+        $RemainingService = Get-CimInstance -ClassName Win32_Service |
+            Where-Object { $_.Name -eq $ServiceName }
+        if ($null -eq $RemainingService) {
+            break
+        }
+        Start-Sleep -Seconds 1
+    }
+    if ($null -ne (Get-CimInstance -ClassName Win32_Service |
+        Where-Object { $_.Name -eq $ServiceName })) {
+        throw "Windows no termino de eliminar el servicio del runner."
+    }
 
-try {
     & powershell.exe -NoLogo -NoProfile -NonInteractive `
         -ExecutionPolicy Bypass -File $Registrar `
         -RunnerDirectory $RunnerDirectory -TaskName $TaskName
@@ -87,21 +113,12 @@ try {
         throw "La tarea interactiva no quedo ejecutandose."
     }
 } catch {
-    $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if ($null -ne $ExistingTask) {
-        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    }
-    Push-Location -LiteralPath $RunnerDirectory
     try {
-        & .\svc.cmd install
-        if ($LASTEXITCODE -eq 0) {
-            & .\svc.cmd start
-        }
-    } finally {
-        Pop-Location
+        & $Rollback -RunnerDirectory $RunnerDirectory -TaskName $TaskName
+    } catch {
+        throw "La conversion fallo y el rollback automatico tambien fallo."
     }
-    throw "La conversion fallo y se intento restaurar el servicio original."
+    throw "La conversion fallo y el servicio original fue restaurado."
 }
 
 Write-Output "RESULT=RUNNER_CONVERTED_INTERACTIVE TASK=$TaskName SERVICE_REMOVED=$ServiceName"

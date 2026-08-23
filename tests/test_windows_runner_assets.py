@@ -93,7 +93,9 @@ def test_startup_task_is_interactive_limited_and_idempotent():
 def test_migration_preserves_registration_and_removes_only_service():
     text = source(INTERACTIVE_MIGRATOR)
     assert ".runner" in text
-    assert "svc.cmd uninstall" in text
+    assert ".service" in text
+    assert "sc.exe delete" in text
+    assert "svc.cmd" not in text
     assert "Remove-Item" not in text
     assert "config.cmd remove" not in text
 
@@ -101,8 +103,14 @@ def test_migration_preserves_registration_and_removes_only_service():
 def test_rollback_restores_service_without_deleting_runner_state():
     text = source(SERVICE_ROLLBACK)
     assert "Unregister-ScheduledTask" in text
-    assert "svc.cmd install" in text
-    assert "svc.cmd start" in text
+    assert ".service" in text
+    assert "RunnerService.exe" in text
+    assert "sc.exe create" in text
+    assert "sc.exe start" in text
+    assert "sc.exe failure" in text
+    assert "restart/0/restart/60000/restart/60000" in text
+    assert "NT AUTHORITY\\NETWORK SERVICE" in text
+    assert "svc.cmd" not in text
     assert "Remove-Item" not in text
 
 

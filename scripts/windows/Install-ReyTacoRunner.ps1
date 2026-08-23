@@ -53,6 +53,17 @@ if (Test-Path -LiteralPath $RunnerDirectory) {
     [void](New-Item -ItemType Directory -Path $RunnerDirectory)
 }
 
+$PythonBootstrapPath = Join-Path $PSScriptRoot `
+    "Initialize-ReyTacoPythonToolcache.ps1"
+if (-not (Test-Path -LiteralPath $PythonBootstrapPath)) {
+    throw "Falta Initialize-ReyTacoPythonToolcache.ps1 junto al instalador."
+}
+& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $PythonBootstrapPath
+if ($LASTEXITCODE -ne 0) {
+    throw "No se pudo preparar Python 3.11 para el runner."
+}
+
 $TokenPointer = [IntPtr]::Zero
 $PlainRegistrationToken = $null
 try {

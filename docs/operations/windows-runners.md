@@ -42,6 +42,24 @@ $installer = Get-ChildItem -Path $env:USERPROFILE -Filter "Install-ReyTacoRunner
 if ($null -eq $installer) { throw "No se encontro Install-ReyTacoRunner.ps1" }
 ```
 
+El instalador ejecuta `Initialize-ReyTacoPythonToolcache.ps1` antes de registrar
+el servicio. Esa preparacion descarga Python 3.11.9 desde el repositorio oficial
+`actions/python-versions`, valida su SHA-256 y completa el tool cache con la
+sesion administrativa. El servicio cotidiano conserva la cuenta limitada
+`NETWORK SERVICE`.
+
+Si el runner ya estaba instalado antes de incorporar esta preparacion, ejecutarla
+una sola vez desde PowerShell como administrador:
+
+```powershell
+$pythonSetup = Get-ChildItem -Path $env:USERPROFILE -Filter "Initialize-ReyTacoPythonToolcache.ps1" -File -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($null -eq $pythonSetup) { throw "No se encontro Initialize-ReyTacoPythonToolcache.ps1" }
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $pythonSetup.FullName
+```
+
+El resultado requerido es `RESULT=PYTHON_TOOLCACHE_READY`. No se debe cambiar
+la cuenta del servicio a administrador.
+
 ## PC de Carlos
 
 ```powershell

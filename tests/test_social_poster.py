@@ -423,21 +423,68 @@ def test_instagram_creates_polls_and_publishes_public_jpeg() -> None:
     assert all(response.json_calls == 0 for response in post_responses + get_responses)
 
 
+def test_meta_response_without_content_length_streams_success_and_closes() -> None:
+    response = FakeResponse(
+        payload={"id": "fb_chunked"},
+        content_length=None,
+        chunks=[b'{"id":', b' "fb_chunked"}'],
+    )
+    session = FakeSession()
+    session.post_responses = [response]
+
+    result = MetaHttpTransport(session=session).publish_facebook(
+        jpeg=b"jpeg",
+        caption="caption",
+        settings=configured_settings(),
+    )
+
+    assert result == MetaDelivery("facebook", "success", "fb_chunked")
+    assert response.close_count == 1
+    assert response.json_calls == 0
+
+
+def test_meta_chunked_response_over_cap_fails_before_json_and_closes() -> None:
+    response = FakeResponse(
+        payload=None,
+        content_length=None,
+        chunks=[b"x" * (64 * 1024)] * 4 + [b"x"],
+    )
+    session = FakeSession()
+    session.post_responses = [response]
+
+    result = MetaHttpTransport(session=session).publish_facebook(
+        jpeg=b"jpeg",
+        caption="caption",
+        settings=configured_settings(),
+    )
+
+    assert result == MetaDelivery("facebook", "delivery_failed")
+    assert response.close_count == 1
+    assert response.json_calls == 0
+
+
 @pytest.mark.parametrize(
     "response",
     [
-        FakeResponse(payload={"id": "fb_1"}, content_length=None),
         FakeResponse(payload={"id": "fb_1"}, content_length=str(256 * 1024 + 1)),
-        FakeResponse(
-            payload={"id": "fb_1"},
-            content_length="1",
-            chunks=[b"{" + b"x" * (256 * 1024)],
-        ),
+        FakeResponse(payload={"id": "fb_1"}, content_length="1"),
         FakeResponse(payload={"id": "fb_1"}, content_length="not-a-number"),
+        FakeResponse(payload={"id": "fb_1"}, content_length="1, 1"),
+        FakeResponse(payload={"id": "fb_1"}, content_length="-1"),
+        FakeResponse(payload={"id": "fb_1"}, content_length="01"),
     ],
-    ids=("missing-length", "declared-oversized", "lying-small", "invalid-length"),
+    ids=(
+        "declared-oversized",
+        "lying-small",
+        "invalid-length",
+        "duplicate-comma-length",
+        "negative-length",
+        "noncanonical-leading-zero",
+    ),
 )
-def test_meta_response_body_is_bounded_and_always_closed(response: FakeResponse) -> None:
+def test_present_meta_content_length_is_canonical_exact_bounded_and_closes(
+    response: FakeResponse,
+) -> None:
     session = FakeSession()
     session.post_responses = [response]
 
@@ -540,8 +587,14 @@ def test_instagram_failures_are_bounded_and_sanitized(
 
 
 class FakeRepository:
-    def __init__(self, exact_batch: MetaSocialBatch | None) -> None:
+    def __init__(
+        self,
+        exact_batch: MetaSocialBatch | None,
+        *,
+        events: list[str] | None = None,
+    ) -> None:
         self.exact_batch = exact_batch
+        self.events = events
         self.get_calls: list[tuple[str, datetime]] = []
         self.upload_calls: list[tuple[MetaSocialBatch, bytes]] = []
         self.record_calls: list[tuple[str, MetaDelivery]] = []
@@ -554,10 +607,14 @@ class FakeRepository:
         self.upload_url = IMAGE_URL
 
     def get_batch(self, *, run_key: str, reference_at: datetime) -> MetaSocialBatch | None:
+        if self.events is not None:
+            self.events.append("repository:get")
         self.get_calls.append((run_key, reference_at))
         return self.exact_batch
 
     def upload_jpeg(self, *, batch: MetaSocialBatch, jpeg: bytes) -> str:
+        if self.events is not None:
+            self.events.append("storage:instagram")
         self.upload_calls.append((batch, jpeg))
         if self.upload_error is not None:
             raise self.upload_error
@@ -571,6 +628,8 @@ class FakeRepository:
         attempt_id: str,
         lease_expires_at: datetime,
     ) -> bool:
+        if self.events is not None:
+            self.events.append(f"claim:{destination}")
         self.claim_calls.append(
             {
                 "run_id": run_id,
@@ -590,6 +649,8 @@ class FakeRepository:
         result: MetaDelivery,
         attempt_id: str,
     ) -> None:
+        if self.events is not None:
+            self.events.append(f"record:{result.destination}")
         self.record_calls.append((run_id, result))
         self.record_attempts.append(attempt_id)
         if result.destination in self.record_errors:
@@ -602,17 +663,23 @@ class FakeTransport:
         *,
         facebook: MetaDelivery | None = None,
         instagram: MetaDelivery | None = None,
+        events: list[str] | None = None,
     ) -> None:
         self.facebook_result = facebook or MetaDelivery("facebook", "success", "fb_1")
         self.instagram_result = instagram or MetaDelivery("instagram", "success", "ig_1")
         self.facebook_calls: list[dict[str, object]] = []
         self.instagram_calls: list[dict[str, object]] = []
+        self.events = events
 
     def publish_facebook(self, **kwargs: object) -> MetaDelivery:
+        if self.events is not None:
+            self.events.append("meta:facebook")
         self.facebook_calls.append(kwargs)
         return self.facebook_result
 
     def publish_instagram(self, **kwargs: object) -> MetaDelivery:
+        if self.events is not None:
+            self.events.append("meta:instagram")
         self.instagram_calls.append(kwargs)
         return self.instagram_result
 
@@ -623,12 +690,16 @@ class FakeCopyProvider:
         *,
         candidate: SocialCaptions | None = None,
         error: Exception | None = None,
+        events: list[str] | None = None,
     ) -> None:
         self.calls: list[SocialContent] = []
         self.candidate = candidate
         self.error = error
+        self.events = events
 
     def captions(self, value: SocialContent) -> SocialCaptions:
+        if self.events is not None:
+            self.events.append("copy")
         self.calls.append(value)
         if self.error is not None:
             raise self.error
@@ -636,12 +707,21 @@ class FakeCopyProvider:
 
 
 class FakeBackgroundProvider:
-    def __init__(self, *, value: bytes | None = b"background", error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        value: bytes | None = b"background",
+        error: Exception | None = None,
+        events: list[str] | None = None,
+    ) -> None:
         self.value = value
         self.error = error
         self.calls = 0
+        self.events = events
 
     def create(self) -> bytes | None:
+        if self.events is not None:
+            self.events.append("background")
         self.calls += 1
         if self.error is not None:
             raise self.error
@@ -652,11 +732,14 @@ class FakeBackgroundProvider:
 class RenderSpy:
     image: bytes
     error: Exception | None = None
+    events: list[str] | None = None
 
     def __post_init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
     def __call__(self, value: SocialContent, **kwargs: object) -> bytes:
+        if self.events is not None:
+            self.events.append("render")
         self.calls.append({"content": value, **kwargs})
         if self.error is not None:
             raise self.error
@@ -781,7 +864,7 @@ def test_active_claim_denial_skips_destination_without_meta_or_completion(
     ]
 
 
-def test_two_denied_claims_skip_render_and_all_remote_side_effects(
+def test_two_denied_jit_claims_skip_meta_and_completion_after_preparation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = FakeRepository(batch())
@@ -793,9 +876,9 @@ def test_two_denied_claims_skip_render_and_all_remote_side_effects(
         MetaDelivery("facebook", "skipped"),
         MetaDelivery("instagram", "skipped"),
     )
-    assert renderer.calls == []
-    assert copy.calls == []
-    assert repository.upload_calls == []
+    assert len(renderer.calls) == 1
+    assert len(copy.calls) == 1
+    assert len(repository.upload_calls) == 1
     assert repository.record_calls == []
     assert transport.facebook_calls == []
     assert transport.instagram_calls == []
@@ -823,6 +906,168 @@ def test_claim_attempts_are_unique_bounded_and_reused_for_completion(
         assert isinstance(lease, datetime)
         assert before < lease <= after + timedelta(minutes=10)
     assert repository.record_attempts == attempt_ids
+
+
+def test_jit_claims_exclude_copy_render_facebook_and_storage_from_ig_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worst live path starts each bounded lease immediately before Meta."""
+
+    events: list[str] = []
+    repository = FakeRepository(batch(), events=events)
+    transport = FakeTransport(events=events)
+    copy = FakeCopyProvider(events=events)
+    background = FakeBackgroundProvider(events=events)
+    renderer = RenderSpy(jpeg_bytes(), events=events)
+
+    results, _, _, _ = run_publish(
+        monkeypatch,
+        repository=repository,
+        transport=transport,
+        copy_provider=copy,
+        background_provider=background,
+        renderer=renderer,
+    )
+
+    assert all(result.status == "success" for result in results)
+    assert events == [
+        "repository:get",
+        "copy",
+        "background",
+        "render",
+        "claim:facebook",
+        "meta:facebook",
+        "record:facebook",
+        "storage:instagram",
+        "claim:instagram",
+        "meta:instagram",
+        "record:instagram",
+    ]
+
+
+def test_missing_config_claim_is_immediately_completed_before_preparing_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    repository = FakeRepository(batch(), events=events)
+    transport = FakeTransport(events=events)
+    settings = MetaSettings.from_mapping(
+        {
+            "META_SYSTEM_USER_ACCESS_TOKEN": TOKEN,
+            "FB_PAGE_ID": "",
+            "IG_USER_ID": INSTAGRAM_ID,
+        }
+    )
+
+    run_publish(
+        monkeypatch,
+        repository=repository,
+        transport=transport,
+        copy_provider=FakeCopyProvider(events=events),
+        background_provider=FakeBackgroundProvider(events=events),
+        renderer=RenderSpy(jpeg_bytes(), events=events),
+        settings=settings,
+    )
+
+    assert events == [
+        "repository:get",
+        "claim:facebook",
+        "record:facebook",
+        "copy",
+        "background",
+        "render",
+        "storage:instagram",
+        "claim:instagram",
+        "meta:instagram",
+        "record:instagram",
+    ]
+
+
+def test_render_failure_claims_each_destination_only_for_immediate_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    repository = FakeRepository(batch(), events=events)
+
+    run_publish(
+        monkeypatch,
+        repository=repository,
+        transport=FakeTransport(events=events),
+        copy_provider=FakeCopyProvider(events=events),
+        background_provider=FakeBackgroundProvider(events=events),
+        renderer=RenderSpy(
+            b"", error=RuntimeError("renderer failed"), events=events
+        ),
+    )
+
+    assert events == [
+        "repository:get",
+        "copy",
+        "background",
+        "render",
+        "claim:facebook",
+        "record:facebook",
+        "claim:instagram",
+        "record:instagram",
+    ]
+
+
+def test_caption_failure_claims_each_destination_only_for_immediate_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    repository = FakeRepository(batch(), events=events)
+
+    def fail_captions(_provider: object, _content: SocialContent) -> SocialCaptions:
+        events.append("copy")
+        raise RuntimeError("caption validation failed")
+
+    monkeypatch.setattr(social_poster, "_safe_captions", fail_captions)
+
+    run_publish(
+        monkeypatch,
+        repository=repository,
+        transport=FakeTransport(events=events),
+    )
+
+    assert events == [
+        "repository:get",
+        "copy",
+        "claim:facebook",
+        "record:facebook",
+        "claim:instagram",
+        "record:instagram",
+    ]
+
+
+def test_storage_failure_does_not_start_instagram_lease_until_upload_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    repository = FakeRepository(batch(), events=events)
+    repository.upload_error = RuntimeError("storage failed")
+
+    run_publish(
+        monkeypatch,
+        repository=repository,
+        transport=FakeTransport(events=events),
+        copy_provider=FakeCopyProvider(events=events),
+        background_provider=FakeBackgroundProvider(events=events),
+        renderer=RenderSpy(jpeg_bytes(), events=events),
+    )
+
+    assert events == [
+        "repository:get",
+        "copy",
+        "background",
+        "render",
+        "claim:facebook",
+        "meta:facebook",
+        "record:facebook",
+        "storage:instagram",
+        "claim:instagram",
+        "record:instagram",
+    ]
 
 
 @pytest.mark.parametrize(

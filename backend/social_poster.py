@@ -385,14 +385,16 @@ def _response_payload(response: _HttpResponse) -> tuple[int, object]:
         if not isinstance(headers, Mapping):
             raise ValueError("invalid response headers")
         declared_text = headers.get("Content-Length")
-        if (
-            not isinstance(declared_text, str)
-            or re.fullmatch(r"[0-9]+", declared_text) is None
-        ):
-            raise ValueError("missing or invalid Content-Length")
-        declared_length = int(declared_text)
-        if declared_length > _MAX_META_RESPONSE_BYTES:
-            raise ValueError("Meta response body is oversized")
+        declared_length: int | None = None
+        if declared_text is not None:
+            if (
+                not isinstance(declared_text, str)
+                or re.fullmatch(r"(?:0|[1-9][0-9]*)", declared_text) is None
+            ):
+                raise ValueError("invalid Content-Length")
+            declared_length = int(declared_text)
+            if declared_length > _MAX_META_RESPONSE_BYTES:
+                raise ValueError("Meta response body is oversized")
         body = bytearray()
         chunks = response.iter_content(chunk_size=_META_RESPONSE_CHUNK_BYTES)
         for chunk in chunks:
@@ -400,13 +402,13 @@ def _response_payload(response: _HttpResponse) -> tuple[int, object]:
                 raise ValueError("invalid Meta response chunk")
             if not chunk:
                 continue
-            if len(chunk) > min(
-                _MAX_META_RESPONSE_BYTES - len(body),
-                declared_length - len(body),
-            ):
+            remaining = _MAX_META_RESPONSE_BYTES - len(body)
+            if declared_length is not None:
+                remaining = min(remaining, declared_length - len(body))
+            if len(chunk) > remaining:
                 raise ValueError("Meta response body is oversized")
             body.extend(chunk)
-        if len(body) != declared_length:
+        if declared_length is not None and len(body) != declared_length:
             raise ValueError("Meta response Content-Length mismatch")
         payload = json.loads(bytes(body).decode("utf-8"))
         if not isinstance(payload, Mapping):
@@ -545,7 +547,7 @@ def _claim_destination(
     run_id: str,
     destination: Destination,
 ) -> tuple[MetaDelivery | None, str | None]:
-    """Claim one destination before any externally visible delivery work."""
+    """Claim immediately before Meta delivery or terminal ledger completion."""
 
     attempt_id = str(uuid4())
     lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=9)
@@ -596,6 +598,29 @@ def _complete_claim(
     return result
 
 
+def _claim_and_complete(
+    repository: SocialRepository,
+    *,
+    run_id: str,
+    result: MetaDelivery,
+) -> MetaDelivery:
+    claim_result, attempt_id = _claim_destination(
+        repository,
+        run_id=run_id,
+        destination=result.destination,
+    )
+    if claim_result is not None:
+        return claim_result
+    if attempt_id is None:
+        return MetaDelivery(result.destination, "delivery_failed")
+    return _complete_claim(
+        repository,
+        run_id=run_id,
+        result=result,
+        attempt_id=attempt_id,
+    )
+
+
 def publish_meta(
     *,
     run_key: str,
@@ -622,34 +647,18 @@ def publish_meta(
     if len(results) == 2 and not settings.dry_run:
         return results["facebook"], results["instagram"]
 
-    attempts: dict[Destination, str] = {}
-    if not settings.dry_run:
-        for destination in destinations:
-            if destination in results:
-                continue
-            claim_result, attempt_id = _claim_destination(
-                repository,
-                run_id=exact_batch.run_id,
-                destination=destination,
-            )
-            if claim_result is not None:
-                results[destination] = claim_result
-            elif attempt_id is not None:
-                attempts[destination] = attempt_id
-        if len(results) == 2:
-            return results["facebook"], results["instagram"]
-
     if exact_batch.content.is_demo:
         for destination in destinations:
             if destination in results:
                 continue
             failure = MetaDelivery(destination, "delivery_failed")
-            results[destination] = _complete_claim(
-                repository,
-                run_id=exact_batch.run_id,
-                result=failure,
-                attempt_id=attempts[destination],
-            )
+            if not settings.dry_run:
+                failure = _claim_and_complete(
+                    repository,
+                    run_id=exact_batch.run_id,
+                    result=failure,
+                )
+            results[destination] = failure
         return results["facebook"], results["instagram"]
 
     if not settings.dry_run:
@@ -657,16 +666,31 @@ def publish_meta(
             if destination in results or _configured(settings, destination):
                 continue
             missing = MetaDelivery(destination, "not_configured")
-            results[destination] = _complete_claim(
+            results[destination] = _claim_and_complete(
                 repository,
                 run_id=exact_batch.run_id,
                 result=missing,
-                attempt_id=attempts[destination],
             )
         if len(results) == 2:
             return results["facebook"], results["instagram"]
 
-    captions = _safe_captions(copy_provider, exact_batch.content)
+    try:
+        captions = _safe_captions(copy_provider, exact_batch.content)
+    except Exception as exc:
+        LOGGER.info("meta copy=status_failed exception=%s", type(exc).__name__)
+        for destination in destinations:
+            if destination in results:
+                continue
+            failure = MetaDelivery(destination, "delivery_failed")
+            if not settings.dry_run:
+                failure = _claim_and_complete(
+                    repository,
+                    run_id=exact_batch.run_id,
+                    result=failure,
+                )
+            results[destination] = failure
+        return results["facebook"], results["instagram"]
+
     background = _safe_background(background_provider)
     try:
         jpeg = _validate_rendered_jpeg(
@@ -683,11 +707,10 @@ def publish_meta(
                 continue
             failure = MetaDelivery(destination, "delivery_failed")
             if not settings.dry_run:
-                failure = _complete_claim(
+                failure = _claim_and_complete(
                     repository,
                     run_id=exact_batch.run_id,
                     result=failure,
-                    attempt_id=attempts[destination],
                 )
             results[destination] = failure
         return results["facebook"], results["instagram"]
@@ -702,24 +725,32 @@ def publish_meta(
         )
 
     if "facebook" not in results:
-        try:
-            facebook = transport.publish_facebook(
-                jpeg=jpeg, caption=captions.facebook, settings=settings
-            )
-            if facebook.destination != "facebook":
-                raise ValueError("transport returned wrong destination")
-        except Exception as exc:
-            LOGGER.info(
-                "meta destination=facebook status=delivery_failed exception=%s",
-                type(exc).__name__,
-            )
-            facebook = MetaDelivery("facebook", "delivery_failed")
-        results["facebook"] = _complete_claim(
-            repository,
-            run_id=exact_batch.run_id,
-            result=facebook,
-            attempt_id=attempts["facebook"],
+        claim_result, attempt_id = _claim_destination(
+            repository, run_id=exact_batch.run_id, destination="facebook"
         )
+        if claim_result is not None or attempt_id is None:
+            results["facebook"] = claim_result or MetaDelivery(
+                "facebook", "delivery_failed"
+            )
+        else:
+            try:
+                facebook = transport.publish_facebook(
+                    jpeg=jpeg, caption=captions.facebook, settings=settings
+                )
+                if facebook.destination != "facebook":
+                    raise ValueError("transport returned wrong destination")
+            except Exception as exc:
+                LOGGER.info(
+                    "meta destination=facebook status=delivery_failed exception=%s",
+                    type(exc).__name__,
+                )
+                facebook = MetaDelivery("facebook", "delivery_failed")
+            results["facebook"] = _complete_claim(
+                repository,
+                run_id=exact_batch.run_id,
+                result=facebook,
+                attempt_id=attempt_id,
+            )
 
     if "instagram" not in results:
         try:
@@ -727,23 +758,46 @@ def publish_meta(
             object_key = exact_batch.content.object_key(batch_id=exact_batch.batch_id)
             if not _is_deterministic_public_url(image_url, object_key=object_key):
                 raise ValueError("storage returned a non-deterministic URL")
-            instagram = transport.publish_instagram(
-                image_url=image_url, caption=captions.instagram, settings=settings
-            )
-            if instagram.destination != "instagram":
-                raise ValueError("transport returned wrong destination")
         except Exception as exc:
             LOGGER.info(
                 "meta destination=instagram status=delivery_failed exception=%s",
                 type(exc).__name__,
             )
             instagram = MetaDelivery("instagram", "delivery_failed")
-        results["instagram"] = _complete_claim(
-            repository,
-            run_id=exact_batch.run_id,
-            result=instagram,
-            attempt_id=attempts["instagram"],
-        )
+            results["instagram"] = _claim_and_complete(
+                repository,
+                run_id=exact_batch.run_id,
+                result=instagram,
+            )
+        else:
+            claim_result, attempt_id = _claim_destination(
+                repository, run_id=exact_batch.run_id, destination="instagram"
+            )
+            if claim_result is not None or attempt_id is None:
+                results["instagram"] = claim_result or MetaDelivery(
+                    "instagram", "delivery_failed"
+                )
+            else:
+                try:
+                    instagram = transport.publish_instagram(
+                        image_url=image_url,
+                        caption=captions.instagram,
+                        settings=settings,
+                    )
+                    if instagram.destination != "instagram":
+                        raise ValueError("transport returned wrong destination")
+                except Exception as exc:
+                    LOGGER.info(
+                        "meta destination=instagram status=delivery_failed exception=%s",
+                        type(exc).__name__,
+                    )
+                    instagram = MetaDelivery("instagram", "delivery_failed")
+                results["instagram"] = _complete_claim(
+                    repository,
+                    run_id=exact_batch.run_id,
+                    result=instagram,
+                    attempt_id=attempt_id,
+                )
 
     return results["facebook"], results["instagram"]
 

@@ -76,7 +76,8 @@ _VERIFIED_CANDIDATES_FIELD = "_verified_candidates"
 MAX_AI_CATALOG_CANDIDATES = 32
 MAX_AI_PROMPT_CHARS = 24_000
 _AI_RANKING_SYSTEM_MESSAGE = (
-    "Respondes solo con un JSON array de candidate_id y rationale. "
+    "Respondes solo con un objeto JSON que contiene rankings de "
+    "candidate_id y rationale. "
     "No produces hechos de apuestas."
 )
 
@@ -1290,8 +1291,8 @@ selección, horario, fuente, casa de apuestas ni cuota.
 CATÁLOGO VERIFICADO:
 {catalog_json}
 
-Devuelve ÚNICAMENTE un JSON array. Cada objeto debe tener exactamente:
-{{"candidate_id": "ID exacto del catálogo", "rationale": "Explicación de 10 a 500 caracteres"}}
+Devuelve ÚNICAMENTE este objeto JSON:
+{{"rankings": [{{"candidate_id": "ID exacto del catálogo", "rationale": "Explicación de 10 a 500 caracteres"}}]}}
 No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
 """
 
@@ -1349,7 +1350,12 @@ def _parse_strict_json_array(raw_response):
         )
     except (json.JSONDecodeError, TypeError, ValueError):
         return []
-    return parsed if isinstance(parsed, list) else []
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict) and set(parsed) == {"rankings"}:
+        rankings = parsed.get("rankings")
+        return rankings if isinstance(rankings, list) else []
+    return []
 
 
 def _candidate_schedule(candidate: CandidatePick) -> str:
@@ -1464,25 +1470,32 @@ def _fase6_candidate_ranking(
             "name": "verified_candidate_ranking",
             "strict": True,
             "schema": {
-                "type": "array",
-                "maxItems": MAX_AI_RANKED_PICKS,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "candidate_id": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 2000,
-                        },
-                        "rationale": {
-                            "type": "string",
-                            "minLength": 10,
-                            "maxLength": 500,
+                "type": "object",
+                "properties": {
+                    "rankings": {
+                        "type": "array",
+                        "maxItems": MAX_AI_RANKED_PICKS,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "candidate_id": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 2000,
+                                },
+                                "rationale": {
+                                    "type": "string",
+                                    "minLength": 10,
+                                    "maxLength": 500,
+                                },
+                            },
+                            "required": ["candidate_id", "rationale"],
+                            "additionalProperties": False,
                         },
                     },
-                    "required": ["candidate_id", "rationale"],
-                    "additionalProperties": False,
                 },
+                "required": ["rankings"],
+                "additionalProperties": False,
             },
         },
     }

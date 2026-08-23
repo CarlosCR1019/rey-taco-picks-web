@@ -578,6 +578,84 @@ class EventDriver(MarketDriver):
         return super().execute_script(script, *args)
 
 
+class CurrentReactSnapshotDriver:
+    def __init__(self):
+        self.summary_script = ""
+
+    def execute_script(self, script, *_args):
+        if "playdoit:event-summaries" in script:
+            self.summary_script = script
+            return [{
+                "event": {
+                    "id": 17289368,
+                    "name": "Cruz Azul vs. Atlas",
+                    "startDate": "2026-08-23T03:00:00Z",
+                    "status": 0,
+                },
+                "sport": {"id": 66, "name": "Fútbol", "iconName": "soccer"},
+                "championship": {"id": 10009, "name": "Liga MX"},
+                "competitors": [
+                    {"id": 50908, "name": "Cruz Azul"},
+                    {"id": 46433, "name": "Atlas"},
+                ],
+                "markets": [{
+                    "market": {
+                        "id": 1684427600,
+                        "name": "Resultado Final (Tiempo Regular)",
+                        "oddIds": [4350669530, 4350669531, 4350669532],
+                        "typeId": 1,
+                    },
+                    "odds": [
+                        {
+                            "id": 4350669530,
+                            "competitorId": 50908,
+                            "name": "Cruz Azul",
+                            "oddStatus": 0,
+                            "price": 1.6154,
+                            "typeId": 1,
+                        },
+                        {
+                            "id": 4350669531,
+                            "name": "Empate",
+                            "oddStatus": 0,
+                            "price": 4.0,
+                            "typeId": 2,
+                        },
+                        {
+                            "id": 4350669532,
+                            "competitorId": 46433,
+                            "name": "Atlas",
+                            "oddStatus": 0,
+                            "price": 5.5,
+                            "typeId": 3,
+                        },
+                    ],
+                }],
+            }]
+        raise AssertionError("structured list data must not open event details")
+
+
+def test_current_react_snapshot_yields_official_id_time_and_decimal_h2h():
+    driver = CurrentReactSnapshotDriver()
+    records = extract_playdoit_raw_events(driver)
+
+    assert len(records) == 1
+    assert "__reactFiber$" in driver.summary_script
+    assert "memoizedProps" in driver.summary_script
+    assert "oddIds" in driver.summary_script
+    assert records[0]["event_id"] == "17289368"
+    assert records[0]["date_label"] == "22/08"
+    assert records[0]["time_label"] == "21:00"
+
+    event = normalize_playdoit_event(
+        records[0], datetime(2026, 8, 22, 12, tzinfo=MEXICO)
+    )
+    h2h = event.markets[0]
+    assert h2h.outcome("home").price == 1.6154
+    assert h2h.outcome("draw").price == 4.0
+    assert h2h.outcome("away").price == 5.5
+
+
 def test_full_extraction_requires_id_date_time_and_never_synthesizes_defaults():
     driver = EventDriver()
     rejections = []

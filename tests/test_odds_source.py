@@ -440,7 +440,7 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     projected = _verified_projection()
     candidate = projected["_verified_candidates"][0]
     response = json.dumps(
-        [
+        {"rankings": [
             {
                 "candidate_id": candidate.candidate_id,
                 "rationale": "La selección conserva toda la evidencia observada.",
@@ -448,7 +448,7 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
                 "partido": "Inventado vs Falso",
                 "pick": "Parlay inventado",
             }
-        ]
+        ]}
     )
     calls = []
     monkeypatch.setattr(scraper, "Groq", lambda **_kwargs: object())
@@ -475,9 +475,14 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     schema = response_format["json_schema"]
     assert response_format["type"] == "json_schema"
     assert schema["strict"] is True
-    assert schema["schema"]["type"] == "array"
-    assert schema["schema"]["maxItems"] == scraper.MAX_AI_RANKED_PICKS
-    item_schema = schema["schema"]["items"]
+    root_schema = schema["schema"]
+    assert root_schema["type"] == "object"
+    assert root_schema["required"] == ["rankings"]
+    assert root_schema["additionalProperties"] is False
+    ranking_schema = root_schema["properties"]["rankings"]
+    assert ranking_schema["type"] == "array"
+    assert ranking_schema["maxItems"] == scraper.MAX_AI_RANKED_PICKS
+    item_schema = ranking_schema["items"]
     assert item_schema["required"] == ["candidate_id", "rationale"]
     assert item_schema["additionalProperties"] is False
     assert item_schema["properties"]["candidate_id"]["minLength"] == 1

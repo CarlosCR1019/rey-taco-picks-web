@@ -22,7 +22,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 MEXICO = ZoneInfo("America/Mexico_City")
 SUPPORTED_MARKETS = frozenset({"h2h", "totals", "spreads"})
 SUPPORTED_BOX_TITLES = {
-    "h2h": frozenset({"resultado final", "ganador del partido", "moneyline", "1x2"}),
+    "h2h": frozenset({
+        "resultado final",
+        "resultado final (tiempo regular)",
+        "ganador del partido",
+        "moneyline",
+        "1x2",
+    }),
     "totals": frozenset(
         {"total de goles", "total de carreras", "total de puntos"}
     ),
@@ -54,44 +60,104 @@ function playdoitShadow() {
     document.querySelector('asb-sports-app, asb-app, altenar-app');
   return host && host.shadowRoot ? host.shadowRoot : null;
 }
+function playdoitFiber(node) {
+  if (!node) return null;
+  var key = Object.getOwnPropertyNames(node).find(function(name) {
+    return name.indexOf('__reactFiber$') === 0;
+  });
+  return key ? node[key] : null;
+}
+function playdoitProps(node, predicate) {
+  var fiber = playdoitFiber(node);
+  for (var depth = 0; fiber && depth < 30; depth += 1, fiber = fiber.return) {
+    var candidates = [fiber.memoizedProps, fiber.pendingProps];
+    for (var index = 0; index < candidates.length; index += 1) {
+      var props = candidates[index];
+      if (props && predicate(props)) return props;
+    }
+  }
+  return null;
+}
+function playdoitOdd(button) {
+  var props = playdoitProps(button, function(candidate) {
+    return candidate.odd && typeof candidate.odd === 'object';
+  });
+  if (!props) return null;
+  var odd = props.odd;
+  return {
+    id: odd.id,
+    competitorId: odd.competitorId,
+    name: odd.name,
+    oddStatus: odd.oddStatus,
+    price: odd.price,
+    typeId: odd.typeId,
+    sv: odd.sv
+  };
+}
+function playdoitMarket(button) {
+  var props = playdoitProps(button, function(candidate) {
+    return candidate.market && typeof candidate.market === 'object' &&
+      Array.isArray(candidate.market.oddIds);
+  });
+  if (!props) return null;
+  var market = props.market;
+  return {
+    id: market.id,
+    name: market.name,
+    oddIds: market.oddIds.slice(),
+    sportMarketId: market.sportMarketId,
+    typeId: market.typeId,
+    sv: market.sv
+  };
+}
 var shadow = playdoitShadow();
 if (!shadow) return [];
-var containers = Array.from(shadow.querySelectorAll('div[class*="EventBoxContainer"]'));
+var containers = Array.from(shadow.querySelectorAll(
+  'div[class*="EventBoxContainer"]'
+)).filter(function(container) {
+  return !String(container.className || '').includes('BannerEventBoxContainer');
+});
 return containers.map(function(container) {
-  var text = (container.innerText || '').trim();
-  if (/e-fútbol|esports|virtual|cyber|\ben vivo\b|\blive\b/i.test(text)) return null;
-  var dateMatch = text.match(/(?:^|\s)(Hoy|Mañana|\d{2}[\/-]\d{2})(?=\s|$)/im);
-  var timeMatch = text.match(/(?:^|\s)((?:[01]\d|2[0-3]):[0-5]\d)(?=\s|$)/m);
-  var date = dateMatch ? dateMatch[1] : '';
-  var clock = timeMatch ? timeMatch[1] : '';
-  var identityCandidates = [container].concat(Array.from(container.querySelectorAll(
-    '[data-event-id], [data-eventid], [data-event-id-value]'
-  )));
-  var eventIds = identityCandidates.map(function(node) {
-    return node.getAttribute('data-event-id') ||
-      node.getAttribute('data-eventid') ||
-      node.getAttribute('data-event-id-value') || '';
-  }).map(function(value) { return value.trim(); }).filter(Boolean);
-  eventIds = Array.from(new Set(eventIds));
-  var eventId = eventIds.length === 1 ? eventIds[0] : '';
-  var competitors = Array.from(container.querySelectorAll(
-    '[class*="CompetitorName"], [class*="NameContainer"], [class*="EventName"]'
-  )).map(function(node) { return (node.innerText || '').split('\n')[0].trim(); })
-    .filter(function(value) { return value.length >= 2; });
-  var home = competitors[0] || '';
-  var away = competitors[1] || '';
-  var leagueNode = container.closest('[data-league], [data-league-name]');
-  var sportNode = container.closest('[data-sport], [data-sport-name]');
+  var eventProps = playdoitProps(container, function(candidate) {
+    return candidate.event && typeof candidate.event === 'object' &&
+      Array.isArray(candidate.competitors) &&
+      candidate.sport && candidate.championship;
+  });
+  if (!eventProps) return null;
+  var event = eventProps.event;
+  var groups = {};
+  Array.from(container.querySelectorAll('button[class*="OddBoxButton"]'))
+    .forEach(function(button) {
+      var odd = playdoitOdd(button);
+      var market = playdoitMarket(button);
+      if (!odd || !market || !market.id || !odd.id ||
+          !market.oddIds.map(String).includes(String(odd.id))) return;
+      var key = String(market.id);
+      if (!groups[key]) groups[key] = {market: market, odds: []};
+      if (!groups[key].odds.some(function(value) {
+        return String(value.id) === String(odd.id);
+      })) groups[key].odds.push(odd);
+    });
   return {
-    event_id: eventId.trim(),
-    sport: sportNode ? (sportNode.getAttribute('data-sport') || sportNode.getAttribute('data-sport-name') || '').trim() : '',
-    league: leagueNode ? (leagueNode.getAttribute('data-league') || leagueNode.getAttribute('data-league-name') || '').trim() : '',
-    home: home,
-    away: away,
-    date_label: date,
-    time_label: clock,
-    rejection_reason: eventIds.length > 1 ? 'ambiguous_event_identity' :
-      (!eventId ? 'missing_event_identity' : (!date || !clock ? 'missing_start_time' : ''))
+    event: {
+      id: event.id,
+      name: event.name,
+      startDate: event.startDate,
+      status: event.status
+    },
+    sport: {
+      id: eventProps.sport.id,
+      name: eventProps.sport.name,
+      iconName: eventProps.sport.iconName
+    },
+    championship: {
+      id: eventProps.championship.id,
+      name: eventProps.championship.name
+    },
+    competitors: eventProps.competitors.map(function(competitor) {
+      return {id: competitor.id, name: competitor.name};
+    }),
+    markets: Object.keys(groups).map(function(key) { return groups[key]; })
   };
 }).filter(Boolean);
 """
@@ -780,6 +846,156 @@ def _complete_summary(raw: object) -> bool:
     return True
 
 
+def _snapshot_h2h_market(
+    raw: Mapping[str, Any],
+    *,
+    home: str,
+    away: str,
+    home_id: str,
+    away_id: str,
+) -> dict[str, Any] | None:
+    market = raw.get("market")
+    odds = raw.get("odds")
+    if not isinstance(market, Mapping) or not isinstance(odds, list):
+        return None
+    try:
+        title = _required_text(market.get("name"), "market title")
+    except (TypeError, ValueError):
+        return None
+    if title.casefold() not in SUPPORTED_BOX_TITLES["h2h"]:
+        return None
+
+    declared_ids = market.get("oddIds")
+    allowed_ids = (
+        {str(value) for value in declared_ids}
+        if isinstance(declared_ids, list)
+        else set()
+    )
+    outcomes: dict[str, dict[str, Any]] = {}
+    conflicted: set[str] = set()
+    for odd in odds:
+        if not isinstance(odd, Mapping) or odd.get("oddStatus") not in (None, 0):
+            continue
+        odd_id = str(odd.get("id") or "").strip()
+        if allowed_ids and odd_id not in allowed_ids:
+            continue
+        competitor_id = str(odd.get("competitorId") or "").strip()
+        name = str(odd.get("name") or "").strip()
+        if competitor_id == home_id and name.casefold() == home.casefold():
+            key = "home"
+            normalized_name = home
+        elif competitor_id == away_id and name.casefold() == away.casefold():
+            key = "away"
+            normalized_name = away
+        elif (
+            not competitor_id
+            and name.casefold() in {"empate", "draw"}
+            and odd.get("typeId") == 2
+        ):
+            key = "draw"
+            normalized_name = name
+        else:
+            continue
+        candidate = {
+            "key": key,
+            "name": normalized_name,
+            "price": odd.get("price"),
+        }
+        previous = outcomes.get(key)
+        if previous is None:
+            outcomes[key] = candidate
+        elif previous != candidate:
+            outcomes.pop(key, None)
+            conflicted.add(key)
+
+    if conflicted or not {"home", "away"}.issubset(outcomes):
+        return None
+    ordered = [
+        outcomes[key] for key in ("home", "draw", "away") if key in outcomes
+    ]
+    return {
+        "key": "h2h",
+        "title": title,
+        "period": "full_game",
+        "scope": "event",
+        "outcomes": ordered,
+    }
+
+
+def _raw_event_from_snapshot(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    event = raw.get("event")
+    sport = raw.get("sport")
+    championship = raw.get("championship")
+    competitors = raw.get("competitors")
+    if not all(
+        isinstance(value, Mapping) for value in (event, sport, championship)
+    ) or not isinstance(competitors, list):
+        return None
+    if event.get("status") not in (None, 0):
+        return None
+    try:
+        event_id = _required_text(str(event.get("id") or ""), "event_id")
+        event_name = _required_text(event.get("name"), "event name")
+        start_text = _required_text(event.get("startDate"), "startDate")
+        sport_name = _required_text(
+            sport.get("iconName") or sport.get("name"), "sport"
+        )
+        league = _required_text(championship.get("name"), "league")
+        starts_at = datetime.fromisoformat(start_text.replace("Z", "+00:00"))
+        if starts_at.tzinfo is None or starts_at.utcoffset() is None:
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    identity = re.fullmatch(r"\s*(.+?)\s+vs\.?\s+(.+?)\s*", event_name, re.I)
+    if identity is None:
+        return None
+    home, away = (part.strip() for part in identity.groups())
+    by_name: dict[str, list[Mapping[str, Any]]] = {}
+    for competitor in competitors:
+        if not isinstance(competitor, Mapping):
+            continue
+        name = competitor.get("name")
+        if isinstance(name, str) and name.strip():
+            by_name.setdefault(name.strip().casefold(), []).append(competitor)
+    home_matches = by_name.get(home.casefold(), [])
+    away_matches = by_name.get(away.casefold(), [])
+    if len(home_matches) != 1 or len(away_matches) != 1:
+        return None
+    home_id = str(home_matches[0].get("id") or "").strip()
+    away_id = str(away_matches[0].get("id") or "").strip()
+    if not home_id or not away_id or home_id == away_id:
+        return None
+
+    normalized_markets = []
+    raw_markets = raw.get("markets")
+    if isinstance(raw_markets, list):
+        for raw_market in raw_markets:
+            if not isinstance(raw_market, Mapping):
+                continue
+            market = _snapshot_h2h_market(
+                raw_market,
+                home=home,
+                away=away,
+                home_id=home_id,
+                away_id=away_id,
+            )
+            if market is not None:
+                normalized_markets.append(market)
+
+    mexico_start = starts_at.astimezone(MEXICO)
+    return {
+        "event_id": event_id,
+        "sport": sport_name,
+        "league": league,
+        "home": home,
+        "away": away,
+        "date_label": mexico_start.strftime("%d/%m"),
+        "time_label": mexico_start.strftime("%H:%M"),
+        "markets": normalized_markets,
+    }
+
+
 def extract_playdoit_raw_events(
     driver: Any,
     *,
@@ -800,6 +1016,12 @@ def extract_playdoit_raw_events(
         return []
     records: list[dict[str, Any]] = []
     for summary in summaries:
+        if isinstance(summary, Mapping) and isinstance(summary.get("event"), Mapping):
+            record = _raw_event_from_snapshot(summary)
+            if record is None:
+                continue
+            records.append(record)
+            continue
         if not _complete_summary(summary):
             if rejections is not None and isinstance(summary, Mapping):
                 reason = summary.get("rejection_reason")

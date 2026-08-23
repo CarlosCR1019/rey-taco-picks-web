@@ -14,6 +14,9 @@ SOURCE_AUDIT_SQL = SQL.parent / "20260820234500_pick_source_audit.sql"
 META_SOCIAL_SQL = SQL.parent / "20260821010000_meta_social_delivery.sql"
 META_SOCIAL_CLAIMS_SQL = SQL.parent / "20260821020000_meta_social_claims.sql"
 BASE_SCHEMA_SQL = SQL.parent / "20260820210000_base_profiles_picks.sql"
+LEGACY_POLICY_HARDENING_SQL = (
+    SQL.parent / "20260822010000_harden_legacy_pick_policies.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -72,6 +75,53 @@ def function_signature_pattern(signature: str) -> str:
 
 
 class SupabaseContractTests(unittest.TestCase):
+    def test_legacy_pick_policies_are_replaced_by_a_strict_allowlist(self):
+        self.assertTrue(
+            LEGACY_POLICY_HARDENING_SQL.exists(),
+            "a follow-up migration must remove unknown legacy picks policies",
+        )
+        text = " ".join(
+            LEGACY_POLICY_HARDENING_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn("from pg_policies", text)
+        self.assertIn("schemaname = 'public'", text)
+        self.assertIn("tablename = 'picks'", text)
+        self.assertIn("drop policy %i on public.picks", text)
+        self.assertIn(
+            "revoke insert, update, delete, truncate, references, trigger on table public.picks from anon",
+            text,
+        )
+        self.assertIn("grant select on table public.picks to anon", text)
+        self.assertIn(
+            "create or replace function public.picks_policy_allowlist_status()",
+            text,
+        )
+        self.assertIn("returns boolean", text)
+        self.assertIn("security definer", text)
+        self.assertIn("count(*) = 6", text)
+        self.assertIn("not has_table_privilege( 'anon', 'public.picks', 'insert' )", text)
+        self.assertIn(
+            "revoke all on function public.picks_policy_allowlist_status() from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.picks_policy_allowlist_status() to service_role",
+            text,
+        )
+        for policy in (
+            "picks_public_read",
+            "picks_member_read",
+            "picks_admin_select",
+            "picks_admin_insert",
+            "picks_admin_update",
+            "picks_admin_delete",
+        ):
+            self.assertIn(f"create policy {policy} on public.picks", text)
+
     def test_base_profiles_and_picks_schema_precedes_membership_and_is_upgrade_safe(self):
         migrations = sorted(path.name for path in SQL.parent.glob("*.sql"))
         self.assertLess(

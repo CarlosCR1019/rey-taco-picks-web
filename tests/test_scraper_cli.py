@@ -229,14 +229,22 @@ class FakeRpcCall:
 
 
 class FakeSupabase:
-    def __init__(self, status=None, error: Exception | None = None):
+    def __init__(
+        self,
+        status=None,
+        error: Exception | None = None,
+        *,
+        policy_status=True,
+    ):
         self.status = status
+        self.policy_status = policy_status
         self.error = error
         self.calls = []
 
     def rpc(self, name, arguments):
         self.calls.append((name, arguments))
-        return FakeRpcCall(self.status, self.error)
+        data = self.policy_status if name == "picks_policy_allowlist_status" else self.status
+        return FakeRpcCall(data, self.error)
 
 
 def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
@@ -257,7 +265,40 @@ def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
     )
 
     assert isinstance(pipeline, LegacyPipeline)
-    assert client.calls == [("scraper_schema_status", {})]
+    assert client.calls == [
+        ("scraper_schema_status", {}),
+        ("picks_policy_allowlist_status", {}),
+    ]
+    assert driver_calls == []
+
+
+def test_schema_probe_rejects_an_unsafe_policy_allowlist_before_chrome(tmp_path):
+    client = FakeSupabase(
+        {
+            "public_picks": True,
+            "publish_pick_batch": True,
+            "resume_pick_batch": True,
+            "source_audit": True,
+            "version": 2,
+        },
+        policy_status=False,
+    )
+    driver_calls = []
+
+    with pytest.raises(
+        scraper.ConfigError,
+        match="secure Supabase scraper migration is not applied",
+    ):
+        scraper.build_pipeline(
+            settings(tmp_path, dry_run=False),
+            client_factory=lambda _url, _key: client,
+            driver_factory=lambda: driver_calls.append(True),
+        )
+
+    assert client.calls == [
+        ("scraper_schema_status", {}),
+        ("picks_policy_allowlist_status", {}),
+    ]
     assert driver_calls == []
 
 

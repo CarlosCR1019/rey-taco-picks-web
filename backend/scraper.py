@@ -2191,6 +2191,12 @@ def _schema_status_data(data):
     return data if isinstance(data, dict) else None
 
 
+def _schema_boolean_data(data):
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    return data is True
+
+
 def probe_secure_schema(client):
     """Fail closed using a read-only RPC supplied by the scraper migration."""
     try:
@@ -2207,6 +2213,13 @@ def probe_secure_schema(client):
         or status.get("resume_pick_batch") is not True
         or status.get("source_audit") is not True
     ):
+        raise ConfigError("secure Supabase scraper migration is not applied")
+    try:
+        response = client.rpc("picks_policy_allowlist_status", {}).execute()
+        policy_allowlist_ok = _schema_boolean_data(response.data)
+    except Exception:
+        policy_allowlist_ok = False
+    if not policy_allowlist_ok:
         raise ConfigError("secure Supabase scraper migration is not applied")
 
 

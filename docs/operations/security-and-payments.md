@@ -191,6 +191,13 @@ The pending set must include, in this order:
 4. `supabase/migrations/20260820234500_pick_source_audit.sql`, which adds the
    immutable source-audit fields, replaces the publisher contract, and promotes
    `scraper_schema_status()` to schema version `2` with `source_audit = true`.
+5. `supabase/migrations/20260821010000_meta_social_delivery.sql` and
+   `supabase/migrations/20260821020000_meta_social_claims.sql`, which add
+   server-only Meta delivery receipts and attempt-owned claims.
+6. `supabase/migrations/20260822010000_harden_legacy_pick_policies.sql`, which
+   removes every legacy `picks` policy, recreates the audited six-policy
+   allowlist, revokes anonymous writes, and adds the service-only policy
+   allowlist preflight.
 
 `supabase db push` applies every pending migration, not just a named file. Only
 after reviewing that complete set, confirming the linked project and backup, and
@@ -258,10 +265,11 @@ tests.
 ### 4. Understand the production preflight and exit codes
 
 Before opening Chrome in production mode, the scraper calls the read-only
-`scraper_schema_status` RPC with the service-role client. A missing/404 RPC,
-missing `public_picks`, missing atomic publisher/resume RPC, or wrong schema version fails
-closed with exit `2`; it does not claim a run or create a batch. Dry-run skips
-this production-only preflight.
+`scraper_schema_status` and `picks_policy_allowlist_status` RPCs with the
+service-role client. A missing/404 RPC, missing `public_picks`, missing atomic
+publisher/resume RPC, wrong schema version, extra legacy policy, or anonymous
+write privilege fails closed with exit `2`; it does not claim a run or create a
+batch. Dry-run skips this production-only preflight.
 
 | Code | Meaning | Operator action |
 | ---: | --- | --- |

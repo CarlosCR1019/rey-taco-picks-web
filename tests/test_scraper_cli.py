@@ -67,8 +67,45 @@ def test_exit_codes_are_stable():
         "NO_CANDIDATES": ExitCode(4),
         "PERSISTENCE": ExitCode(5),
         "DELIVERY": ExitCode(6),
+        "SOURCE": ExitCode(7),
         "UNEXPECTED": ExitCode(10),
     }
+
+
+def test_source_failure_is_recoverable_and_sanitized(capsys):
+    code = run_main(
+        ["--dry-run"],
+        values={},
+        pipeline=FakePipeline(error=scraper.PlaydoitSourceBlocked()),
+    )
+
+    assert code == ExitCode.SOURCE
+    assert capsys.readouterr().out.strip() == "source_error=source_blocked"
+
+
+def test_surface_scan_rejects_blocked_source_before_decimal_interaction(monkeypatch):
+    decimal_calls = []
+
+    class BlockedDriver:
+        title = "Acceso bloqueado"
+        page_source = "<html><body>Solicitud detenida</body></html>"
+
+        def get(self, _url):
+            return None
+
+        def find_element(self, by, value):
+            assert (by, value) == ("tag name", "body")
+            return SimpleNamespace(text="RAY ID abc123 TU IP 203.0.113.4")
+
+    monkeypatch.setattr(scraper.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        scraper, "click_decimal_toggle", lambda _driver: decimal_calls.append(True)
+    )
+
+    with pytest.raises(scraper.PlaydoitSourceBlocked):
+        scraper.fase1_escaneo_superficie(BlockedDriver())
+
+    assert decimal_calls == []
 
 
 def test_command_source_is_python_311_compatible_and_exits_with_run_main():

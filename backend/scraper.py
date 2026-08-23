@@ -36,6 +36,11 @@ from backend.playdoit_source import (
     extract_playdoit_raw_events,
     normalize_playdoit_events,
 )
+from backend.playdoit_health import (
+    PlaydoitSourceBlocked,
+    PlaydoitSourceError,
+    assert_playdoit_source_healthy,
+)
 from backend.pick_publisher import (
     AuditedBatchPublisher,
     PERSISTED_PICK_COLUMNS,
@@ -807,6 +812,12 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
     try:
         driver.get("https://www.playdoit.mx/es/")
         time.sleep(8)
+
+        assert_playdoit_source_healthy(
+            title=str(driver.title or ""),
+            body=str(driver.find_element("tag name", "body").text or ""),
+            source=str(driver.page_source or ""),
+        )
         
         # Configuración inicial: Formato Decimal (sin restringir a solo hoy para captar Champions/mañana)
         click_decimal_toggle(driver)
@@ -867,6 +878,8 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
                 print(f"✅ {nuevos} nuevos futuros" if nuevos else "⏭️ sin nuevos")
             else:
                 print("⚠️ no encontrada")
+    except PlaydoitSourceError:
+        raise
     except Exception as e:
         print(f"   ⚠️ Nota en escáner Playdoit; failure={type(e).__name__}")
     
@@ -1787,6 +1800,7 @@ class ExitCode(IntEnum):
     NO_CANDIDATES = 4
     PERSISTENCE = 5
     DELIVERY = 6
+    SOURCE = 7
     UNEXPECTED = 10
 
 
@@ -2462,6 +2476,9 @@ def run_main(argv=None, *, values=None, pipeline=None):
     except DeliveryFailure:
         print("delivery_error=DeliveryFailure")
         return ExitCode.DELIVERY
+    except PlaydoitSourceError as error:
+        print(f"source_error={error.code}")
+        return ExitCode.SOURCE
     except Exception as error:
         print(f"unexpected_error={type(error).__name__}")
         return ExitCode.UNEXPECTED

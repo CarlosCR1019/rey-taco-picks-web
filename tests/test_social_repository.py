@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from types import MappingProxyType
 from typing import Literal
@@ -16,6 +16,7 @@ from backend.social_content import demo_social_content
 NOW = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
 RUN_ID = "11111111-1111-4111-8111-111111111111"
 BATCH_ID = "22222222-2222-4222-8222-222222222222"
+ATTEMPT_ID = "33333333-3333-4333-8333-333333333333"
 OBJECT_KEY = f"daily/{BATCH_ID}/321.jpg"
 PUBLIC_URL = (
     "https://project.supabase.co/storage/v1/object/public/"
@@ -585,6 +586,86 @@ class Delivery:
     receipt: str = ""
 
 
+@pytest.mark.parametrize("claimed", [True, False])
+def test_claim_destination_calls_exact_rpc_and_requires_boolean_response(
+    claimed: bool,
+) -> None:
+    client = FakeSupabase(rpc_data=claimed)
+    lease = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    result = repository(client).claim_destination(
+        run_id=RUN_ID,
+        destination="instagram",
+        attempt_id=ATTEMPT_ID,
+        lease_expires_at=lease,
+    )
+
+    assert result is claimed
+    assert client.rpc_calls == [
+        (
+            "claim_meta_social_destination",
+            {
+                "requested_run_id": RUN_ID,
+                "requested_destination": "instagram",
+                "requested_attempt_id": ATTEMPT_ID,
+                "requested_lease_expires_at": lease.isoformat(),
+            },
+        )
+    ]
+    assert client.rpc_handles[0].execute_count == 1
+
+
+@pytest.mark.parametrize("rpc_data", [None, [], {}, 0, 1, "true"])
+def test_claim_destination_rejects_non_boolean_sdk_response(rpc_data: object) -> None:
+    client = FakeSupabase(rpc_data=rpc_data)
+
+    with pytest.raises(RuntimeError, match="claim.*invalid response"):
+        repository(client).claim_destination(
+            run_id=RUN_ID,
+            destination="facebook",
+            attempt_id=ATTEMPT_ID,
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+
+
+@pytest.mark.parametrize(
+    ("run_id", "destination", "attempt_id", "lease", "message"),
+    [
+        ("bad-run", "facebook", ATTEMPT_ID, "valid", "run_id"),
+        (RUN_ID, "twitter", ATTEMPT_ID, "valid", "destination"),
+        (RUN_ID, "facebook", "bad-attempt", "valid", "attempt_id"),
+        (RUN_ID, "facebook", ATTEMPT_ID, "naive", "UTC"),
+        (RUN_ID, "facebook", ATTEMPT_ID, "past", "future"),
+        (RUN_ID, "facebook", ATTEMPT_ID, "long", "10 minutes"),
+    ],
+)
+def test_claim_destination_validates_canonical_ids_and_bounded_utc_lease(
+    run_id: str,
+    destination: str,
+    attempt_id: str,
+    lease: str,
+    message: str,
+) -> None:
+    now = datetime.now(timezone.utc)
+    lease_value = {
+        "valid": now + timedelta(minutes=5),
+        "naive": now.replace(tzinfo=None) + timedelta(minutes=5),
+        "past": now - timedelta(seconds=1),
+        "long": now + timedelta(minutes=11),
+    }[lease]
+    client = FakeSupabase(rpc_data=True)
+
+    with pytest.raises(ValueError, match=message):
+        repository(client).claim_destination(
+            run_id=run_id,
+            destination=destination,  # type: ignore[arg-type]
+            attempt_id=attempt_id,
+            lease_expires_at=lease_value,
+        )
+
+    assert client.rpc_calls == []
+
+
 @pytest.mark.parametrize(
     ("result", "expected"),
     [
@@ -596,6 +677,7 @@ class Delivery:
                 "requested_success": True,
                 "requested_receipt": "photo_123:abc",
                 "requested_error": "",
+                "requested_attempt_id": ATTEMPT_ID,
             },
         ),
         (
@@ -606,6 +688,7 @@ class Delivery:
                 "requested_success": False,
                 "requested_receipt": "",
                 "requested_error": "delivery_failed",
+                "requested_attempt_id": ATTEMPT_ID,
             },
         ),
         (
@@ -616,6 +699,7 @@ class Delivery:
                 "requested_success": False,
                 "requested_receipt": "",
                 "requested_error": "token_invalid",
+                "requested_attempt_id": ATTEMPT_ID,
             },
         ),
         (
@@ -626,19 +710,24 @@ class Delivery:
                 "requested_success": False,
                 "requested_receipt": "",
                 "requested_error": "not_configured",
+                "requested_attempt_id": ATTEMPT_ID,
             },
         ),
     ],
 )
 @pytest.mark.parametrize("void_data", [None, []], ids=("legacy-none", "sdk-empty-list"))
-def test_record_delivery_calls_exact_five_argument_social_rpc(
+def test_record_delivery_calls_exact_six_argument_social_rpc(
     result: Delivery,
     expected: dict[str, object],
     void_data: object,
 ) -> None:
     client = FakeSupabase(rpc_data=void_data)
 
-    repository(client).record_delivery(run_id=RUN_ID, result=result)
+    repository(client).record_delivery(
+        run_id=RUN_ID,
+        result=result,
+        attempt_id=ATTEMPT_ID,
+    )
 
     assert client.rpc_calls == [("record_meta_social_delivery", expected)]
     assert client.rpc_handles[0].execute_count == 1
@@ -651,10 +740,12 @@ def test_record_delivery_persists_destinations_independently() -> None:
     repo.record_delivery(
         run_id=RUN_ID,
         result=Delivery("facebook", "success", "fb_123"),
+        attempt_id=ATTEMPT_ID,
     )
     repo.record_delivery(
         run_id=RUN_ID,
         result=Delivery("instagram", "delivery_failed"),
+        attempt_id="44444444-4444-4444-8444-444444444444",
     )
 
     assert [call[1]["requested_destination"] for call in client.rpc_calls] == [
@@ -677,6 +768,7 @@ def test_record_delivery_fails_closed_on_unexpected_void_rpc_data(
         repository(client).record_delivery(
             run_id=RUN_ID,
             result=Delivery("facebook", "success", "fb_123"),
+            attempt_id=ATTEMPT_ID,
         )
 
 
@@ -685,17 +777,25 @@ class ExplodingSupabase(FakeSupabase):
         raise RuntimeError("raw provider body service-secret")
 
 
-@pytest.mark.parametrize("operation", ["get", "record"])
+@pytest.mark.parametrize("operation", ["get", "claim", "record"])
 def test_rpc_exceptions_are_sanitized_without_raw_payloads(operation: str) -> None:
     repo = repository(ExplodingSupabase(), service_key="service-secret")
 
     with pytest.raises(RuntimeError) as captured:
         if operation == "get":
             repo.get_batch(run_key="github-run:123", reference_at=NOW)
+        elif operation == "claim":
+            repo.claim_destination(
+                run_id=RUN_ID,
+                destination="facebook",
+                attempt_id=ATTEMPT_ID,
+                lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
         else:
             repo.record_delivery(
                 run_id=RUN_ID,
                 result=Delivery("instagram", "delivery_failed"),
+                attempt_id=ATTEMPT_ID,
             )
 
     assert "service-secret" not in str(captured.value)
@@ -703,29 +803,36 @@ def test_rpc_exceptions_are_sanitized_without_raw_payloads(operation: str) -> No
 
 
 @pytest.mark.parametrize(
-    ("run_id", "result", "message"),
+    ("run_id", "result", "attempt_id", "message"),
     [
-        ("bad-run", Delivery("facebook", "delivery_failed"), "run_id"),
-        (RUN_ID, Delivery("facebook", "skipped"), "status"),
-        (RUN_ID, Delivery("facebook", "raw provider body"), "status"),
-        (RUN_ID, Delivery("facebook", "success", ""), "receipt"),
-        (RUN_ID, Delivery("facebook", "success", "unsafe receipt!"), "receipt"),
+        ("bad-run", Delivery("facebook", "delivery_failed"), ATTEMPT_ID, "run_id"),
+        (RUN_ID, Delivery("facebook", "skipped"), ATTEMPT_ID, "status"),
+        (RUN_ID, Delivery("facebook", "raw provider body"), ATTEMPT_ID, "status"),
+        (RUN_ID, Delivery("facebook", "success", ""), ATTEMPT_ID, "receipt"),
+        (RUN_ID, Delivery("facebook", "success", "unsafe receipt!"), ATTEMPT_ID, "receipt"),
         (
             RUN_ID,
             Delivery("instagram", "delivery_failed", "unexpected"),
+            ATTEMPT_ID,
             "receipt",
         ),
-        (RUN_ID, Delivery("twitter", "delivery_failed"), "destination"),  # type: ignore[arg-type]
+        (RUN_ID, Delivery("twitter", "delivery_failed"), ATTEMPT_ID, "destination"),  # type: ignore[arg-type]
+        (RUN_ID, Delivery("facebook", "delivery_failed"), "bad-attempt", "attempt_id"),
     ],
 )
 def test_record_delivery_rejects_invalid_or_free_form_results_before_rpc(
     run_id: str,
     result: Delivery,
+    attempt_id: str,
     message: str,
 ) -> None:
     client = FakeSupabase()
 
     with pytest.raises(ValueError, match=message):
-        repository(client).record_delivery(run_id=run_id, result=result)
+        repository(client).record_delivery(
+            run_id=run_id,
+            result=result,
+            attempt_id=attempt_id,
+        )
 
     assert client.rpc_calls == []

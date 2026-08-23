@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
 import math
@@ -97,7 +97,23 @@ class SocialRepository(Protocol):
     def upload_jpeg(self, *, batch: MetaSocialBatch, jpeg: bytes) -> str:
         """Upload the validated deterministic public JPEG and return its URL."""
 
-    def record_delivery(self, *, run_id: str, result: MetaDelivery) -> None:
+    def claim_destination(
+        self,
+        *,
+        run_id: str,
+        destination: Literal["facebook", "instagram"],
+        attempt_id: str,
+        lease_expires_at: datetime,
+    ) -> bool:
+        """Atomically claim one destination for a bounded delivery attempt."""
+
+    def record_delivery(
+        self,
+        *,
+        run_id: str,
+        result: MetaDelivery,
+        attempt_id: str,
+    ) -> None:
         """Persist one sanitized destination result immediately."""
 
 
@@ -185,11 +201,51 @@ class SupabaseSocialRepository:
             object_key=object_key,
         )
 
-    def record_delivery(self, *, run_id: str, result: MetaDelivery) -> None:
+    def claim_destination(
+        self,
+        *,
+        run_id: str,
+        destination: Literal["facebook", "instagram"],
+        attempt_id: str,
+        lease_expires_at: datetime,
+    ) -> bool:
         normalized_run_id = _canonical_uuid(run_id, field="run_id")
+        if destination not in {"facebook", "instagram"}:
+            raise ValueError("destination must be facebook or instagram")
+        normalized_attempt_id = _canonical_uuid(attempt_id, field="attempt_id")
+        normalized_lease = _validated_lease(lease_expires_at)
+        try:
+            response = self._client.rpc(
+                "claim_meta_social_destination",
+                {
+                    "requested_run_id": normalized_run_id,
+                    "requested_destination": destination,
+                    "requested_attempt_id": normalized_attempt_id,
+                    "requested_lease_expires_at": normalized_lease.isoformat(),
+                },
+            ).execute()
+            data = response.data
+        except Exception:
+            raise RuntimeError("claim_meta_social_destination failed") from None
+        if type(data) is not bool:
+            raise RuntimeError(
+                "claim_meta_social_destination returned an invalid response"
+            )
+        return data
+
+    def record_delivery(
+        self,
+        *,
+        run_id: str,
+        result: MetaDelivery,
+        attempt_id: str,
+    ) -> None:
+        normalized_run_id = _canonical_uuid(run_id, field="run_id")
+        normalized_attempt_id = _canonical_uuid(attempt_id, field="attempt_id")
         arguments = _delivery_arguments(
             run_id=normalized_run_id,
             result=result,
+            attempt_id=normalized_attempt_id,
         )
         try:
             response = self._client.rpc(
@@ -264,6 +320,24 @@ def _canonical_uuid(value: object, *, field: str) -> str:
         raise ValueError(f"{field} must be a canonical UUID") from None
     if normalized != value:
         raise ValueError(f"{field} must be a canonical UUID")
+    return normalized
+
+
+def _validated_lease(value: object) -> datetime:
+    if not isinstance(value, datetime):
+        raise ValueError("lease_expires_at must be a UTC datetime")
+    try:
+        offset = value.utcoffset()
+        if value.tzinfo is None or offset != timedelta(0):
+            raise ValueError
+        normalized = value.astimezone(timezone.utc)
+        checked_at = datetime.now(timezone.utc)
+    except (OverflowError, ValueError):
+        raise ValueError("lease_expires_at must be a UTC datetime") from None
+    if normalized <= checked_at:
+        raise ValueError("lease_expires_at must be in the future")
+    if normalized > checked_at + timedelta(minutes=10):
+        raise ValueError("lease_expires_at must be within 10 minutes")
     return normalized
 
 
@@ -394,6 +468,7 @@ def _delivery_arguments(
     *,
     run_id: str,
     result: MetaDelivery,
+    attempt_id: str,
 ) -> dict[str, object]:
     try:
         destination = result.destination
@@ -423,4 +498,5 @@ def _delivery_arguments(
         "requested_success": success,
         "requested_receipt": receipt,
         "requested_error": error,
+        "requested_attempt_id": attempt_id,
     }

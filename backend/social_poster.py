@@ -1,10 +1,12 @@
 """Publish one exact audited public pick through the Meta Graph API."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
+import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -13,6 +15,7 @@ from typing import Literal, Protocol, cast
 from unicodedata import category as unicode_category
 from urllib.parse import urlsplit
 import warnings
+from uuid import uuid4
 
 from dotenv import dotenv_values
 from PIL import Image, UnidentifiedImageError
@@ -34,6 +37,8 @@ BACKEND_DIR = Path(__file__).resolve().parent
 _GRAPH_VERSION = re.compile(r"^v[0-9]+[.][0-9]+$")
 _ASCII_ID = re.compile(r"^[0-9]+$")
 _SAFE_RECEIPT = re.compile(r"^[A-Za-z0-9_:-]{1,200}$")
+_MAX_META_RESPONSE_BYTES = 256 * 1024
+_META_RESPONSE_CHUNK_BYTES = 64 * 1024
 
 MetaStatus = Literal[
     "success", "skipped", "not_configured", "token_invalid", "delivery_failed"
@@ -178,8 +183,11 @@ def _has_forbidden_control(value: str, *, allow_newline: bool = False) -> bool:
 
 class _HttpResponse(Protocol):
     status_code: int
+    headers: Mapping[str, str]
 
-    def json(self) -> object: ...
+    def iter_content(self, chunk_size: int) -> Iterable[bytes]: ...
+
+    def close(self) -> None: ...
 
 
 class _HttpSession(Protocol):
@@ -196,11 +204,21 @@ class MetaHttpTransport:
         *,
         session: _HttpSession | None = None,
         sleep: Callable[[float], object] = time.sleep,
-        poll_interval: float = 1.0,
+        poll_interval: float = 60.0,
     ) -> None:
-        self._session = session or cast(_HttpSession, requests.Session())
+        if (
+            isinstance(poll_interval, bool)
+            or not isinstance(poll_interval, (int, float))
+            or not math.isfinite(poll_interval)
+            or poll_interval <= 0
+            or poll_interval > 60
+        ):
+            raise ValueError("poll_interval must be finite, positive, and at most 60")
+        self._session = (
+            session if session is not None else cast(_HttpSession, requests.Session())
+        )
         self._sleep = sleep
-        self._poll_interval = poll_interval
+        self._poll_interval = float(poll_interval)
 
     def publish_facebook(
         self, *, jpeg: bytes, caption: str, settings: MetaSettings
@@ -219,6 +237,7 @@ class MetaHttpTransport:
                     data={"message": caption},
                     files={"source": ("rey-taco-pick.jpg", jpeg, "image/jpeg")},
                     timeout=30,
+                    stream=True,
                 ),
             )
             status, payload = _response_payload(response)
@@ -249,6 +268,7 @@ class MetaHttpTransport:
                     headers=self._headers(settings),
                     data={"image_url": image_url, "caption": caption},
                     timeout=30,
+                    stream=True,
                 ),
             )
             status, payload = _response_payload(create_response)
@@ -266,6 +286,7 @@ class MetaHttpTransport:
                         self._graph_url(settings, f"{container_id}?fields=status_code"),
                         headers=self._headers(settings),
                         timeout=30,
+                        stream=True,
                     ),
                 )
                 poll_status, poll_payload = _response_payload(poll_response)
@@ -294,6 +315,7 @@ class MetaHttpTransport:
                     headers=self._headers(settings),
                     data={"creation_id": container_id},
                     timeout=30,
+                    stream=True,
                 ),
             )
             publish_status, publish_payload = _response_payload(publish_response)
@@ -311,7 +333,12 @@ class MetaHttpTransport:
 
     @staticmethod
     def _headers(settings: MetaSettings) -> dict[str, str]:
-        return {"Authorization": f"Bearer {settings.token}"}
+        return {
+            "Authorization": f"Bearer {settings.token}",
+            # iter_content yields decoded bytes; identity keeps Content-Length
+            # comparable to the bytes counted by the bounded parser.
+            "Accept-Encoding": "identity",
+        }
 
     @staticmethod
     def _graph_url(settings: MetaSettings, path: str) -> str:
@@ -350,13 +377,43 @@ class MetaHttpTransport:
 
 
 def _response_payload(response: _HttpResponse) -> tuple[int, object]:
-    status = response.status_code
-    if type(status) is not int:
-        raise ValueError("invalid HTTP status")
-    payload = response.json()
-    if not isinstance(payload, Mapping):
-        raise ValueError("invalid JSON response")
-    return status, payload
+    try:
+        status = response.status_code
+        if type(status) is not int:
+            raise ValueError("invalid HTTP status")
+        headers = response.headers
+        if not isinstance(headers, Mapping):
+            raise ValueError("invalid response headers")
+        declared_text = headers.get("Content-Length")
+        if (
+            not isinstance(declared_text, str)
+            or re.fullmatch(r"[0-9]+", declared_text) is None
+        ):
+            raise ValueError("missing or invalid Content-Length")
+        declared_length = int(declared_text)
+        if declared_length > _MAX_META_RESPONSE_BYTES:
+            raise ValueError("Meta response body is oversized")
+        body = bytearray()
+        chunks = response.iter_content(chunk_size=_META_RESPONSE_CHUNK_BYTES)
+        for chunk in chunks:
+            if not isinstance(chunk, bytes):
+                raise ValueError("invalid Meta response chunk")
+            if not chunk:
+                continue
+            if len(chunk) > min(
+                _MAX_META_RESPONSE_BYTES - len(body),
+                declared_length - len(body),
+            ):
+                raise ValueError("Meta response body is oversized")
+            body.extend(chunk)
+        if len(body) != declared_length:
+            raise ValueError("Meta response Content-Length mismatch")
+        payload = json.loads(bytes(body).decode("utf-8"))
+        if not isinstance(payload, Mapping):
+            raise ValueError("invalid JSON response")
+        return status, payload
+    finally:
+        response.close()
 
 
 def _is_token_invalid(payload: object) -> bool:
@@ -482,8 +539,61 @@ def _safe_background(provider: object | None) -> bytes | None:
         return None
 
 
-def _record(repository: SocialRepository, *, run_id: str, result: MetaDelivery) -> None:
-    repository.record_delivery(run_id=run_id, result=result)
+def _claim_destination(
+    repository: SocialRepository,
+    *,
+    run_id: str,
+    destination: Destination,
+) -> tuple[MetaDelivery | None, str | None]:
+    """Claim one destination before any externally visible delivery work."""
+
+    attempt_id = str(uuid4())
+    lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=9)
+    try:
+        claimed = repository.claim_destination(
+            run_id=run_id,
+            destination=destination,
+            attempt_id=attempt_id,
+            lease_expires_at=lease_expires_at,
+        )
+        if type(claimed) is not bool:
+            raise ValueError("claim returned an invalid result")
+    except Exception as exc:
+        LOGGER.info(
+            "meta destination=%s claim=delivery_failed exception=%s",
+            destination,
+            type(exc).__name__,
+        )
+        return MetaDelivery(destination, "delivery_failed"), None
+    if not claimed:
+        LOGGER.info("meta destination=%s claim=skipped", destination)
+        return MetaDelivery(destination, "skipped"), None
+    return None, attempt_id
+
+
+def _complete_claim(
+    repository: SocialRepository,
+    *,
+    run_id: str,
+    result: MetaDelivery,
+    attempt_id: str,
+) -> MetaDelivery:
+    """Persist one claimed outcome without blocking the sibling destination."""
+
+    try:
+        repository.record_delivery(
+            run_id=run_id,
+            result=result,
+            attempt_id=attempt_id,
+        )
+    except Exception as exc:
+        LOGGER.info(
+            "meta destination=%s ledger=delivery_failed exception=%s",
+            result.destination,
+            type(exc).__name__,
+        )
+        return MetaDelivery(result.destination, "delivery_failed")
+    return result
 
 
 def publish_meta(
@@ -512,13 +622,34 @@ def publish_meta(
     if len(results) == 2 and not settings.dry_run:
         return results["facebook"], results["instagram"]
 
+    attempts: dict[Destination, str] = {}
+    if not settings.dry_run:
+        for destination in destinations:
+            if destination in results:
+                continue
+            claim_result, attempt_id = _claim_destination(
+                repository,
+                run_id=exact_batch.run_id,
+                destination=destination,
+            )
+            if claim_result is not None:
+                results[destination] = claim_result
+            elif attempt_id is not None:
+                attempts[destination] = attempt_id
+        if len(results) == 2:
+            return results["facebook"], results["instagram"]
+
     if exact_batch.content.is_demo:
         for destination in destinations:
             if destination in results:
                 continue
             failure = MetaDelivery(destination, "delivery_failed")
-            results[destination] = failure
-            _record(repository, run_id=exact_batch.run_id, result=failure)
+            results[destination] = _complete_claim(
+                repository,
+                run_id=exact_batch.run_id,
+                result=failure,
+                attempt_id=attempts[destination],
+            )
         return results["facebook"], results["instagram"]
 
     if not settings.dry_run:
@@ -526,8 +657,12 @@ def publish_meta(
             if destination in results or _configured(settings, destination):
                 continue
             missing = MetaDelivery(destination, "not_configured")
-            results[destination] = missing
-            _record(repository, run_id=exact_batch.run_id, result=missing)
+            results[destination] = _complete_claim(
+                repository,
+                run_id=exact_batch.run_id,
+                result=missing,
+                attempt_id=attempts[destination],
+            )
         if len(results) == 2:
             return results["facebook"], results["instagram"]
 
@@ -547,9 +682,14 @@ def publish_meta(
             if destination in results:
                 continue
             failure = MetaDelivery(destination, "delivery_failed")
-            results[destination] = failure
             if not settings.dry_run:
-                _record(repository, run_id=exact_batch.run_id, result=failure)
+                failure = _complete_claim(
+                    repository,
+                    run_id=exact_batch.run_id,
+                    result=failure,
+                    attempt_id=attempts[destination],
+                )
+            results[destination] = failure
         return results["facebook"], results["instagram"]
 
     if settings.dry_run:
@@ -574,8 +714,12 @@ def publish_meta(
                 type(exc).__name__,
             )
             facebook = MetaDelivery("facebook", "delivery_failed")
-        results["facebook"] = facebook
-        _record(repository, run_id=exact_batch.run_id, result=facebook)
+        results["facebook"] = _complete_claim(
+            repository,
+            run_id=exact_batch.run_id,
+            result=facebook,
+            attempt_id=attempts["facebook"],
+        )
 
     if "instagram" not in results:
         try:
@@ -594,8 +738,12 @@ def publish_meta(
                 type(exc).__name__,
             )
             instagram = MetaDelivery("instagram", "delivery_failed")
-        results["instagram"] = instagram
-        _record(repository, run_id=exact_batch.run_id, result=instagram)
+        results["instagram"] = _complete_claim(
+            repository,
+            run_id=exact_batch.run_id,
+            result=instagram,
+            attempt_id=attempts["instagram"],
+        )
 
     return results["facebook"], results["instagram"]
 

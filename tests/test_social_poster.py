@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
+import json
 import logging
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, cast
+from uuid import UUID
 
 from PIL import Image
 import pytest
@@ -75,14 +78,48 @@ def jpeg_bytes() -> bytes:
 
 
 class FakeResponse:
-    def __init__(self, status_code: int = 200, payload: object = None) -> None:
+    def __init__(
+        self,
+        status_code: int = 200,
+        payload: object = None,
+        *,
+        raw_body: bytes | None = None,
+        content_length: str | None = "auto",
+        chunks: list[bytes] | None = None,
+    ) -> None:
         self.status_code = status_code
         self.payload = payload
+        self.body = (
+            raw_body
+            if raw_body is not None
+            else (
+                b""
+                if isinstance(payload, BaseException)
+                else json.dumps(payload).encode("utf-8")
+            )
+        )
+        self.headers: dict[str, str] = {}
+        if content_length == "auto":
+            self.headers["Content-Length"] = str(len(self.body))
+        elif content_length is not None:
+            self.headers["Content-Length"] = content_length
+        self.chunks = chunks
+        self.close_count = 0
+        self.json_calls = 0
 
     def json(self) -> object:
+        self.json_calls += 1
+        raise AssertionError("response.json() must never be called")
+
+    def iter_content(self, chunk_size: int) -> object:
+        assert chunk_size <= 64 * 1024
         if isinstance(self.payload, BaseException):
             raise self.payload
-        return self.payload
+        for chunk in self.chunks or [self.body]:
+            yield chunk
+
+    def close(self) -> None:
+        self.close_count += 1
 
 
 class FakeSession:
@@ -225,7 +262,8 @@ def test_runtime_security_boundaries_reject_unicode_format_controls(
 
 def test_facebook_posts_local_jpeg_with_authorization_header() -> None:
     session = FakeSession()
-    session.post_responses = [FakeResponse(payload={"id": "fb_photo:123"})]
+    response = FakeResponse(payload={"id": "fb_photo:123"})
+    session.post_responses = [response]
     transport = MetaHttpTransport(session=session)
     image = jpeg_bytes()
 
@@ -240,14 +278,21 @@ def test_facebook_posts_local_jpeg_with_authorization_header() -> None:
         (
             f"https://graph.facebook.com/v26.0/{FACEBOOK_ID}/photos",
             {
-                "headers": {"Authorization": f"Bearer {TOKEN}"},
+                "headers": {
+                    "Authorization": f"Bearer {TOKEN}",
+                    "Accept-Encoding": "identity",
+                },
                 "data": {"message": "caption factual"},
                 "files": {"source": ("rey-taco-pick.jpg", image, "image/jpeg")},
                 "timeout": 30,
+                "stream": True,
             },
         )
     ]
     assert TOKEN not in session.post_calls[0][0]
+    assert session.post_responses == []
+    assert response.close_count == 1
+    assert response.json_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -305,16 +350,30 @@ def test_transport_returns_not_configured_without_http_calls() -> None:
     assert session.get_calls == []
 
 
+@pytest.mark.parametrize("interval", [0, -1, 61, math.nan, math.inf, -math.inf, True])
+def test_instagram_poll_interval_must_be_finite_positive_and_at_most_sixty(
+    interval: object,
+) -> None:
+    with pytest.raises(ValueError, match="poll_interval"):
+        MetaHttpTransport(
+            session=FakeSession(),
+            sleep=lambda _seconds: None,
+            poll_interval=interval,  # type: ignore[arg-type]
+        )
+
+
 def test_instagram_creates_polls_and_publishes_public_jpeg() -> None:
     session = FakeSession()
-    session.post_responses = [
+    post_responses = [
         FakeResponse(payload={"id": "container_123"}),
         FakeResponse(payload={"id": "media_456"}),
     ]
-    session.get_responses = [
+    get_responses = [
         FakeResponse(payload={"status_code": "IN_PROGRESS"}),
         FakeResponse(payload={"status_code": "FINISHED"}),
     ]
+    session.post_responses = list(post_responses)
+    session.get_responses = list(get_responses)
     sleeps: list[float] = []
     transport = MetaHttpTransport(session=session, sleep=sleeps.append)
 
@@ -324,7 +383,10 @@ def test_instagram_creates_polls_and_publishes_public_jpeg() -> None:
         settings=configured_settings(),
     )
 
-    headers = {"Authorization": f"Bearer {TOKEN}"}
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Accept-Encoding": "identity",
+    }
     assert result == MetaDelivery("instagram", "success", "media_456")
     assert session.post_calls == [
         (
@@ -333,6 +395,7 @@ def test_instagram_creates_polls_and_publishes_public_jpeg() -> None:
                 "headers": headers,
                 "data": {"image_url": IMAGE_URL, "caption": "caption factual"},
                 "timeout": 30,
+                "stream": True,
             },
         ),
         (
@@ -341,20 +404,52 @@ def test_instagram_creates_polls_and_publishes_public_jpeg() -> None:
                 "headers": headers,
                 "data": {"creation_id": "container_123"},
                 "timeout": 30,
+                "stream": True,
             },
         ),
     ]
     assert session.get_calls == [
         (
             "https://graph.facebook.com/v26.0/container_123?fields=status_code",
-            {"headers": headers, "timeout": 30},
+            {"headers": headers, "timeout": 30, "stream": True},
         ),
         (
             "https://graph.facebook.com/v26.0/container_123?fields=status_code",
-            {"headers": headers, "timeout": 30},
+            {"headers": headers, "timeout": 30, "stream": True},
         ),
     ]
-    assert sleeps == [1.0]
+    assert sleeps == [60.0]
+    assert all(response.close_count == 1 for response in post_responses + get_responses)
+    assert all(response.json_calls == 0 for response in post_responses + get_responses)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        FakeResponse(payload={"id": "fb_1"}, content_length=None),
+        FakeResponse(payload={"id": "fb_1"}, content_length=str(256 * 1024 + 1)),
+        FakeResponse(
+            payload={"id": "fb_1"},
+            content_length="1",
+            chunks=[b"{" + b"x" * (256 * 1024)],
+        ),
+        FakeResponse(payload={"id": "fb_1"}, content_length="not-a-number"),
+    ],
+    ids=("missing-length", "declared-oversized", "lying-small", "invalid-length"),
+)
+def test_meta_response_body_is_bounded_and_always_closed(response: FakeResponse) -> None:
+    session = FakeSession()
+    session.post_responses = [response]
+
+    result = MetaHttpTransport(session=session).publish_facebook(
+        jpeg=b"jpeg",
+        caption="caption",
+        settings=configured_settings(),
+    )
+
+    assert result == MetaDelivery("facebook", "delivery_failed")
+    assert response.close_count == 1
+    assert response.json_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -450,6 +545,11 @@ class FakeRepository:
         self.get_calls: list[tuple[str, datetime]] = []
         self.upload_calls: list[tuple[MetaSocialBatch, bytes]] = []
         self.record_calls: list[tuple[str, MetaDelivery]] = []
+        self.record_attempts: list[str] = []
+        self.claim_calls: list[dict[str, object]] = []
+        self.claim_results = {"facebook": True, "instagram": True}
+        self.claim_errors: dict[str, Exception] = {}
+        self.record_errors: dict[str, Exception] = {}
         self.upload_error: Exception | None = None
         self.upload_url = IMAGE_URL
 
@@ -463,8 +563,37 @@ class FakeRepository:
             raise self.upload_error
         return self.upload_url
 
-    def record_delivery(self, *, run_id: str, result: MetaDelivery) -> None:
+    def claim_destination(
+        self,
+        *,
+        run_id: str,
+        destination: Literal["facebook", "instagram"],
+        attempt_id: str,
+        lease_expires_at: datetime,
+    ) -> bool:
+        self.claim_calls.append(
+            {
+                "run_id": run_id,
+                "destination": destination,
+                "attempt_id": attempt_id,
+                "lease_expires_at": lease_expires_at,
+            }
+        )
+        if destination in self.claim_errors:
+            raise self.claim_errors[destination]
+        return self.claim_results[destination]
+
+    def record_delivery(
+        self,
+        *,
+        run_id: str,
+        result: MetaDelivery,
+        attempt_id: str,
+    ) -> None:
         self.record_calls.append((run_id, result))
+        self.record_attempts.append(attempt_id)
+        if result.destination in self.record_errors:
+            raise self.record_errors[result.destination]
 
 
 class FakeTransport:
@@ -632,6 +761,70 @@ def test_retry_calls_only_failed_instagram_and_reuses_one_render_upload(
     ]
 
 
+def test_active_claim_denial_skips_destination_without_meta_or_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeRepository(batch())
+    repository.claim_results["facebook"] = False
+
+    results, transport, _, renderer = run_publish(monkeypatch, repository=repository)
+
+    assert results == (
+        MetaDelivery("facebook", "skipped"),
+        MetaDelivery("instagram", "success", "ig_1"),
+    )
+    assert len(renderer.calls) == 1
+    assert transport.facebook_calls == []
+    assert len(transport.instagram_calls) == 1
+    assert repository.record_calls == [
+        (RUN_ID, MetaDelivery("instagram", "success", "ig_1"))
+    ]
+
+
+def test_two_denied_claims_skip_render_and_all_remote_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeRepository(batch())
+    repository.claim_results = {"facebook": False, "instagram": False}
+
+    results, transport, copy, renderer = run_publish(monkeypatch, repository=repository)
+
+    assert results == (
+        MetaDelivery("facebook", "skipped"),
+        MetaDelivery("instagram", "skipped"),
+    )
+    assert renderer.calls == []
+    assert copy.calls == []
+    assert repository.upload_calls == []
+    assert repository.record_calls == []
+    assert transport.facebook_calls == []
+    assert transport.instagram_calls == []
+
+
+def test_claim_attempts_are_unique_bounded_and_reused_for_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeRepository(batch())
+    before = datetime.now(timezone.utc)
+
+    run_publish(monkeypatch, repository=repository)
+
+    after = datetime.now(timezone.utc)
+    assert [call["destination"] for call in repository.claim_calls] == [
+        "facebook",
+        "instagram",
+    ]
+    attempt_ids = [str(call["attempt_id"]) for call in repository.claim_calls]
+    assert len(set(attempt_ids)) == 2
+    for attempt_id in attempt_ids:
+        assert str(UUID(attempt_id)) == attempt_id
+    for call in repository.claim_calls:
+        lease = call["lease_expires_at"]
+        assert isinstance(lease, datetime)
+        assert before < lease <= after + timedelta(minutes=10)
+    assert repository.record_attempts == attempt_ids
+
+
 @pytest.mark.parametrize(
     ("facebook_result", "instagram_result"),
     [
@@ -664,6 +857,55 @@ def test_destinations_publish_and_record_independently(
         (RUN_ID, facebook_result),
         (RUN_ID, instagram_result),
     ]
+
+
+def test_facebook_ledger_outage_is_sanitized_and_instagram_still_completes(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = FakeRepository(batch())
+    repository.record_errors["facebook"] = RuntimeError(
+        "raw ledger response service-secret"
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.social_poster"):
+        results, transport, _, _ = run_publish(monkeypatch, repository=repository)
+
+    assert results == (
+        MetaDelivery("facebook", "delivery_failed"),
+        MetaDelivery("instagram", "success", "ig_1"),
+    )
+    assert len(transport.facebook_calls) == 1
+    assert len(transport.instagram_calls) == 1
+    assert [result.destination for _, result in repository.record_calls] == [
+        "facebook",
+        "instagram",
+    ]
+    assert "raw ledger response" not in caplog.text
+    assert "service-secret" not in caplog.text
+    assert "ledger=delivery_failed" in caplog.text
+
+
+def test_claim_outage_isolated_per_destination_without_unclaimed_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = FakeRepository(batch())
+    repository.claim_errors["facebook"] = RuntimeError("raw claim body")
+
+    with caplog.at_level(logging.INFO, logger="backend.social_poster"):
+        results, transport, _, _ = run_publish(monkeypatch, repository=repository)
+
+    assert results == (
+        MetaDelivery("facebook", "delivery_failed"),
+        MetaDelivery("instagram", "success", "ig_1"),
+    )
+    assert transport.facebook_calls == []
+    assert len(transport.instagram_calls) == 1
+    assert [result.destination for _, result in repository.record_calls] == [
+        "instagram"
+    ]
+    assert "raw claim body" not in caplog.text
 
 
 def test_optional_copy_and_background_failures_use_local_fallbacks(
@@ -738,6 +980,7 @@ def test_dry_run_renders_exact_batch_but_has_no_remote_side_effects(
     )
     assert len(renderer.calls) == 1
     assert output.read_bytes() == jpeg_bytes()
+    assert repository.claim_calls == []
     assert repository.upload_calls == []
     assert repository.record_calls == []
     assert transport.facebook_calls == []
@@ -861,6 +1104,31 @@ def test_renderer_failure_is_sanitized_recorded_and_makes_no_meta_request(
     assert "raw renderer secret" not in caplog.text
 
 
+def test_renderer_failure_completion_outages_are_isolated_per_destination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeRepository(batch())
+    repository.record_errors["facebook"] = RuntimeError("raw ledger body")
+    renderer = RenderSpy(b"", error=RuntimeError("raw renderer body"))
+
+    results, transport, _, _ = run_publish(
+        monkeypatch,
+        repository=repository,
+        renderer=renderer,
+    )
+
+    assert results == (
+        MetaDelivery("facebook", "delivery_failed"),
+        MetaDelivery("instagram", "delivery_failed"),
+    )
+    assert [result.destination for _, result in repository.record_calls] == [
+        "facebook",
+        "instagram",
+    ]
+    assert transport.facebook_calls == []
+    assert transport.instagram_calls == []
+
+
 def test_storage_failure_does_not_erase_or_block_facebook_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -931,6 +1199,37 @@ def test_blank_destination_ids_record_not_configured_and_publish_sibling(
     ]
 
 
+def test_missing_configuration_ledger_outage_does_not_block_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeRepository(batch())
+    repository.record_errors["facebook"] = RuntimeError("raw ledger body")
+    settings = MetaSettings.from_mapping(
+        {
+            "META_SYSTEM_USER_ACCESS_TOKEN": TOKEN,
+            "FB_PAGE_ID": "",
+            "IG_USER_ID": INSTAGRAM_ID,
+        }
+    )
+
+    results, transport, _, _ = run_publish(
+        monkeypatch,
+        repository=repository,
+        settings=settings,
+    )
+
+    assert results == (
+        MetaDelivery("facebook", "delivery_failed"),
+        MetaDelivery("instagram", "success", "ig_1"),
+    )
+    assert transport.facebook_calls == []
+    assert len(transport.instagram_calls) == 1
+    assert [result.destination for _, result in repository.record_calls] == [
+        "facebook",
+        "instagram",
+    ]
+
+
 @pytest.mark.parametrize(
     ("results", "expected"),
     [
@@ -953,3 +1252,134 @@ def test_run_key_prefers_explicit_and_otherwise_derives_github_key() -> None:
     assert social_poster.resolve_run_key({"GITHUB_RUN_ID": "123"}) == "github-run:123"
     with pytest.raises(ValueError, match="run key"):
         social_poster.resolve_run_key({})
+
+
+def cli_values(**overrides: str) -> dict[str, str]:
+    values = {
+        "SCRAPER_RUN_KEY": "manual:cli",
+        "SUPABASE_URL": "https://project.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "service-role-secret",
+        "GROQ_API_KEY": "groq-secret",
+        "GROQ_CONTENT_MODEL": "approved-model",
+        "META_SYSTEM_USER_ACCESS_TOKEN": TOKEN,
+        "FB_PAGE_ID": FACEBOOK_ID,
+        "IG_USER_ID": INSTAGRAM_ID,
+    }
+    values.update(overrides)
+    return values
+
+
+def test_runtime_environment_overrides_backend_dotenv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        social_poster,
+        "dotenv_values",
+        lambda _path: {
+            "SCRAPER_RUN_KEY": "file-run",
+            "META_SYSTEM_USER_ACCESS_TOKEN": "file-secret",
+        },
+    )
+    monkeypatch.setenv("SCRAPER_RUN_KEY", "environment-run")
+    monkeypatch.setenv("META_SYSTEM_USER_ACCESS_TOKEN", "environment-secret")
+
+    values = social_poster._runtime_values(None)
+
+    assert values["SCRAPER_RUN_KEY"] == "environment-run"
+    assert values["META_SYSTEM_USER_ACCESS_TOKEN"] == "environment-secret"
+
+
+@pytest.mark.parametrize(
+    ("run_values", "expected_run_key", "expected_dry_run"),
+    [
+        ({"SCRAPER_RUN_KEY": "manual:explicit"}, "manual:explicit", False),
+        (
+            {"SCRAPER_RUN_KEY": "", "GITHUB_RUN_ID": "987"},
+            "github-run:987",
+            False,
+        ),
+        (
+            {
+                "SCRAPER_RUN_KEY": "manual:preview",
+                "META_DRY_RUN": "true",
+                "META_SYSTEM_USER_ACCESS_TOKEN": "",
+                "FB_PAGE_ID": "",
+                "IG_USER_ID": "",
+            },
+            "manual:preview",
+            True,
+        ),
+    ],
+)
+def test_main_constructs_runtime_adapters_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+    run_values: dict[str, str],
+    expected_run_key: str,
+    expected_dry_run: bool,
+) -> None:
+    repository = object()
+    copy_provider = object()
+    transport = object()
+    constructed: dict[str, object] = {}
+
+    def repository_factory(**kwargs: object) -> object:
+        constructed["repository"] = kwargs
+        return repository
+
+    def copy_factory(**kwargs: object) -> object:
+        constructed["copy"] = kwargs
+        return copy_provider
+
+    def transport_factory() -> object:
+        constructed["transport"] = True
+        return transport
+
+    def publish_fake(**kwargs: object) -> tuple[MetaDelivery, MetaDelivery]:
+        constructed["publish"] = kwargs
+        return (
+            MetaDelivery("facebook", "success", "fb_cli"),
+            MetaDelivery("instagram", "success", "ig_cli"),
+        )
+
+    monkeypatch.setattr(social_poster, "SupabaseSocialRepository", repository_factory)
+    monkeypatch.setattr(social_poster, "GroqCopyProvider", copy_factory)
+    monkeypatch.setattr(social_poster, "MetaHttpTransport", transport_factory)
+    monkeypatch.setattr(social_poster, "publish_meta", publish_fake)
+
+    assert social_poster.main(cli_values(**run_values)) == 0
+
+    assert constructed["repository"] == {
+        "supabase_url": "https://project.supabase.co",
+        "service_role_key": "service-role-secret",
+    }
+    assert constructed["copy"] == {
+        "api_key": "groq-secret",
+        "model": "approved-model",
+    }
+    publish_call = cast(dict[str, object], constructed["publish"])
+    assert publish_call["run_key"] == expected_run_key
+    assert publish_call["repository"] is repository
+    assert publish_call["transport"] is transport
+    assert publish_call["copy_provider"] is copy_provider
+    assert publish_call["background_provider"] is None
+    assert isinstance(publish_call["reference_at"], datetime)
+    assert cast(datetime, publish_call["reference_at"]).tzinfo is timezone.utc
+    assert cast(MetaSettings, publish_call["settings"]).dry_run is expected_dry_run
+
+
+def test_main_sanitizes_top_level_adapter_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def fail_repository(**_kwargs: object) -> object:
+        raise RuntimeError("raw response contained service-role-secret")
+
+    monkeypatch.setattr(social_poster, "SupabaseSocialRepository", fail_repository)
+
+    with caplog.at_level(logging.INFO, logger="backend.social_poster"):
+        result = social_poster.main(cli_values())
+
+    assert result == 1
+    assert "RuntimeError" in caplog.text
+    assert "raw response" not in caplog.text
+    assert "service-role-secret" not in caplog.text

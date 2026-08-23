@@ -12,6 +12,7 @@ SQL = (
 RUN_LEDGER_SQL = SQL.parent / "20260820233000_scraper_run_ledger.sql"
 SOURCE_AUDIT_SQL = SQL.parent / "20260820234500_pick_source_audit.sql"
 META_SOCIAL_SQL = SQL.parent / "20260821010000_meta_social_delivery.sql"
+META_SOCIAL_CLAIMS_SQL = SQL.parent / "20260821020000_meta_social_claims.sql"
 BASE_SCHEMA_SQL = SQL.parent / "20260820210000_base_profiles_picks.sql"
 
 
@@ -1207,6 +1208,132 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("requested_destination not in ('admin', 'vip', 'free')", legacy)
         self.assertNotIn("facebook", legacy)
         self.assertNotIn("instagram", legacy)
+
+    def test_meta_social_claim_upgrade_is_transactional_and_replaces_old_completion(self):
+        text = " ".join(
+            META_SOCIAL_CLAIMS_SQL.read_text(encoding="utf-8").lower().split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "drop function if exists public.record_meta_social_delivery(uuid, text, boolean, text, text)",
+            text,
+        )
+        self.assertIn(
+            "public.record_meta_social_delivery( requested_run_id uuid, requested_destination text, requested_success boolean, requested_receipt text, requested_error text, requested_attempt_id uuid ) returns void",
+            text,
+        )
+        self.assertNotIn("create or replace function public.record_meta_social_delivery( requested_run_id uuid, requested_destination text, requested_success boolean, requested_receipt text default '', requested_error text default '' )", text)
+
+    def test_meta_social_claim_is_atomic_bounded_and_reclaimable_after_expiry(self):
+        signature = (
+            "public.claim_meta_social_destination( requested_run_id uuid, "
+            "requested_destination text, requested_attempt_id uuid, "
+            "requested_lease_expires_at timestamptz ) returns boolean"
+        )
+        text = " ".join(
+            META_SOCIAL_CLAIMS_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        body = function_body(META_SOCIAL_CLAIMS_SQL, signature)
+
+        declaration_start = text.index(f"create or replace function {signature}")
+        declaration_end = text.index("$$;", declaration_start)
+        declaration = text[declaration_start:declaration_end]
+        self.assertIn("language plpgsql security definer", declaration)
+        self.assertIn("set search_path = public, pg_temp", declaration)
+        for validation in (
+            "requested_run_id is null",
+            "requested_attempt_id is null",
+            "requested_destination not in ('facebook', 'instagram')",
+            "requested_lease_expires_at is null",
+            "requested_lease_expires_at <= checked_at",
+            "requested_lease_expires_at > checked_at + interval '10 minutes'",
+        ):
+            self.assertIn(validation, body)
+        lock = body.index("for update")
+        self.assertIn("runs.id = requested_run_id", body)
+        self.assertIn("runs.status in ('published', 'partial')", body)
+        self.assertLess(body.index("requested_destination not in"), lock)
+        self.assertIn("destination_entry->>'success' = 'true'", body)
+        self.assertIn("destination_entry->>'state' = 'in_progress'", body)
+        self.assertIn("(destination_entry->>'lease_expires_at')::timestamptz > checked_at", body)
+        self.assertIn("return false", body)
+        for field in (
+            "'state', 'in_progress'",
+            "'success', false",
+            "'receipt', ''",
+            "'error', ''",
+            "'attempt_id', requested_attempt_id::text",
+            "'lease_expires_at', requested_lease_expires_at",
+            "'updated_at', now()",
+        ):
+            self.assertIn(field, body)
+        self.assertIn("array[requested_destination]", body)
+        self.assertIn("return true", body)
+
+    def test_meta_social_completion_is_attempt_owned_and_success_is_terminal(self):
+        signature = (
+            "public.record_meta_social_delivery( requested_run_id uuid, "
+            "requested_destination text, requested_success boolean, "
+            "requested_receipt text, requested_error text, "
+            "requested_attempt_id uuid ) returns void"
+        )
+        text = " ".join(
+            META_SOCIAL_CLAIMS_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        body = function_body(META_SOCIAL_CLAIMS_SQL, signature)
+
+        declaration_start = text.index(f"create or replace function {signature}")
+        declaration_end = text.index("$$;", declaration_start)
+        declaration = text[declaration_start:declaration_end]
+        self.assertIn("language plpgsql security definer", declaration)
+        self.assertIn("set search_path = public, pg_temp", declaration)
+        self.assertIn("requested_attempt_id is null", body)
+        self.assertIn("for update", body)
+        terminal = body.index("destination_entry->>'success' = 'true'")
+        ownership = body.index("destination_entry->>'state' is distinct from 'in_progress'")
+        mutation = body.index("next_delivery_status := jsonb_set")
+        self.assertLess(terminal, ownership)
+        self.assertLess(ownership, mutation)
+        self.assertIn("return;", body[terminal:ownership])
+        self.assertIn(
+            "destination_entry->>'attempt_id' is distinct from requested_attempt_id::text",
+            body,
+        )
+        self.assertIn("raise exception 'meta social claim ownership error'", body)
+        self.assertIn("'state', case when requested_success then 'success' else 'failed' end", body)
+        self.assertNotIn("'lease_expires_at'", body[mutation:])
+        self.assertIn("jsonb_each(next_delivery_status)", body)
+        self.assertIn("details->>'success' is distinct from 'true'", body)
+        self.assertIn("then 'published' else 'partial'", body)
+        self.assertIn("accepted by meta", text)
+        self.assertIn("before the receipt", text)
+        self.assertIn("duplicate", text)
+
+    def test_meta_social_claim_rpcs_are_service_role_only(self):
+        text = " ".join(
+            META_SOCIAL_CLAIMS_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        signatures = (
+            "public.claim_meta_social_destination(uuid, text, uuid, timestamptz)",
+            "public.record_meta_social_delivery(uuid, text, boolean, text, text, uuid)",
+        )
+        for signature in signatures:
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature} to service_role",
+                text,
+            )
+            grants = re.findall(
+                rf"\bgrant\s+([^;]+?)\s+on\s+function\s+"
+                rf"{function_signature_pattern(signature)}\s+to\s+([^;]+);",
+                text,
+            )
+            self.assertEqual(grants, [("execute", "service_role")])
 
 
 if __name__ == "__main__":

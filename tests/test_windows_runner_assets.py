@@ -48,6 +48,8 @@ def test_python_toolcache_bootstrap_is_admin_pinned_and_token_free():
     assert "AGENT_TOOLSDIRECTORY" in text
     assert "setup.ps1" in text
     assert "x64.complete" in text
+    assert "Push-Location -LiteralPath $ExtractDirectory" in text
+    assert "Pop-Location" in text
     for secret in (
         "SUPABASE_SERVICE_ROLE_KEY",
         "TELEGRAM_BOT_TOKEN",

@@ -58,9 +58,16 @@ try {
     }
 
     $env:AGENT_TOOLSDIRECTORY = $ToolDirectory
-    & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-        -File $SetupPath
-    if ($LASTEXITCODE -ne 0) {
+    $SetupExitCode = 1
+    Push-Location -LiteralPath $ExtractDirectory
+    try {
+        & powershell.exe -NoLogo -NoProfile -NonInteractive `
+            -ExecutionPolicy Bypass -File $SetupPath
+        $SetupExitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($SetupExitCode -ne 0) {
         throw "No se pudo preparar Python 3.11 en el tool cache."
     }
 

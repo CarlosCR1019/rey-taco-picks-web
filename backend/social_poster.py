@@ -1,119 +1,683 @@
+"""Publish one exact audited public pick through the Meta Graph API."""
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from io import BytesIO
+import logging
 import os
-import sys
+from pathlib import Path
+import re
+import time
+from typing import Literal, Protocol, cast
+from unicodedata import category as unicode_category
+from urllib.parse import urlsplit
+import warnings
+
+from dotenv import dotenv_values
+from PIL import Image, UnidentifiedImageError
 import requests
-from dotenv import load_dotenv
 
-_reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
-if callable(_reconfigure_stdout):
-    _reconfigure_stdout(encoding="utf-8")
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+from backend.render_html_banner import render_social_jpeg
+from backend.social_background import CloudflareBackgroundProvider
+from backend.social_content import SocialCaptions, SocialContent, build_fallback_captions
+from backend.social_copy import CaptionProvider, GroqCopyProvider
+from backend.social_repository import MetaSocialBatch, SocialRepository, SupabaseSocialRepository
 
-FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN", "").strip()
-FB_PAGE_ID = os.getenv("FB_PAGE_ID", "").strip()
-IG_USER_ID = os.getenv("IG_USER_ID", "").strip()
 
-def publicar_en_facebook_page(image_path="banner_hoy.png", mensaje=None):
-    """
-    Publica automáticamente el banner de picks en la Página oficial de Facebook de Rey Taco Picks.
-    """
-    if not FB_PAGE_ACCESS_TOKEN or not FB_PAGE_ID:
-        print("   ℹ️ Meta Access Token no configurado aún en .env. (Listo para conectar con 1 clic).")
-        return False
+LOGGER = logging.getLogger(__name__)
+BACKEND_DIR = Path(__file__).resolve().parent
+_GRAPH_VERSION = re.compile(r"^v[0-9]+[.][0-9]+$")
+_ASCII_ID = re.compile(r"^[0-9]+$")
+_SAFE_RECEIPT = re.compile(r"^[A-Za-z0-9_:-]{1,200}$")
 
-    if not mensaje:
-        mensaje = (
-            "🌮👑 ¡PRONÓSTICOS DEPORTIVOS DE HOY CON IA! 👑🌮\n\n"
-            "Aquí tienes los picks destacados del día con su respaldo de datos disponible.\n\n"
-            "📊 Consulta los análisis completos y las cuotas disponibles en nuestra plataforma:\n"
-            "👉 https://reytacopicks.com\n\n"
-            "#ReyTacoPicks #LigaMX #ChampionsLeague #MLB #ApuestasDeportivas #PronosticosGratis"
+MetaStatus = Literal[
+    "success", "skipped", "not_configured", "token_invalid", "delivery_failed"
+]
+Destination = Literal["facebook", "instagram"]
+
+
+@dataclass(frozen=True, slots=True)
+class MetaDelivery:
+    destination: Destination
+    status: MetaStatus
+    receipt: str = ""
+
+    def __post_init__(self) -> None:
+        if self.destination not in {"facebook", "instagram"}:
+            raise ValueError("invalid Meta destination")
+        if self.status not in {
+            "success", "skipped", "not_configured", "token_invalid", "delivery_failed"
+        }:
+            raise ValueError("invalid Meta status")
+        if not isinstance(self.receipt, str):
+            raise ValueError("receipt must be a string")
+        if self.status == "success" and _SAFE_RECEIPT.fullmatch(self.receipt) is None:
+            raise ValueError("success requires a safe receipt")
+        if self.status == "skipped":
+            if self.receipt and _SAFE_RECEIPT.fullmatch(self.receipt) is None:
+                raise ValueError("skipped receipt must be safe")
+        elif self.status != "success" and self.receipt:
+            raise ValueError("failed delivery cannot contain a receipt")
+
+    @property
+    def success(self) -> bool:
+        return self.status in {"success", "skipped"}
+
+
+@dataclass(frozen=True, slots=True)
+class MetaSettings:
+    token: str = field(repr=False)
+    facebook_page_id: str
+    instagram_user_id: str
+    graph_version: str = "v26.0"
+    dry_run: bool = False
+    dry_run_output: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token, str):
+            raise ValueError("META_SYSTEM_USER_ACCESS_TOKEN must be a string")
+        if not isinstance(self.facebook_page_id, str):
+            raise ValueError("FB_PAGE_ID must contain ASCII digits")
+        if not isinstance(self.instagram_user_id, str):
+            raise ValueError("IG_USER_ID must contain ASCII digits")
+        _optional_secret(self.token)
+        _optional_id(self.facebook_page_id, field="FB_PAGE_ID")
+        _optional_id(self.instagram_user_id, field="IG_USER_ID")
+        if (
+            not isinstance(self.graph_version, str)
+            or _GRAPH_VERSION.fullmatch(self.graph_version) is None
+        ):
+            raise ValueError("META_GRAPH_VERSION must use v<major>.<minor>")
+        if type(self.dry_run) is not bool:
+            raise ValueError("META_DRY_RUN must be true or false")
+        if (
+            not isinstance(self.dry_run_output, str)
+            or _has_forbidden_control(self.dry_run_output)
+            or self.dry_run_output != self.dry_run_output.strip()
+        ):
+            raise ValueError("META_DRY_RUN_OUTPUT must be a safe path")
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "MetaSettings":
+        token = _optional_secret(values.get("META_SYSTEM_USER_ACCESS_TOKEN"))
+        facebook_page_id = _optional_id(values.get("FB_PAGE_ID"), field="FB_PAGE_ID")
+        instagram_user_id = _optional_id(values.get("IG_USER_ID"), field="IG_USER_ID")
+        raw_version = values.get("META_GRAPH_VERSION", "v26.0")
+        if not isinstance(raw_version, str) or _GRAPH_VERSION.fullmatch(raw_version) is None:
+            raise ValueError("META_GRAPH_VERSION must use v<major>.<minor>")
+        dry_run = _parse_boolean(values.get("META_DRY_RUN"), field="META_DRY_RUN")
+        raw_output = values.get("META_DRY_RUN_OUTPUT", "")
+        if raw_output is None:
+            raw_output = ""
+        if (
+            not isinstance(raw_output, str)
+            or _has_forbidden_control(raw_output)
+            or raw_output != raw_output.strip()
+        ):
+            raise ValueError("META_DRY_RUN_OUTPUT must be a safe path")
+        return cls(
+            token=token,
+            facebook_page_id=facebook_page_id,
+            instagram_user_id=instagram_user_id,
+            graph_version=raw_version,
+            dry_run=dry_run,
+            dry_run_output=raw_output,
         )
 
-    try:
-        url = f"https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos"
-        with open(image_path, "rb") as img_file:
-            payload = {
-                "message": mensaje,
-                "access_token": FB_PAGE_ACCESS_TOKEN
-            }
-            files = {"source": img_file}
-            r = requests.post(url, data=payload, files=files, timeout=30)
-            res = r.json()
-            if "id" in res:
-                print(f"   ✅ ¡Publicado exitosamente en Facebook Page! Post ID: {res['id']}")
-                return True
-            else:
-                print(f"   ⚠️ Error en API de Facebook: {res}")
-                return False
-    except Exception as e:
-        print(f"   ❌ Error publicando en Facebook: {e}")
+
+def _optional_secret(value: object) -> str:
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("META_SYSTEM_USER_ACCESS_TOKEN must be a string")
+    if not value.strip():
+        return ""
+    if value != value.strip() or _has_forbidden_control(value):
+        raise ValueError("META_SYSTEM_USER_ACCESS_TOKEN is unsafe")
+    return value
+
+
+def _optional_id(value: object, *, field: str) -> str:
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must contain ASCII digits")
+    if not value.strip():
+        return ""
+    if value != value.strip() or _ASCII_ID.fullmatch(value) is None:
+        raise ValueError(f"{field} must contain ASCII digits")
+    return value
+
+
+def _parse_boolean(value: object, *, field: str) -> bool:
+    if value is None or value == "" or value is False:
         return False
-
-def publicar_en_instagram(image_url, caption=None):
-    """
-    Publica automáticamente el banner en el feed de Instagram Business vía Meta Graph API.
-    """
-    if not FB_PAGE_ACCESS_TOKEN or not IG_USER_ID:
-        print("   ℹ️ Instagram Business ID / Token pendiente en .env.")
-        return False
-
-    if not caption:
-        caption = (
-            "🌮👑 PICKS DEL DÍA CON INTELIGENCIA ARTIFICIAL 👑🌮\n\n"
-            "🎯 Selecciones analizadas con evidencia de mercado disponible.\n\n"
-            "🔗 Revisa los picks disponibles en el link de la bio 👇\n"
-            "👉 https://reytacopicks.com\n\n"
-            "#ReyTacoPicks #ApuestasDeportivas #LigaMX #MLB #Futbol #TipsDeportivos #IA"
-        )
-
-    try:
-        # 1. Crear Media Container
-        url_create = f"https://graph.facebook.com/v19.0/{IG_USER_ID}/media"
-        payload = {
-            "image_url": image_url,
-            "caption": caption,
-            "access_token": FB_PAGE_ACCESS_TOKEN
-        }
-        r = requests.post(url_create, data=payload, timeout=20)
-        res = r.json()
-        container_id = res.get("id")
-        
-        if not container_id:
-            print(f"   ⚠️ Error creando contenedor de Instagram: {res}")
-            return False
-
-        # 2. Publicar Media Container
-        url_publish = f"https://graph.facebook.com/v19.0/{IG_USER_ID}/media_publish"
-        r_pub = requests.post(url_publish, data={"creation_id": container_id, "access_token": FB_PAGE_ACCESS_TOKEN}, timeout=20)
-        res_pub = r_pub.json()
-        
-        if "id" in res_pub:
-            print(f"   ✅ ¡Publicado exitosamente en Instagram! Media ID: {res_pub['id']}")
+    if value is True:
+        return True
+    if isinstance(value, str):
+        folded = value.casefold()
+        if folded in {"true", "1", "yes"}:
             return True
-        else:
-            print(f"   ⚠️ Error publicando en Instagram: {res_pub}")
+        if folded in {"false", "0", "no"}:
             return False
-    except Exception as e:
-        print(f"   ❌ Error en Instagram: {e}")
-        return False
+    raise ValueError(f"{field} must be true or false")
 
-def ejecutar_auto_post_redes():
-    """Genera el banner y lo publica en las redes sociales oficiales."""
-    print("\n" + "="*60)
-    print("📱 PUBLICACIÓN AUTOMÁTICA EN REDES SOCIALES (Meta Graph API)")
-    print("="*60)
-    
+
+def _has_forbidden_control(value: str, *, allow_newline: bool = False) -> bool:
+    return any(
+        unicode_category(character) in {"Cc", "Cf"}
+        and not (allow_newline and character == "\n")
+        for character in value
+    )
+
+
+class _HttpResponse(Protocol):
+    status_code: int
+
+    def json(self) -> object: ...
+
+
+class _HttpSession(Protocol):
+    def post(self, url: str, **kwargs: object) -> object: ...
+
+    def get(self, url: str, **kwargs: object) -> object: ...
+
+
+class MetaHttpTransport:
+    """Small injectable and sanitized Meta Graph transport."""
+
+    def __init__(
+        self,
+        *,
+        session: _HttpSession | None = None,
+        sleep: Callable[[float], object] = time.sleep,
+        poll_interval: float = 1.0,
+    ) -> None:
+        self._session = session or cast(_HttpSession, requests.Session())
+        self._sleep = sleep
+        self._poll_interval = poll_interval
+
+    def publish_facebook(
+        self, *, jpeg: bytes, caption: str, settings: MetaSettings
+    ) -> MetaDelivery:
+        destination: Destination = "facebook"
+        if not settings.token or not settings.facebook_page_id:
+            return self._result(destination, "not_configured")
+        if not isinstance(jpeg, bytes) or not jpeg or not _valid_caption(caption):
+            return self._result(destination, "delivery_failed")
+        try:
+            response = cast(
+                _HttpResponse,
+                self._session.post(
+                    self._graph_url(settings, f"{settings.facebook_page_id}/photos"),
+                    headers=self._headers(settings),
+                    data={"message": caption},
+                    files={"source": ("rey-taco-pick.jpg", jpeg, "image/jpeg")},
+                    timeout=30,
+                ),
+            )
+            status, payload = _response_payload(response)
+            if _is_token_invalid(payload):
+                return self._result(destination, "token_invalid")
+            if status < 200 or status >= 300:
+                return self._result(destination, "delivery_failed")
+            receipt = _safe_id(payload)
+            if receipt is None:
+                return self._result(destination, "delivery_failed")
+            return self._result(destination, "success", receipt=receipt)
+        except Exception as exc:
+            return self._result(destination, "delivery_failed", exception=type(exc).__name__)
+
+    def publish_instagram(
+        self, *, image_url: str, caption: str, settings: MetaSettings
+    ) -> MetaDelivery:
+        destination: Destination = "instagram"
+        if not settings.token or not settings.instagram_user_id:
+            return self._result(destination, "not_configured")
+        if not _is_public_jpeg_url(image_url) or not _valid_caption(caption):
+            return self._result(destination, "delivery_failed")
+        try:
+            create_response = cast(
+                _HttpResponse,
+                self._session.post(
+                    self._graph_url(settings, f"{settings.instagram_user_id}/media"),
+                    headers=self._headers(settings),
+                    data={"image_url": image_url, "caption": caption},
+                    timeout=30,
+                ),
+            )
+            status, payload = _response_payload(create_response)
+            failed = self._http_failure(destination, status=status, payload=payload)
+            if failed is not None:
+                return failed
+            container_id = _safe_id(payload)
+            if container_id is None:
+                return self._result(destination, "delivery_failed")
+
+            for poll_index in range(5):
+                poll_response = cast(
+                    _HttpResponse,
+                    self._session.get(
+                        self._graph_url(settings, f"{container_id}?fields=status_code"),
+                        headers=self._headers(settings),
+                        timeout=30,
+                    ),
+                )
+                poll_status, poll_payload = _response_payload(poll_response)
+                failed = self._http_failure(
+                    destination, status=poll_status, payload=poll_payload
+                )
+                if failed is not None:
+                    return failed
+                media_status = (
+                    poll_payload.get("status_code")
+                    if isinstance(poll_payload, Mapping)
+                    else None
+                )
+                if media_status == "FINISHED":
+                    break
+                if media_status != "IN_PROGRESS":
+                    return self._result(destination, "delivery_failed")
+                if poll_index == 4:
+                    return self._result(destination, "delivery_failed")
+                self._sleep(self._poll_interval)
+
+            publish_response = cast(
+                _HttpResponse,
+                self._session.post(
+                    self._graph_url(settings, f"{settings.instagram_user_id}/media_publish"),
+                    headers=self._headers(settings),
+                    data={"creation_id": container_id},
+                    timeout=30,
+                ),
+            )
+            publish_status, publish_payload = _response_payload(publish_response)
+            failed = self._http_failure(
+                destination, status=publish_status, payload=publish_payload
+            )
+            if failed is not None:
+                return failed
+            receipt = _safe_id(publish_payload)
+            if receipt is None:
+                return self._result(destination, "delivery_failed")
+            return self._result(destination, "success", receipt=receipt)
+        except Exception as exc:
+            return self._result(destination, "delivery_failed", exception=type(exc).__name__)
+
+    @staticmethod
+    def _headers(settings: MetaSettings) -> dict[str, str]:
+        return {"Authorization": f"Bearer {settings.token}"}
+
+    @staticmethod
+    def _graph_url(settings: MetaSettings, path: str) -> str:
+        return f"https://graph.facebook.com/{settings.graph_version}/{path}"
+
+    def _http_failure(
+        self, destination: Destination, *, status: int, payload: object
+    ) -> MetaDelivery | None:
+        if _is_token_invalid(payload):
+            return self._result(destination, "token_invalid")
+        if status < 200 or status >= 300:
+            return self._result(destination, "delivery_failed")
+        return None
+
+    @staticmethod
+    def _result(
+        destination: Destination,
+        status: MetaStatus,
+        *,
+        receipt: str = "",
+        exception: str = "",
+    ) -> MetaDelivery:
+        result = MetaDelivery(destination, status, receipt)
+        if status == "success":
+            LOGGER.info("meta destination=%s status=success receipt=%s", destination, receipt)
+        elif exception:
+            LOGGER.info(
+                "meta destination=%s status=%s exception=%s",
+                destination,
+                status,
+                exception,
+            )
+        else:
+            LOGGER.info("meta destination=%s status=%s", destination, status)
+        return result
+
+
+def _response_payload(response: _HttpResponse) -> tuple[int, object]:
+    status = response.status_code
+    if type(status) is not int:
+        raise ValueError("invalid HTTP status")
+    payload = response.json()
+    if not isinstance(payload, Mapping):
+        raise ValueError("invalid JSON response")
+    return status, payload
+
+
+def _is_token_invalid(payload: object) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, Mapping):
+        return False
+    return error.get("code") == 190 or error.get("type") == "OAuthException"
+
+
+def _safe_id(payload: object) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    value = payload.get("id")
+    if not isinstance(value, str) or _SAFE_RECEIPT.fullmatch(value) is None:
+        return None
+    return value
+
+
+def _valid_caption(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and value == value.strip()
+        and not _has_forbidden_control(value, allow_newline=True)
+    )
+
+
+def _is_public_jpeg_url(value: object) -> bool:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or _has_forbidden_control(value)
+    ):
+        return False
     try:
-        from backend.render_html_banner import renderizar_banner_estudio
-        banner_file = os.path.join(os.path.dirname(__file__), "banner_hoy.png")
-        renderizar_banner_estudio(output_path=banner_file)
-    except Exception as e:
-        print(f"Error renderizando banner estudio: {e}")
-        from backend.social_banner import generar_banner_redes
-        banner_file = os.path.join(os.path.dirname(__file__), "banner_hoy.png")
-        generar_banner_redes(output_path=banner_file)
-    
-    publicar_en_facebook_page(image_path=banner_file)
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and port in {None, 443}
+        and parsed.path.endswith(".jpg")
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _is_deterministic_public_url(value: object, *, object_key: str) -> bool:
+    if not _is_public_jpeg_url(value) or not isinstance(value, str):
+        return False
+    return urlsplit(value).path.endswith(f"/{object_key}")
+
+
+def _ledger_skip(batch: MetaSocialBatch, destination: Destination) -> MetaDelivery | None:
+    entry = batch.delivery_status.get(destination)
+    if not isinstance(entry, Mapping) or entry.get("success") is not True:
+        return None
+    receipt = entry.get("receipt")
+    if not isinstance(receipt, str) or _SAFE_RECEIPT.fullmatch(receipt) is None:
+        return None
+    return MetaDelivery(destination, "skipped", receipt)
+
+
+def _configured(settings: MetaSettings, destination: Destination) -> bool:
+    return bool(
+        settings.token
+        and (
+            settings.facebook_page_id
+            if destination == "facebook"
+            else settings.instagram_user_id
+        )
+    )
+
+
+def _validate_rendered_jpeg(value: object) -> bytes:
+    if not isinstance(value, bytes) or len(value) > 5 * 1024 * 1024:
+        raise ValueError("renderer returned invalid JPEG")
+    if not value.startswith(b"\xff\xd8") or not value.endswith(b"\xff\xd9"):
+        raise ValueError("renderer returned invalid JPEG")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(value)) as image:
+                image.load()
+                if image.format != "JPEG" or image.mode != "RGB" or image.size != (1080, 1080):
+                    raise ValueError("renderer returned invalid JPEG")
+    except (
+        OSError,
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ):
+        raise ValueError("renderer returned invalid JPEG") from None
+    return value
+
+
+def _safe_captions(provider: CaptionProvider, content: SocialContent) -> SocialCaptions:
+    fallback = build_fallback_captions(content)
+    try:
+        candidate = provider.captions(content)
+        if not isinstance(candidate, SocialCaptions):
+            raise ValueError("invalid caption package")
+        if not _valid_caption(candidate.facebook) or not _valid_caption(candidate.instagram):
+            raise ValueError("invalid caption package")
+        return candidate
+    except Exception as exc:
+        LOGGER.info("meta copy=fallback exception=%s", type(exc).__name__)
+        return fallback
+
+
+def _safe_background(provider: object | None) -> bytes | None:
+    if provider is None:
+        return None
+    try:
+        create = getattr(provider, "create")
+        result = create()
+        return result if isinstance(result, bytes) else None
+    except Exception as exc:
+        LOGGER.info("meta background=fallback exception=%s", type(exc).__name__)
+        return None
+
+
+def _record(repository: SocialRepository, *, run_id: str, result: MetaDelivery) -> None:
+    repository.record_delivery(run_id=run_id, result=result)
+
+
+def publish_meta(
+    *,
+    run_key: str,
+    reference_at: datetime,
+    settings: MetaSettings,
+    repository: SocialRepository,
+    transport: MetaHttpTransport,
+    copy_provider: CaptionProvider,
+    background_provider: object | None,
+) -> tuple[MetaDelivery, MetaDelivery]:
+    """Publish or skip both destinations for one exact persisted run."""
+
+    exact_batch = repository.get_batch(run_key=run_key, reference_at=reference_at)
+    if exact_batch is None:
+        LOGGER.info("meta batch=no_batch")
+        return MetaDelivery("facebook", "skipped"), MetaDelivery("instagram", "skipped")
+
+    destinations: tuple[Destination, Destination] = ("facebook", "instagram")
+    results: dict[Destination, MetaDelivery] = {}
+    for destination in destinations:
+        prior = _ledger_skip(exact_batch, destination)
+        if prior is not None:
+            results[destination] = prior
+    if len(results) == 2 and not settings.dry_run:
+        return results["facebook"], results["instagram"]
+
+    if exact_batch.content.is_demo:
+        for destination in destinations:
+            if destination in results:
+                continue
+            failure = MetaDelivery(destination, "delivery_failed")
+            results[destination] = failure
+            _record(repository, run_id=exact_batch.run_id, result=failure)
+        return results["facebook"], results["instagram"]
+
+    if not settings.dry_run:
+        for destination in destinations:
+            if destination in results or _configured(settings, destination):
+                continue
+            missing = MetaDelivery(destination, "not_configured")
+            results[destination] = missing
+            _record(repository, run_id=exact_batch.run_id, result=missing)
+        if len(results) == 2:
+            return results["facebook"], results["instagram"]
+
+    captions = _safe_captions(copy_provider, exact_batch.content)
+    background = _safe_background(background_provider)
+    try:
+        jpeg = _validate_rendered_jpeg(
+            render_social_jpeg(
+                exact_batch.content,
+                generated_at=reference_at,
+                background_bytes=background,
+            )
+        )
+    except Exception as exc:
+        LOGGER.info("meta render=status_failed exception=%s", type(exc).__name__)
+        for destination in destinations:
+            if destination in results:
+                continue
+            failure = MetaDelivery(destination, "delivery_failed")
+            results[destination] = failure
+            if not settings.dry_run:
+                _record(repository, run_id=exact_batch.run_id, result=failure)
+        return results["facebook"], results["instagram"]
+
+    if settings.dry_run:
+        if settings.dry_run_output:
+            Path(settings.dry_run_output).write_bytes(jpeg)
+        LOGGER.info("meta dry_run=ready")
+        return (
+            results.get("facebook", MetaDelivery("facebook", "skipped")),
+            results.get("instagram", MetaDelivery("instagram", "skipped")),
+        )
+
+    if "facebook" not in results:
+        try:
+            facebook = transport.publish_facebook(
+                jpeg=jpeg, caption=captions.facebook, settings=settings
+            )
+            if facebook.destination != "facebook":
+                raise ValueError("transport returned wrong destination")
+        except Exception as exc:
+            LOGGER.info(
+                "meta destination=facebook status=delivery_failed exception=%s",
+                type(exc).__name__,
+            )
+            facebook = MetaDelivery("facebook", "delivery_failed")
+        results["facebook"] = facebook
+        _record(repository, run_id=exact_batch.run_id, result=facebook)
+
+    if "instagram" not in results:
+        try:
+            image_url = repository.upload_jpeg(batch=exact_batch, jpeg=jpeg)
+            object_key = exact_batch.content.object_key(batch_id=exact_batch.batch_id)
+            if not _is_deterministic_public_url(image_url, object_key=object_key):
+                raise ValueError("storage returned a non-deterministic URL")
+            instagram = transport.publish_instagram(
+                image_url=image_url, caption=captions.instagram, settings=settings
+            )
+            if instagram.destination != "instagram":
+                raise ValueError("transport returned wrong destination")
+        except Exception as exc:
+            LOGGER.info(
+                "meta destination=instagram status=delivery_failed exception=%s",
+                type(exc).__name__,
+            )
+            instagram = MetaDelivery("instagram", "delivery_failed")
+        results["instagram"] = instagram
+        _record(repository, run_id=exact_batch.run_id, result=instagram)
+
+    return results["facebook"], results["instagram"]
+
+
+def exit_code_for(results: tuple[MetaDelivery, MetaDelivery]) -> int:
+    return int(
+        any(result.status in {"token_invalid", "delivery_failed"} for result in results)
+    )
+
+
+def resolve_run_key(values: Mapping[str, object]) -> str:
+    explicit = values.get("SCRAPER_RUN_KEY")
+    github_run_id = values.get("GITHUB_RUN_ID")
+    for value, field_name in (
+        (explicit, "SCRAPER_RUN_KEY"),
+        (github_run_id, "GITHUB_RUN_ID"),
+    ):
+        if value is not None and (
+            not isinstance(value, str)
+            or value != value.strip()
+            or _has_forbidden_control(value)
+        ):
+            raise ValueError(f"{field_name} is unsafe")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    if isinstance(github_run_id, str) and github_run_id:
+        return f"github-run:{github_run_id}"
+    raise ValueError("exact run key is required")
+
+
+def _runtime_values(environ: Mapping[str, str] | None) -> Mapping[str, object]:
+    if environ is not None:
+        return environ
+    values: dict[str, object] = dict(dotenv_values(BACKEND_DIR / ".env"))
+    values.update(os.environ)
+    return values
+
+
+def main(environ: Mapping[str, str] | None = None) -> int:
+    """Build runtime adapters, execute the orchestrator, and return a process code."""
+
+    try:
+        values = _runtime_values(environ)
+        settings = MetaSettings.from_mapping(values)
+        run_key = resolve_run_key(values)
+        supabase_url = values.get("SUPABASE_URL", "")
+        service_role_key = values.get("SUPABASE_SERVICE_ROLE_KEY", "")
+        if not isinstance(supabase_url, str) or not isinstance(service_role_key, str):
+            raise ValueError("Supabase configuration is invalid")
+        repository = SupabaseSocialRepository(
+            supabase_url=supabase_url, service_role_key=service_role_key
+        )
+        groq_key = values.get("GROQ_API_KEY", "")
+        groq_model = values.get("GROQ_CONTENT_MODEL", "openai/gpt-oss-20b")
+        if not isinstance(groq_key, str) or not isinstance(groq_model, str):
+            raise ValueError("Groq configuration is invalid")
+        copy_provider = GroqCopyProvider(api_key=groq_key, model=groq_model)
+        cf_account = values.get("CLOUDFLARE_ACCOUNT_ID", "")
+        cf_token = values.get("CLOUDFLARE_AI_API_TOKEN", "")
+        if not isinstance(cf_account, str) or not isinstance(cf_token, str):
+            raise ValueError("Cloudflare configuration is invalid")
+        background_provider: object | None = None
+        if cf_account and cf_token:
+            background_provider = CloudflareBackgroundProvider(
+                account_id=cf_account,
+                api_token=cf_token,
+                session=requests.Session(),
+            )
+        results = publish_meta(
+            run_key=run_key,
+            reference_at=datetime.now(timezone.utc),
+            settings=settings,
+            repository=repository,
+            transport=MetaHttpTransport(),
+            copy_provider=copy_provider,
+            background_provider=background_provider,
+        )
+        return exit_code_for(results)
+    except Exception as exc:
+        LOGGER.info("meta command=status_failed exception=%s", type(exc).__name__)
+        return 1
+
 
 if __name__ == "__main__":
-    ejecutar_auto_post_redes()
+    raise SystemExit(main())

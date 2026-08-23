@@ -133,6 +133,7 @@ class AuditedBatchPublisher:
         rows: Sequence[Mapping[str, object]],
         *,
         dry_run: bool,
+        write_public: bool = True,
     ) -> PublicationResult:
         projected = _project_persisted_rows(rows)
         return publish_batch(
@@ -141,13 +142,21 @@ class AuditedBatchPublisher:
             self.run_key,
             self.public_path,
             dry_run=dry_run,
+            write_public=write_public,
             clock=self.clock,
         )
 
-    def resume(self, *, dry_run: bool) -> PublicationResult | None:
+    def resume(
+        self,
+        *,
+        dry_run: bool,
+        write_public: bool = True,
+    ) -> PublicationResult | None:
         """Restore the active persisted batch without accepting new pick rows."""
         if type(dry_run) is not bool:
             raise ValueError("dry_run must be a boolean")
+        if type(write_public) is not bool:
+            raise ValueError("write_public must be a boolean")
         if not isinstance(self.run_key, str) or not self.run_key.strip():
             raise ValueError("run_key must not be empty")
         if dry_run:
@@ -163,10 +172,11 @@ class AuditedBatchPublisher:
         if normalized is None:
             return None
         result = _publication_result(normalized)
-        _write_public_payload(
-            self.public_path,
-            _safe_public_payload(result.picks),
-        )
+        if write_public:
+            _write_public_payload(
+                self.public_path,
+                _safe_public_payload(result.picks),
+            )
         return result
 
 
@@ -252,12 +262,15 @@ def publish_batch(
     public_path: str | Path,
     *,
     dry_run: bool = False,
+    write_public: bool = True,
     reference_at: datetime | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> PublicationResult:
     """Publish a database batch before atomically exposing its public selection."""
     if type(dry_run) is not bool:
         raise ValueError("dry_run must be a boolean")
+    if type(write_public) is not bool:
+        raise ValueError("write_public must be a boolean")
     if not picks:
         raise ValueError("picks must not be empty")
     if not isinstance(run_key, str) or not run_key.strip():
@@ -274,10 +287,11 @@ def publish_batch(
             reference_at=clock() if clock is not None else reference_at,
         )
     )
-    _write_public_payload(
-        public_path,
-        _safe_public_payload(result.picks),
-    )
+    if write_public:
+        _write_public_payload(
+            public_path,
+            _safe_public_payload(result.picks),
+        )
     return result
 
 

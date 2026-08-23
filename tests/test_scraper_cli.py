@@ -32,6 +32,16 @@ class FakePipeline:
         return self.result
 
 
+class ModePipeline:
+    def __init__(self, result: PipelineResult):
+        self.result = result
+        self.calls = []
+
+    def run(self, *, collect_only=False, deliver_only=False) -> PipelineResult:
+        self.calls.append((collect_only, deliver_only))
+        return self.result
+
+
 def settings(tmp_path, *, dry_run: bool) -> ScraperSettings:
     return ScraperSettings(
         dry_run=dry_run,
@@ -178,6 +188,26 @@ def test_unknown_cli_arguments_are_rejected():
     with pytest.raises(SystemExit) as captured:
         run_main(["--publish-anyway"], values={})
     assert captured.value.code == 2
+
+
+def test_runtime_modes_are_mutually_exclusive():
+    with pytest.raises(SystemExit) as captured:
+        run_main(["--collect-only", "--deliver-only"], values={})
+    assert captured.value.code == 2
+
+
+def test_deliver_only_absent_batch_is_safe_success(capsys):
+    pipeline = ModePipeline(PipelineResult(0, 0, False, ()))
+
+    code = run_main(
+        ["--deliver-only"],
+        values=production_values(),
+        pipeline=pipeline,
+    )
+
+    assert code == ExitCode.SUCCESS
+    assert pipeline.calls == [(False, True)]
+    assert "deliver_only=no_batch" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -514,6 +544,33 @@ class DeliveryRecordFailureRepository:
         raise RuntimeError("delivery provider leaked telegram-secret")
 
 
+def test_collect_only_persists_without_delivery_or_public_file(
+    tmp_path, monkeypatch
+):
+    stub_successful_legacy_phases(monkeypatch)
+    repository = DeliveryRecordFailureRepository()
+    driver = FakeDriver()
+    transport_calls = []
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: transport_calls.append(True),
+    )
+
+    result = LegacyPipeline(
+        settings(tmp_path, dry_run=False),
+        repository=repository,
+        history_client=object(),
+        driver_factory=lambda: driver,
+    ).run(collect_only=True)
+
+    assert result.persisted is True
+    assert result.failed_deliveries == ()
+    assert transport_calls == []
+    assert driver.quit_calls == 1
+    assert not settings(tmp_path, dry_run=False).public_picks_path.exists()
+
+
 class ResumeRepository:
     def __init__(self, response=None, error=None):
         self.response = response
@@ -598,6 +655,40 @@ def test_production_resumes_before_driver_and_sends_only_missing_persisted_deliv
     assert repository.resume_calls == ["test-run"]
     assert repository.delivery_calls == [("run-resumed", "vip", True, "")]
     assert "resume_only=true" in capsys.readouterr().out
+
+
+def test_deliver_only_never_starts_chrome_and_sends_missing_destination(
+    tmp_path, monkeypatch
+):
+    repository = ResumeRepository(
+        resumed_response(
+            delivery_status={
+                "admin": {"success": True},
+                "free": {"success": True},
+                "vip": {"success": False},
+            }
+        )
+    )
+    sent = []
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: lambda destination, _text: sent.append(destination.name),
+    )
+
+    result = LegacyPipeline(
+        settings(tmp_path, dry_run=False),
+        repository=repository,
+        history_client=object(),
+        driver_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("driver must not start in delivery-only mode")
+        ),
+    ).run(deliver_only=True)
+
+    assert result.persisted is True
+    assert result.failed_deliveries == ()
+    assert sent == ["vip"]
+    assert repository.resume_calls == ["test-run"]
 
 
 def test_production_resume_with_all_deliveries_complete_sends_nothing(

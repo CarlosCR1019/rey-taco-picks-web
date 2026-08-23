@@ -1578,12 +1578,16 @@ def fase7_guardar_y_notificar(
     transport=None,
     run_key,
     clock: Callable[[], datetime] | None = None,
+    deliver: bool = True,
+    write_public: bool = True,
 ):
     """Publish one atomic batch, then deliver each Telegram destination independently."""
     print("\n" + "="*60)
     print("💾  FASE 7: GUARDANDO Y NOTIFICANDO")
     print("="*60)
 
+    if type(deliver) is not bool or type(write_public) is not bool:
+        raise ValueError("delivery and public projection flags must be boolean")
     if not picks:
         print("   ❌ No hay picks para guardar.")
         return None, {}
@@ -1649,17 +1653,20 @@ def fase7_guardar_y_notificar(
         ).publish(
             picks,
             dry_run=False,
+            write_public=write_public,
         )
     except Exception:
         raise PersistenceFailure("scraper batch persistence failed") from None
     print(f"   ✅ Lote {publication.batch_id} publicado atómicamente.")
-    deliveries = _deliver_persisted_publication(
-        publication,
-        repository,
-        active_settings,
-        transport=transport,
-        clock=active_clock,
-    )
+    deliveries = {}
+    if deliver:
+        deliveries = _deliver_persisted_publication(
+            publication,
+            repository,
+            active_settings,
+            transport=transport,
+            clock=active_clock,
+        )
     return publication, deliveries
 
 
@@ -2261,7 +2268,14 @@ class LegacyPipeline:
         self.driver_factory = driver_factory or get_chrome_driver
         self.clock = clock or _utc_now
 
-    def run(self):
+    def run(self, *, collect_only=False, deliver_only=False):
+        if type(collect_only) is not bool or type(deliver_only) is not bool:
+            raise ValueError("runtime mode flags must be boolean")
+        if collect_only and deliver_only:
+            raise ValueError("runtime modes are mutually exclusive")
+        if self.settings.dry_run and (collect_only or deliver_only):
+            raise ValueError("dry-run cannot use production runtime modes")
+
         print("\n" + "=" * 60)
         print("🌮  REY TACO PICKS BOT v5.0  🌮")
         print(
@@ -2278,17 +2292,24 @@ class LegacyPipeline:
                     run_key=self.settings.run_key,
                     public_path=self.settings.public_picks_path,
                     clock=self.clock,
-                ).resume(dry_run=False)
+                ).resume(
+                    dry_run=False,
+                    write_public=not (collect_only or deliver_only),
+                )
             except Exception:
                 raise PersistenceFailure("scraper batch persistence failed") from None
             if publication is not None:
-                print("resume_only=true")
-                deliveries = _deliver_persisted_publication(
-                    publication,
-                    self.repository,
-                    self.settings,
-                    clock=self.clock,
-                )
+                if collect_only:
+                    print("collect_only=resumed")
+                    deliveries = {}
+                else:
+                    print("resume_only=true")
+                    deliveries = _deliver_persisted_publication(
+                        publication,
+                        self.repository,
+                        self.settings,
+                        clock=self.clock,
+                    )
                 failed = tuple(
                     sorted(
                         name
@@ -2304,6 +2325,9 @@ class LegacyPipeline:
                     failed,
                     persisted_rows,
                 )
+
+            if deliver_only:
+                return PipelineResult(0, 0, False, ())
 
         driver = self.driver_factory()
         try:
@@ -2344,6 +2368,8 @@ class LegacyPipeline:
                 settings=self.settings,
                 run_key=self.settings.run_key,
                 clock=self.clock,
+                deliver=not collect_only,
+                write_public=not collect_only,
             )
             failed = tuple(
                 sorted(
@@ -2389,7 +2415,10 @@ def build_pipeline(
 
 def parse_args(argv=None):
     parser = ArgumentParser(description="Rey Taco Picks scraper")
-    parser.add_argument("--dry-run", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--dry-run", action="store_true")
+    modes.add_argument("--collect-only", action="store_true")
+    modes.add_argument("--deliver-only", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -2398,9 +2427,22 @@ def run_main(argv=None, *, values=None, pipeline=None):
     try:
         settings = load_settings(values, dry_run=args.dry_run)
         active_pipeline = pipeline or build_pipeline(settings)
-        result = _validated_pipeline_result(
-            active_pipeline.run(), dry_run=settings.dry_run
-        )
+        if args.collect_only:
+            raw_result = active_pipeline.run(collect_only=True)
+        elif args.deliver_only:
+            raw_result = active_pipeline.run(deliver_only=True)
+        else:
+            raw_result = active_pipeline.run()
+        result = _validated_pipeline_result(raw_result, dry_run=settings.dry_run)
+        if (
+            args.deliver_only
+            and result.event_count == 0
+            and result.pick_count == 0
+            and not result.persisted
+            and not result.failed_deliveries
+        ):
+            print("deliver_only=no_batch")
+            return ExitCode.SUCCESS
         if result.event_count == 0:
             return ExitCode.NO_EVENTS
         if result.pick_count == 0:

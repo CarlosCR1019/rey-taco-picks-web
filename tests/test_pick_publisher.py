@@ -116,6 +116,40 @@ def test_publish_writes_only_public_pick_after_repository_acceptance(tmp_path):
     assert result.dry_run is False
 
 
+def test_publish_can_persist_without_writing_public_projection(tmp_path):
+    destination = tmp_path / "public" / "picks.json"
+    repository = FakeRepository(public_path=destination)
+
+    result = publish_batch(
+        repository,
+        picks(),
+        "run-1",
+        destination,
+        write_public=False,
+    )
+
+    assert result.run_id == "run-1"
+    assert repository.calls[0][0] == "run-1"
+    assert not destination.exists()
+
+
+def test_publish_rejects_non_boolean_write_public_before_repository(tmp_path):
+    destination = tmp_path / "picks.json"
+    repository = FakeRepository()
+
+    with pytest.raises(ValueError, match="write_public"):
+        publish_batch(
+            repository,
+            picks(),
+            "run-1",
+            destination,
+            write_public="false",  # type: ignore[arg-type]
+        )
+
+    assert repository.calls == []
+    assert not destination.exists()
+
+
 def test_dry_run_never_calls_repository_or_writes_file(tmp_path):
     destination = tmp_path / "picks.json"
     repository = FakeRepository()
@@ -371,6 +405,23 @@ def test_audited_publisher_resume_rewrites_public_file_from_persisted_rows(tmp_p
     assert json.loads(destination.read_text(encoding="utf-8")) == [
         {key: value for key, value in stored[0].items() if key != "razonamiento"}
     ]
+
+
+def test_audited_publisher_resume_can_skip_public_projection(tmp_path):
+    destination = tmp_path / "public" / "picks.json"
+    stored = persisted_picks()
+    repository = FakeRepository(
+        resume_response=publish_response(stored, created=False, delivery_status={})
+    )
+
+    result = AuditedBatchPublisher(repository, "run-1", destination).resume(
+        dry_run=False,
+        write_public=False,
+    )
+
+    assert result is not None
+    assert [dict(row) for row in result.picks] == stored
+    assert not destination.exists()
 
 
 def test_audited_publisher_resume_dry_run_never_queries_or_writes(tmp_path):

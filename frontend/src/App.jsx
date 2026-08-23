@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import './App.css'
+import { formatEvidenceSupport } from './domain/evidence'
 
 function App() {
   const [picks, setPicks] = useState([])
@@ -52,7 +53,7 @@ function App() {
                   
                   <div className="card-header">
                     <span className="sport-tag">{pick.deporte}</span>
-                    <span className="confidence-score">IA Confianza: {pick.confianza}</span>
+                    <span className="confidence-score">{formatEvidenceSupport(pick.confianza)}</span>
                   </div>
                   
                   <div className="card-body">

@@ -19,8 +19,11 @@ jobs:
   collect_primary:
     runs-on: [self-hosted, Windows, X64, playdoit-residential]
     timeout-minutes: 25
+    outputs:
+      recovery_label: ${{ steps.recovery_route.outputs.recovery_label }}
     env:
       PSExecutionPolicyPreference: Bypass
+      REY_TACO_BROWSER_MODE: interactive
       SCRAPER_RUN_KEY: residential:${{ github.run_id }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -52,13 +55,27 @@ jobs:
           }
           exit $scraperStatus
 
+      - name: Choose opposite recovery runner
+        id: recovery_route
+        if: always()
+        shell: powershell
+        run: |
+          if ("${{ runner.name }}" -eq "rey-taco-carlos") {
+            "recovery_label=rey-taco-respaldo" >> $env:GITHUB_OUTPUT
+          } elseif ("${{ runner.name }}" -eq "rey-taco-respaldo") {
+            "recovery_label=rey-taco-carlos" >> $env:GITHUB_OUTPUT
+          } else {
+            throw "Unknown residential runner name"
+          }
+
   collect_recovery:
     needs: collect_primary
     if: failure()
-    runs-on: [self-hosted, Windows, X64, playdoit-residential]
+    runs-on: [self-hosted, Windows, X64, playdoit-residential, "${{ needs.collect_primary.outputs.recovery_label }}"]
     timeout-minutes: 25
     env:
       PSExecutionPolicyPreference: Bypass
+      REY_TACO_BROWSER_MODE: interactive
       SCRAPER_RUN_KEY: residential:${{ github.run_id }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

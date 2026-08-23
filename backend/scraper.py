@@ -24,6 +24,11 @@ import urllib.request
 from groq import Groq
 from supabase import create_client
 
+from backend.playdoit_browser import (
+    configure_chrome_options,
+    gate_interactive_driver,
+    resolve_browser_mode,
+)
 from backend.publishing_policy import assign_visibility, public_payload, scheduled_event_date
 from backend.odds_source import (
     OddsSourceError,
@@ -373,41 +378,31 @@ def _match_observed_event(partido, source_event_id, events):
     return matches[0] if len(matches) == 1 else None
 
 def get_chrome_driver():
+    mode = resolve_browser_mode(os.environ)
+
     def make_options():
         options = uc.ChromeOptions()
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--start-maximized")
-        options.add_argument("--disable-gpu")
-        
-        # Modo headless para la nube (GitHub Actions / CI)
-        is_ci = os.getenv("CI") or os.getenv("GITHUB_ACTIONS")
-        if is_ci:
-            options.add_argument("--headless=new")
-        return options, is_ci
+        return configure_chrome_options(options, mode)
 
-    opts, is_ci = make_options()
-    if is_ci:
-        print("   ☁️ Modo NUBE detectado (headless)")
-    else:
-        print("   🖥️ Modo LOCAL detectado (con ventana)")
+    def create_driver(**kwargs):
+        driver = uc.Chrome(options=make_options(), **kwargs)
+        gate_interactive_driver(driver, mode)
+        return driver
+
+    print(f"browser_mode={mode.value}")
 
     chrome_ver = get_chrome_version()
     if chrome_ver:
         print(f"   🌐 Google Chrome v{chrome_ver} detectado")
         try:
-            fresh_opts, _ = make_options()
-            return uc.Chrome(options=fresh_opts, version_main=chrome_ver)
+            return create_driver(version_main=chrome_ver)
         except Exception as e:
             print(f"   ⚠️ Intentando inicialización estándar; failure={type(e).__name__}")
 
     try:
-        fresh_opts, _ = make_options()
-        return uc.Chrome(options=fresh_opts)
+        return create_driver()
     except Exception:
-        fresh_opts, _ = make_options()
-        return uc.Chrome(options=fresh_opts, version_main=None)
+        return create_driver(version_main=None)
 
 # ============================================================
 #  UTILIDADES DE NAVEGACIÓN (Shadow DOM de Altenar)

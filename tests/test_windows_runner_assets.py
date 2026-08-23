@@ -115,6 +115,11 @@ def test_dry_run_finds_repository_and_cannot_publish():
     assert "New-Item" in text
     assert "Remove-Item" in text
     assert "dry_run=true" in text
+    assert "C:\\actions-runner\\_work\\_tool\\Python\\3.11.9\\x64\\python.exe" in text
+    assert "REY_TACO_BROWSER_MODE" in text
+    assert "interactive" in text
+    assert "browser_mode=interactive" in text
+    assert "source_error=(source_blocked|source_invalid)" in text
     for forbidden in (
         "SUPABASE_SERVICE_ROLE_KEY",
         "TELEGRAM_BOT_TOKEN",
@@ -141,3 +146,17 @@ def test_runbook_names_both_machines_and_preserves_user_control():
     assert "no apaga" in text.lower()
     assert "Initialize-ReyTacoPythonToolcache.ps1" in text
     assert "Invoke-ReyTacoDryRun.ps1" in text
+
+
+def test_runbook_documents_interactive_migration_recovery_and_rollback():
+    text = source(RUNBOOK)
+    normalized = text.lower()
+    assert "rey taco picks interactive runner" in normalized
+    assert "convert-reytacorunnertointeractive.ps1" in normalized
+    assert "restore-reytacorunnerservice.ps1" in normalized
+    assert "pantalla bloqueada" in normalized
+    assert "inicio de sesión natural" in normalized
+    assert "pc opuesta" in normalized
+    assert "rollback" in normalized
+    assert "no fuerza" in normalized
+    assert "reinicio" in normalized

@@ -43,9 +43,9 @@ if ($Candidates.Count -eq 0) {
 
 $Repository = $Candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $ScraperPath = Join-Path $Repository.FullName $RelativeScraper
-$PythonLauncher = Get-Command -Name "py" -ErrorAction SilentlyContinue
-if ($null -eq $PythonLauncher) {
-    throw "No se encontro el lanzador de Python 'py'."
+$PythonExecutable = "C:\actions-runner\_work\_tool\Python\3.11.9\x64\python.exe"
+if (-not (Test-Path -LiteralPath $PythonExecutable)) {
+    throw "No se encontro Python 3.11.9 en el tool cache del runner."
 }
 
 $TempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
@@ -53,11 +53,14 @@ $TempDirectory = Join-Path $TempRoot (
     "rey-taco-dryrun-$([Guid]::NewGuid().ToString('N'))"
 )
 [void](New-Item -ItemType Directory -Path $TempDirectory)
+$PreviousBrowserMode = $env:REY_TACO_BROWSER_MODE
+$HadBrowserMode = Test-Path -LiteralPath Env:\REY_TACO_BROWSER_MODE
 
 try {
+    $env:REY_TACO_BROWSER_MODE = "interactive"
     Push-Location $Repository.FullName
     try {
-        $Output = @(& $PythonLauncher.Source -3 $ScraperPath --dry-run 2>&1)
+        $Output = @(& $PythonExecutable $ScraperPath --dry-run 2>&1)
         $ScraperExitCode = $LASTEXITCODE
     } finally {
         Pop-Location
@@ -66,6 +69,12 @@ try {
     $OutputText = $Output -join [Environment]::NewLine
     if ($OutputText -notmatch "dry_run=true") {
         throw "El scraper no confirmo el modo seguro dry_run=true."
+    }
+    if ($OutputText -notmatch "browser_mode=interactive") {
+        throw "Chrome no confirmo el modo interactivo minimizado."
+    }
+    if ($OutputText -match "source_error=(source_blocked|source_invalid)") {
+        throw "Playdoit no entrego una fuente valida."
     }
     $UnsafeMarkers = @(
         "persistence=written",
@@ -86,6 +95,11 @@ try {
     $Output | ForEach-Object { Write-Output $_ }
     Write-Output "RESULT=DRY_RUN_SAFE REPOSITORY=$($Repository.FullName)"
 } finally {
+    if ($HadBrowserMode) {
+        $env:REY_TACO_BROWSER_MODE = $PreviousBrowserMode
+    } else {
+        Remove-Item -LiteralPath Env:\REY_TACO_BROWSER_MODE -ErrorAction SilentlyContinue
+    }
     $ResolvedTemp = [IO.Path]::GetFullPath($TempDirectory)
     if (
         $ResolvedTemp.StartsWith($TempRoot, [StringComparison]::OrdinalIgnoreCase) -and

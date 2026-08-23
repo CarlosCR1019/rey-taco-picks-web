@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Literal, Protocol, cast
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
+import warnings
 
 from PIL import Image, UnidentifiedImageError
 from supabase import create_client
@@ -198,7 +199,7 @@ class SupabaseSocialRepository:
             data = response.data
         except Exception:
             raise RuntimeError("record_meta_social_delivery failed") from None
-        if data is not None:
+        if data is not None and not (type(data) is list and not data):
             raise RuntimeError("record_meta_social_delivery returned an invalid response")
 
 
@@ -318,15 +319,22 @@ def _validate_jpeg(value: object, *, max_bytes: int) -> None:
     if len(value) < 4 or not value.startswith(b"\xff\xd8") or not value.endswith(b"\xff\xd9"):
         raise ValueError("jpeg must contain JPEG bytes")
     try:
-        with Image.open(BytesIO(value)) as image:
-            if image.format != "JPEG":
-                raise ValueError("jpeg must use JPEG format")
-            if image.mode != "RGB":
-                raise ValueError("jpeg must use RGB mode")
-            if image.size != (1080, 1080):
-                raise ValueError("jpeg must be exactly 1080x1080")
-            image.load()
-    except (OSError, UnidentifiedImageError):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(value)) as image:
+                if image.format != "JPEG":
+                    raise ValueError("jpeg must use JPEG format")
+                if image.mode != "RGB":
+                    raise ValueError("jpeg must use RGB mode")
+                if image.size != (1080, 1080):
+                    raise ValueError("jpeg must be exactly 1080x1080")
+                image.load()
+    except (
+        OSError,
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ):
         raise ValueError("jpeg must contain valid JPEG bytes") from None
 
 
@@ -375,6 +383,7 @@ def _validated_public_url(
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
+        or parsed.path != expected_path
         or unquote(parsed.path) != expected_path
     ):
         raise RuntimeError("social JPEG public URL was invalid")

@@ -187,6 +187,15 @@ def jpeg_bytes(
     return output.getvalue()
 
 
+def jpeg_with_declared_dimensions(*, width: int, height: int) -> bytes:
+    payload = bytearray(jpeg_bytes(size=(1, 1)))
+    sof_offset = payload.find(b"\xff\xc0")
+    assert sof_offset >= 0
+    payload[sof_offset + 5 : sof_offset + 7] = height.to_bytes(2, "big")
+    payload[sof_offset + 7 : sof_offset + 9] = width.to_bytes(2, "big")
+    return bytes(payload)
+
+
 def valid_batch(client: FakeSupabase | None = None) -> MetaSocialBatch:
     active_client = client or FakeSupabase(rpc_data=social_payload())
     result = repository(active_client).get_batch(
@@ -447,12 +456,36 @@ def test_upload_jpeg_accepts_only_immutable_bytes(image: object) -> None:
 
 
 @pytest.mark.parametrize(
+    ("width", "height"),
+    [(10_000, 10_000), (65_535, 65_535)],
+    ids=("decompression-warning", "decompression-error"),
+)
+def test_upload_jpeg_normalizes_malicious_declared_dimensions_without_upload(
+    width: int,
+    height: int,
+) -> None:
+    payload = jpeg_with_declared_dimensions(width=width, height=height)
+    assert len(payload) < 1_024
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError) as captured:
+        repository(client).upload_jpeg(batch=valid_batch(), jpeg=payload)
+
+    assert str(captured.value) == "jpeg must contain valid JPEG bytes"
+    assert client.storage.from_calls == []
+
+
+@pytest.mark.parametrize(
     "public_url",
     [
         PUBLIC_URL.replace("https://", "http://"),
         PUBLIC_URL.replace("project.supabase.co", "attacker.example"),
         PUBLIC_URL.replace("/social-media/", "/other-bucket/"),
         PUBLIC_URL.replace("/321.jpg", "/999.jpg"),
+        PUBLIC_URL.replace("/storage/v1/", "/storage%2Fv1/"),
+        PUBLIC_URL.replace("/storage/v1/", "/storage%2fv1/"),
+        PUBLIC_URL.replace("/daily/", "/%64aily/"),
+        PUBLIC_URL.replace("/321.jpg", "/%33%32%31.jpg"),
         PUBLIC_URL + "?token=unexpected",
         {"publicURL": PUBLIC_URL},
     ],
@@ -597,11 +630,13 @@ class Delivery:
         ),
     ],
 )
+@pytest.mark.parametrize("void_data", [None, []], ids=("legacy-none", "sdk-empty-list"))
 def test_record_delivery_calls_exact_five_argument_social_rpc(
     result: Delivery,
     expected: dict[str, object],
+    void_data: object,
 ) -> None:
-    client = FakeSupabase(rpc_data=None)
+    client = FakeSupabase(rpc_data=void_data)
 
     repository(client).record_delivery(run_id=RUN_ID, result=result)
 
@@ -610,7 +645,7 @@ def test_record_delivery_calls_exact_five_argument_social_rpc(
 
 
 def test_record_delivery_persists_destinations_independently() -> None:
-    client = FakeSupabase(rpc_data=None)
+    client = FakeSupabase(rpc_data=[])
     repo = repository(client)
 
     repo.record_delivery(
@@ -632,8 +667,11 @@ def test_record_delivery_persists_destinations_independently() -> None:
     ]
 
 
-def test_record_delivery_fails_closed_on_unexpected_void_rpc_data() -> None:
-    client = FakeSupabase(rpc_data={"raw": "unexpected"})
+@pytest.mark.parametrize("rpc_data", ["", {}, [None], False, 0])
+def test_record_delivery_fails_closed_on_unexpected_void_rpc_data(
+    rpc_data: object,
+) -> None:
+    client = FakeSupabase(rpc_data=rpc_data)
 
     with pytest.raises(RuntimeError, match="invalid response"):
         repository(client).record_delivery(

@@ -1,18 +1,14 @@
-name: Rey Taco Picks Bot (Cloud AI)
+name: Rey Taco Results Verifier
 
 on:
   schedule:
-    # Horarios México (CDMX UTC-6):
-    # - 10:00 AM CDMX (16:00 UTC): Cartelera Diaria Completa (Champions, Europa League, Liga MX, MLB)
-    # - 04:00 PM CDMX (22:00 UTC): Actualización Vespertina (Liga MX, MLB Noche, NFL)
-    # - 11:00 PM CDMX (05:00 UTC): Cierre Diario (Auditoría ESPN) + Cartelera KBO (Corea de madrugada)
-    - cron: '0 16 * * *'   # 10:00 AM México
-    - cron: '0 22 * * *'   # 04:00 PM México
-    - cron: '0 5 * * *'    # 11:00 PM México
-  workflow_dispatch:        # Permite ejecutarlo manualmente desde GitHub 24/7
+    # 07:00 and 13:00 America/Mexico_City (UTC-6).
+    - cron: '0 13 * * *'
+    - cron: '0 19 * * *'
+  workflow_dispatch:
 
 concurrency:
-  group: rey-taco-scraper
+  group: rey-taco-results-verifier
   cancel-in-progress: false
 
 permissions:
@@ -20,8 +16,6 @@ permissions:
 
 jobs:
   verificar:
-    # Si es la ejecución de las 11:00 PM, auditar y calificar los partidos del día
-    if: github.event.schedule == '0 5 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -37,7 +31,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r backend/requirements.txt
+        run: python -m pip install -r backend/requirements.txt
 
       - name: Verify Results
         env:
@@ -49,73 +43,4 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           TELEGRAM_VIP_CHANNEL_ID: ${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}
           TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
-        run: |
-          cd backend
-          python verificar_resultados.py
-
-  scraper:
-    # Se ejecuta a las 10:00 AM, 4:00 PM y 11:00 PM (para KBO y madrugada)
-    needs: verificar
-    # Las corridas regulares continúan cuando la verificación se omite; la corrida
-    # nocturna y la manual solo continúan cuando la verificación termina bien.
-    if: >-
-      always() &&
-      (needs.verificar.result == 'success' || needs.verificar.result == 'skipped')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Chrome
-        uses: browser-actions/setup-chrome@19ae4b339ee18925ab85cf12c1041150ea4a44c8 # v1
-        with:
-          chrome-version: 'stable'
-
-      - name: Install dependencies
-        run: |
-          pip install -r backend/requirements.txt
-          
-      - name: Run Scraper (Multi-Sport & KBO)
-        id: scraper
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          TELEGRAM_VIP_CHANNEL_ID: ${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}
-          TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
-        run: |
-          cd backend
-          scraper_output="$(mktemp)"
-          set +e
-          python scraper.py 2>&1 | tee "$scraper_output"
-          scraper_status=${PIPESTATUS[0]}
-          set -e
-          if grep -Fxq 'resume_only=true' "$scraper_output"; then
-            echo "resumed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "resumed=false" >> "$GITHUB_OUTPUT"
-          fi
-          rm -f "$scraper_output"
-          exit "$scraper_status"
-
-      - name: Auto-Post Social Media Banner (Facebook & Instagram)
-        if: success() && steps.scraper.outputs.resumed != 'true'
-        env:
-          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
-          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-          IG_USER_ID: ${{ secrets.IG_USER_ID }}
-        run: |
-          python -m backend.social_poster
+        run: python backend/verificar_resultados.py

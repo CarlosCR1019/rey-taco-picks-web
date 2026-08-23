@@ -21,7 +21,11 @@ import requests
 from backend.render_html_banner import render_social_jpeg
 from backend.social_background import CloudflareBackgroundProvider
 from backend.social_content import SocialCaptions, SocialContent, build_fallback_captions
-from backend.social_copy import CaptionProvider, GroqCopyProvider
+from backend.social_copy import (
+    CaptionProvider,
+    GroqCopyProvider,
+    validate_social_captions,
+)
 from backend.social_repository import MetaSocialBatch, SocialRepository, SupabaseSocialRepository
 
 
@@ -460,11 +464,7 @@ def _safe_captions(provider: CaptionProvider, content: SocialContent) -> SocialC
     fallback = build_fallback_captions(content)
     try:
         candidate = provider.captions(content)
-        if not isinstance(candidate, SocialCaptions):
-            raise ValueError("invalid caption package")
-        if not _valid_caption(candidate.facebook) or not _valid_caption(candidate.instagram):
-            raise ValueError("invalid caption package")
-        return candidate
+        return validate_social_captions(candidate, content)
     except Exception as exc:
         LOGGER.info("meta copy=fallback exception=%s", type(exc).__name__)
         return fallback

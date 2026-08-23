@@ -13,7 +13,11 @@ import pytest
 import requests
 
 import backend.social_poster as social_poster
-from backend.social_content import SocialCaptions, SocialContent
+from backend.social_content import (
+    SocialCaptions,
+    SocialContent,
+    build_fallback_captions,
+)
 from backend.social_poster import (
     MetaDelivery,
     MetaHttpTransport,
@@ -485,15 +489,21 @@ class FakeTransport:
 
 
 class FakeCopyProvider:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        candidate: SocialCaptions | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self.calls: list[SocialContent] = []
+        self.candidate = candidate
         self.error = error
 
     def captions(self, value: SocialContent) -> SocialCaptions:
         self.calls.append(value)
         if self.error is not None:
             raise self.error
-        return SocialCaptions(facebook="facebook caption", instagram="instagram caption")
+        return self.candidate or build_fallback_captions(value)
 
 
 class FakeBackgroundProvider:
@@ -678,6 +688,34 @@ def test_optional_copy_and_background_failures_use_local_fallbacks(
     assert isinstance(instagram_caption, str) and "Momio observado: 1.85" in instagram_caption
 
 
+def test_unsafe_injected_caption_package_is_revalidated_before_live_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = FakeRepository(batch())
+    fallback = build_fallback_captions(repository.exact_batch.content)  # type: ignore[union-attr]
+    unsafe = SocialCaptions(
+        facebook=f"{fallback.facebook}\nResultado garantizado.",
+        instagram=fallback.instagram,
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.social_poster"):
+        results, transport, _, _ = run_publish(
+            monkeypatch,
+            repository=repository,
+            copy_provider=FakeCopyProvider(candidate=unsafe),
+        )
+
+    assert all(result.status == "success" for result in results)
+    assert transport.facebook_calls[0]["caption"] == fallback.facebook
+    assert transport.instagram_calls[0]["caption"] == fallback.instagram
+    assert unsafe.facebook not in {
+        transport.facebook_calls[0]["caption"],
+        transport.instagram_calls[0]["caption"],
+    }
+    assert "meta copy=fallback exception=ValueError" in caplog.text
+
+
 def test_dry_run_renders_exact_batch_but_has_no_remote_side_effects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -704,6 +742,42 @@ def test_dry_run_renders_exact_batch_but_has_no_remote_side_effects(
     assert repository.record_calls == []
     assert transport.facebook_calls == []
     assert transport.instagram_calls == []
+
+
+def test_dry_run_revalidates_unsafe_injected_captions_before_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = FakeRepository(batch())
+    fallback = build_fallback_captions(repository.exact_batch.content)  # type: ignore[union-attr]
+    unsafe = SocialCaptions(
+        facebook=fallback.facebook,
+        instagram=f"{fallback.instagram}\nApuesta ahora.",
+    )
+    output = tmp_path / "review.jpg"
+    settings = MetaSettings.from_mapping(
+        {"META_DRY_RUN": "true", "META_DRY_RUN_OUTPUT": str(output)}
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.social_poster"):
+        results, transport, provider, renderer = run_publish(
+            monkeypatch,
+            repository=repository,
+            settings=settings,
+            copy_provider=FakeCopyProvider(candidate=unsafe),
+        )
+
+    assert results == (
+        MetaDelivery("facebook", "skipped"),
+        MetaDelivery("instagram", "skipped"),
+    )
+    assert provider.calls == [repository.exact_batch.content]  # type: ignore[union-attr]
+    assert len(renderer.calls) == 1
+    assert output.is_file()
+    assert transport.facebook_calls == []
+    assert transport.instagram_calls == []
+    assert "meta copy=fallback exception=ValueError" in caplog.text
 
 
 def test_dry_run_still_renders_when_live_destinations_already_succeeded(

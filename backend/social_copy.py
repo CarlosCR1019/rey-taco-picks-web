@@ -143,6 +143,33 @@ class CaptionProvider(Protocol):
     def captions(self, content: SocialContent) -> SocialCaptions: ...
 
 
+def validate_social_captions(
+    candidate: SocialCaptions,
+    content: SocialContent,
+) -> SocialCaptions:
+    """Validate and normalize one complete provider caption package."""
+
+    if type(candidate) is not SocialCaptions:
+        raise ValueError("candidate must be an exact SocialCaptions package")
+    if type(content) is not SocialContent:
+        raise ValueError("content must be an exact SocialContent package")
+    fallback = build_fallback_captions(content)
+    return SocialCaptions(
+        facebook=_validate_caption(
+            candidate.facebook,
+            platform="facebook",
+            content=content,
+            fallback=fallback,
+        ),
+        instagram=_validate_caption(
+            candidate.instagram,
+            platform="instagram",
+            content=content,
+            fallback=fallback,
+        ),
+    )
+
+
 class GroqCopyProvider:
     def __init__(
         self,
@@ -205,7 +232,7 @@ class GroqCopyProvider:
                 temperature=0.2,
                 max_completion_tokens=1200,
             )
-            return _parse_captions(response, content=content, fallback=fallback)
+            return _parse_captions(response, content=content)
         except Exception as exc:
             exception_class = type(exc).__name__
             _LOGGER.info(
@@ -286,7 +313,6 @@ def _parse_captions(
     response: object,
     *,
     content: SocialContent,
-    fallback: SocialCaptions,
 ) -> SocialCaptions:
     raw_content = response.choices[0].message.content  # type: ignore[attr-defined]
     if not isinstance(raw_content, str) or not raw_content.strip():
@@ -298,19 +324,9 @@ def _parse_captions(
     instagram = parsed["instagram"]
     if not isinstance(facebook, str) or not isinstance(instagram, str):
         raise ValueError("provider captions must be strings")
-    return SocialCaptions(
-        facebook=_validate_caption(
-            facebook,
-            platform="facebook",
-            content=content,
-            fallback=fallback,
-        ),
-        instagram=_validate_caption(
-            instagram,
-            platform="instagram",
-            content=content,
-            fallback=fallback,
-        ),
+    return validate_social_captions(
+        SocialCaptions(facebook=facebook, instagram=instagram),
+        content,
     )
 
 

@@ -12,7 +12,7 @@ from backend.social_content import (
     SocialContent,
     build_fallback_captions,
 )
-from backend.social_copy import GroqCopyProvider
+from backend.social_copy import GroqCopyProvider, validate_social_captions
 
 
 NOW = datetime(2026, 8, 21, 20, 0, tzinfo=timezone.utc)
@@ -386,6 +386,95 @@ def with_platform_suffix(
 def caption_result(content: SocialContent, candidate: SocialCaptions) -> SocialCaptions:
     provider, _, _ = provider_with_outcome(response_for(candidate))
     return provider.captions(content)
+
+
+def test_public_caption_validator_accepts_fallback_and_audited_decoration():
+    content = social_content()
+    fallback = build_fallback_captions(content)
+    decorated = valid_candidate(content)
+
+    assert validate_social_captions(fallback, content) == fallback
+    assert validate_social_captions(decorated, content) == decorated
+
+
+def test_public_caption_validator_normalizes_the_complete_result():
+    content = social_content()
+    fallback = build_fallback_captions(content)
+    candidate = SocialCaptions(
+        facebook=f"Ｐｉｃｋ público del día.\n{fallback.facebook}",
+        instagram=f"Ｃｏｎｓｕｌｔａ los datos disponibles.\n{fallback.instagram}",
+    )
+
+    result = validate_social_captions(candidate, content)
+
+    assert result.facebook.startswith("Pick público del día.\n")
+    assert result.instagram.startswith("Consulta los datos disponibles.\n")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda candidate, content: replace_platform(
+            candidate,
+            "facebook",
+            candidate.facebook.replace(content.event, "", 1),
+        ),
+        lambda candidate, _content: replace_platform(
+            candidate,
+            "instagram",
+            candidate.instagram.replace("18+ · Apuesta con responsabilidad", "", 1),
+        ),
+        lambda candidate, _content: replace_platform(
+            candidate,
+            "facebook",
+            f"{candidate.facebook}\nResultado garantizado.",
+        ),
+        lambda candidate, _content: replace_platform(
+            candidate,
+            "instagram",
+            f"{candidate.instagram}\nDato neutral 999.",
+        ),
+        lambda candidate, _content: replace_platform(
+            candidate,
+            "facebook",
+            f"{candidate.facebook}\nApuesta ahora.",
+        ),
+        lambda candidate, _content: replace_platform(
+            candidate,
+            "facebook",
+            f"{candidate.facebook} #ReyTacoPicks",
+        ),
+        lambda candidate, _content: replace_platform(
+            candidate,
+            "instagram",
+            candidate.instagram.replace(
+                "#ApuestasResponsables",
+                "#EtiquetaInventada",
+            ),
+        ),
+    ],
+    ids=(
+        "missing-fact",
+        "missing-footer",
+        "guarantee",
+        "invented-number",
+        "unsafe-cta",
+        "excessive-hashtag",
+        "wrong-hashtag",
+    ),
+)
+def test_public_caption_validator_rejects_unsafe_provider_packages(mutate):
+    content = social_content()
+    unsafe = mutate(valid_candidate(content), content)
+
+    with pytest.raises(ValueError):
+        validate_social_captions(unsafe, content)
+
+
+@pytest.mark.parametrize("candidate", [None, {}, ("facebook", "instagram")])
+def test_public_caption_validator_requires_exact_caption_package(candidate):
+    with pytest.raises(ValueError, match="SocialCaptions"):
+        validate_social_captions(candidate, social_content())
 
 
 def required_fragments(content: SocialContent) -> tuple[tuple[str, str], ...]:

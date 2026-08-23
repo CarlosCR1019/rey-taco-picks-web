@@ -5,7 +5,7 @@ import time
 import urllib.request
 from pathlib import Path
 from dotenv import load_dotenv
-from supabase import create_client, Client
+from supabase import create_client
 
 try:
     from backend.payment_review import classify_receipt
@@ -66,7 +66,7 @@ def telegram_api(method, payload):
         return None
 
 def get_updates(offset=0):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{getUpdates}?offset={offset}&timeout=30".replace("{getUpdates}", "getUpdates")
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=30"
     try:
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=35) as resp:

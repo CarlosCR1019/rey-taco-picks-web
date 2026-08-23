@@ -1,6 +1,5 @@
 import undetected_chromedriver as uc
 import time
-import os
 
 print("Iniciando Chrome...")
 options = uc.ChromeOptions()

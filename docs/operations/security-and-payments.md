@@ -68,18 +68,17 @@ completeness; it is not a probability of winning. `tiene_valor` indicates only
 that a qualifying comparison between independent source/bookmaker quotes exists.
 It does not claim positive expected value or guarantee profit.
 
-The repository contains the schema-v2/source-audit migration, but it is still
-pending on the real target until an operator confirms the linked Supabase
-project and backup and applies it there. No SQL in these migration files was
-executed against a local or remote database as part of this implementation and
-verification work.
+The schema-v2/source-audit, Meta ledger and hardened pick-policy migrations were
+applied to the confirmed production project on 22 August 2026. The anonymous
+surface was rechecked after migration: direct reads expose settled public rows
+only and anonymous insert, update and delete privileges are absent.
 
 ### Current state and hard stops
 
-This documentation task did **not** apply any migration to a remote Supabase
-project and did **not** dispatch the production workflow. Do not publish until
-the project reference and backup are confirmed, the production service-role key
-is configured, and all verification commands below pass.
+The production service-role secret is configured in the private GitHub
+repository. The residential collector has **not** been dispatched yet. Do not
+publish until at least one Windows runner is registered, both available PCs have
+passed `Invoke-ReyTacoDryRun.ps1`, and all verification commands below pass.
 
 Stop the rollout immediately if a secret is printed, the schema probe fails, a
 test/build command returns non-zero, more than one batch is active, the active
@@ -97,12 +96,13 @@ recorded success. A retry always rebuilds the public file and remaining Telegram
 messages from the **filas ya persistidas** for that run; a new scrape payload or
 hash never replaces the batch already accepted by the database.
 
-En producción, `resume_pick_batch` se consulta antes de abrir Chrome o consultar
-fuentes. Si la misma clave identifica una corrida completada y activa, el proceso
-restaura el archivo público exclusivamente desde sus filas persistidas, intenta
-solo las entregas faltantes y termina sin iniciar Chrome, Odds API ni Groq. El
-marcador `resume_only=true` también hace que el workflow omite la publicación
-social, porque no se produjo un lote nuevo para anunciar.
+En el workflow hibrido, `--collect-only` consulta `resume_pick_batch` antes de
+abrir Chrome o consultar fuentes. Si la misma clave identifica una corrida
+completada y activa, termina sin recoleccion ni entrega. Una corrida nueva
+persiste sin archivo publico, Telegram o Meta.
+`--deliver-only` se ejecuta despues en GitHub Cloud, reanuda exclusivamente esas
+filas, intenta solo las entregas faltantes y nunca inicia Chrome, Odds API ni
+Groq.
 
 La reanudación exige que el lote siga siendo el único activo. Si el lote está
 inactivo o reemplazado, el RPC falla de forma cerrada: termina sin restaurar el
@@ -141,11 +141,12 @@ committed to Git. Production publication requires these backend names:
 The backend accepts `TELEGRAM_CHAT_ID` as the compatibility fallback for
 `TELEGRAM_ADMIN_ID` and `TELEGRAM_CHANNEL_ID` as the fallback for
 `TELEGRAM_VIP_CHANNEL_ID`. Prefer the canonical names for new configuration.
-The current GitHub workflow reads these repository-secret names exactly:
+The current GitHub workflows read these repository-secret names exactly:
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GROQ_API_KEY`, `ODDS_API_KEY`,
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_CHANNEL_ID`,
-`TELEGRAM_VIP_CHANNEL_ID`, `TELEGRAM_FREE_CHANNEL_ID`, `FB_PAGE_ACCESS_TOKEN`,
-`FB_PAGE_ID`, and `IG_USER_ID`. `TELEGRAM_CHAT_ID` supplies the admin fallback;
+`TELEGRAM_VIP_CHANNEL_ID`, `TELEGRAM_FREE_CHANNEL_ID`,
+`META_SYSTEM_USER_ACCESS_TOKEN`, `FB_PAGE_ID`, and `IG_USER_ID`.
+`TELEGRAM_CHAT_ID` supplies the admin fallback;
 keep it aligned with canonical `TELEGRAM_ADMIN_ID` until the workflow itself is
 changed to pass the canonical name. `GITHUB_RUN_ID` is built in and is not a
 secret.
@@ -161,10 +162,10 @@ gh secret list
 ```
 
 `SCRAPER_RUN_KEY` must be stable for retries of one logical local run and unique
-for a new batch. In GitHub Actions, the loader derives
-`github-run:<GITHUB_RUN_ID>` automatically. Use **Re-run failed jobs** for a
-partial workflow so the same run ID is retained; a new manual dispatch is a new
-run.
+for a new batch. `collector.yml` sets `residential:<GITHUB_RUN_ID>` in the
+primary collector, recovery collector and cloud delivery jobs. Use **Re-run
+failed jobs** for a partial workflow so the same run ID is retained; a new
+manual dispatch is a new run.
 
 ### 2. Confirm the target, backup, and migrations
 
@@ -283,17 +284,16 @@ batch. Dry-run skips this production-only preflight.
 
 ### 5. One controlled manual publication
 
-After secrets and migrations are ready and all checks pass, dispatch the
-**Rey Taco Picks Bot (Cloud AI)** workflow exactly once with `workflow_dispatch`.
-Do not start a second dispatch while it is active. Confirm the verifier succeeds
-first; the scraper depends on it, and social posting must run only after scraper
-success.
+After secrets, migrations, one registered runner and both PC dry-runs are ready,
+dispatch **Rey Taco Residential Collector** exactly once with
+`workflow_dispatch`. Do not start a second dispatch while it is active. Confirm
+that exactly one residential runner accepts collection and that `deliver_cloud`
+resumes the same `residential:<GITHUB_RUN_ID>` only after collection attempts.
 
-The generated `frontend/public/picks.json` exists only in the ephemeral GitHub
-runner. The current workflow neither uploads it as an artifact nor deploys it,
-so a file in the operator's existing local checkout is **not** evidence of what
-that GitHub run generated. Validate the controlled workflow run through the live
-database invariants and the messages actually received in Telegram.
+Collection-only and delivery-only do not write `frontend/public/picks.json`.
+The live Supabase rows and actual Telegram receipts are the source of truth; a
+file in an operator checkout is not evidence of what the controlled run stored
+or delivered.
 
 Use the Supabase SQL editor with an administrator session for these read-only
 checks. They reveal counts and delivery metadata, not premium pick text:
@@ -405,16 +405,17 @@ if ($LASTEXITCODE -ne 0) { throw "Source-security fallback check failed" }
 
 ### 6. Observation and rollback
 
-Keep public launch/ads disabled until two subsequent scheduled runs have
+Keep public launch/ads disabled until two subsequent residential schedules have
 completed successfully. The observation must include the 11 p.m. Mexico City
-run: its scraper job must wait for result verification, and a verifier failure
-must prevent scraper/social publication. Repeat the invariant and delivery
-checks after each run.
+collector and at least one independent cloud result-verification pass. Repeat
+the invariant and delivery checks after each run.
 
 On any invariant, privacy, persistence, verifier, or delivery failure:
 
-1. Disable the GitHub Actions workflow/schedules in the GitHub UI (or with
-   `gh workflow disable scraper.yml`) and do not issue a fresh dispatch.
+1. Disable `collector.yml` in the GitHub Actions UI (or with
+   `gh workflow disable collector.yml`) and do not issue a fresh dispatch.
+   Disable `scraper.yml` separately only when result verification itself is
+   unsafe.
 2. If the failure is partial delivery, repair the cause and re-run the failed
    job from the same GitHub workflow run so `GITHUB_RUN_ID` and the batch remain
    idempotent.

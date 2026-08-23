@@ -48,7 +48,9 @@ class SourceSecurityTests(unittest.TestCase):
         self.assertIn("inactivo o reemplazado", runbook)
         self.assertIn("sin restaurar el archivo público ni telegram", runbook)
         self.assertIn("source_starts_at` es menor o igual al reloj utc", runbook)
-        self.assertIn("omite la publicación social", runbook)
+        self.assertIn("--collect-only", runbook)
+        self.assertIn("sin archivo publico, telegram o meta", runbook)
+        self.assertIn("--deliver-only", runbook)
         self.assertIn("supuesto operativo de escritor único", runbook)
         self.assertIn("no debe solaparse", runbook)
 
@@ -107,6 +109,12 @@ class SourceSecurityTests(unittest.TestCase):
         self.assertNotIn('.eq("email", target_email)', contents)
         verification = contents[contents.index("def verificar_usuario_vip"):contents.index("def procesar_solicitud_union")]
         self.assertNotIn('.eq("telegram_username"', verification)
+
+    def test_ticket_listener_builds_the_get_updates_endpoint_as_literal_text(self):
+        contents = (ROOT / "backend/ticket_listener.py").read_text(encoding="utf-8")
+
+        self.assertIn('/getUpdates?offset=', contents)
+        self.assertNotIn('{getUpdates}', contents)
 
     def test_results_recap_does_not_claim_an_unconditional_positive_day(self):
         contents = (ROOT / "backend/verificar_resultados.py").read_text(encoding="utf-8")

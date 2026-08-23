@@ -1,4 +1,4 @@
-import urllib.request, json, re
+import urllib.request, re
 
 # Buscar API URLs en los JS chunks de Altenar
 chunks = [

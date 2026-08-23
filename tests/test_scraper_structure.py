@@ -67,15 +67,17 @@ def test_phase7_delegates_persistence_and_delivery_without_legacy_side_effects()
     assert "_enviar_telegram" not in function_names
 
 
-def test_workflow_skips_social_posting_for_resume_only_runs():
+def test_workflow_delivers_resumed_batches_only_from_cloud():
     workflow = (
-        REPO_ROOT / ".github" / "workflows" / "scraper.yml"
+        REPO_ROOT / ".github" / "workflows" / "collector.yml"
     ).read_text(encoding="utf-8")
 
-    assert "id: scraper" in workflow
-    assert "tee" in workflow
-    assert "GITHUB_OUTPUT" in workflow
-    assert "steps.scraper.outputs.resumed != 'true'" in workflow
+    assert "--collect-only" in workflow
+    assert "--deliver-only" in workflow
+    assert "deliver_cloud" in workflow
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "python -m backend.social_poster" in workflow
+    assert "residential:${{ github.run_id }}" in workflow
 
 
 def test_scraper_script_can_import_extracted_publishers_from_repo_root():

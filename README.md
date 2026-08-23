@@ -30,9 +30,23 @@ en Supabase, archivos ni Telegram:
 python backend/scraper.py --dry-run
 ```
 
+## Operacion hibrida en dos PC
+
+La recoleccion de Playdoit vive en `.github/workflows/collector.yml` y se
+asigna solamente a un runner Windows privado con la etiqueta
+`playdoit-residential`. La PC ejecuta `--collect-only`: valida y persiste el
+lote exacto, pero no recibe secretos de Telegram o Meta, no publica contenido
+y nunca es apagada o suspendida por la automatizacion.
+
+El job `deliver_cloud` reanuda el mismo `SCRAPER_RUN_KEY` en `ubuntu-latest`
+con `--deliver-only`; desde ahi salen Telegram y, cuando sus IDs esten
+configurados, Facebook e Instagram. La verificacion de resultados tambien
+permanece en GitHub Cloud. Consulte [la instalacion de los dos runners](docs/operations/windows-runners.md).
+
 La configuración, migración y salida controlada a producción están documentadas
 en [el runbook de seguridad, pagos y scraper](docs/operations/security-and-payments.md).
 No ejecute el scraper en modo de publicación hasta completar ese procedimiento.
 
-> Estado al 21 de agosto de 2026: esta tarea no aplicó migraciones remotas ni
-> despachó el workflow de producción.
+> Estado al 23 de agosto de 2026: el esquema seguro y la clave de servicio ya
+> estan configurados. Todavia no se ha despachado el nuevo collector ni se ha
+> autorizado una publicacion real desde este flujo.

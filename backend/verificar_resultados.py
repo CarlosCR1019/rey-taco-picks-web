@@ -2,7 +2,7 @@ import os
 import json
 import sys
 import urllib.request
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from supabase import create_client, Client

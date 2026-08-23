@@ -225,6 +225,32 @@ def test_constructor_requires_explicit_https_url_and_service_role_key() -> None:
     assert calls == []
 
 
+def test_constructor_rejects_every_ascii_control_anywhere_in_origin() -> None:
+    controls = tuple(chr(codepoint) for codepoint in (*range(0x20), 0x7F))
+    placements = (
+        lambda control: f"{control}https://project.supabase.co",
+        lambda control: f"ht{control}tps://project.supabase.co",
+        lambda control: f"https://pro{control}ject.supabase.co",
+        lambda control: f"https://project.supabase.co{control}",
+    )
+    factory_calls: list[tuple[str, str]] = []
+
+    def factory(url: str, key: str) -> FakeSupabase:
+        factory_calls.append((url, key))
+        return FakeSupabase()
+
+    for control in controls:
+        for place in placements:
+            with pytest.raises(ValueError, match="supabase_url"):
+                SupabaseSocialRepository(
+                    supabase_url=place(control),
+                    service_role_key="service-secret",
+                    client_factory=factory,
+                )
+
+    assert factory_calls == []
+
+
 @pytest.mark.parametrize("run_key", ["", " ", "\t\n", None, 123])
 def test_get_batch_rejects_blank_or_non_string_run_key_before_rpc(
     run_key: object,
@@ -439,6 +465,29 @@ def test_upload_jpeg_rejects_non_exact_or_non_https_public_url(
 
     with pytest.raises(RuntimeError, match="public URL"):
         repository(client).upload_jpeg(batch=valid_batch(), jpeg=jpeg_bytes())
+
+
+def test_upload_jpeg_rejects_every_ascii_control_anywhere_in_public_url() -> None:
+    controls = tuple(chr(codepoint) for codepoint in (*range(0x20), 0x7F))
+    placements = (
+        lambda control: f"{control}{PUBLIC_URL}",
+        lambda control: PUBLIC_URL.replace(
+            "project.supabase.co",
+            f"pro{control}ject.supabase.co",
+        ),
+        lambda control: PUBLIC_URL.replace(
+            "/storage/v1/",
+            f"/storage/{control}v1/",
+        ),
+    )
+
+    for control in controls:
+        for place in placements:
+            tainted_url = place(control)
+            with pytest.raises(RuntimeError, match="public URL"):
+                repository(
+                    FakeSupabase(bucket=FakeBucket(public_url=tainted_url))
+                ).upload_jpeg(batch=valid_batch(), jpeg=jpeg_bytes())
 
 
 def test_upload_jpeg_fails_closed_on_unexpected_upload_response() -> None:

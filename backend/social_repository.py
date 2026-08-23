@@ -25,6 +25,7 @@ _BATCH_FIELDS = frozenset(
     {"run_id", "batch_id", "delivery_status", "public_pick"}
 )
 _SAFE_RECEIPT = re.compile(r"^[A-Za-z0-9_:-]{1,200}$")
+_ASCII_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _PERSISTED_FAILURES = frozenset(
     {"not_configured", "token_invalid", "delivery_failed"}
 )
@@ -202,7 +203,12 @@ class SupabaseSocialRepository:
 
 
 def _validated_supabase_url(value: object) -> str:
-    if not isinstance(value, str) or not value or value != value.strip():
+    if (
+        not isinstance(value, str)
+        or not value
+        or _ASCII_CONTROL.search(value) is not None
+        or value != value.strip()
+    ):
         raise ValueError("supabase_url must be an HTTPS origin")
     try:
         parsed = urlsplit(value)
@@ -347,7 +353,7 @@ def _validated_public_url(
     bucket: str,
     object_key: str,
 ) -> str:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or _ASCII_CONTROL.search(value) is not None:
         raise RuntimeError("social JPEG public URL was invalid")
     try:
         parsed = urlsplit(value)

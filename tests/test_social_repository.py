@@ -490,6 +490,29 @@ def test_upload_jpeg_rejects_every_ascii_control_anywhere_in_public_url() -> Non
                 ).upload_jpeg(batch=valid_batch(), jpeg=jpeg_bytes())
 
 
+@pytest.mark.parametrize(
+    "whitespace",
+    [" ", "\u00a0", "\u2003", "\u3000"],
+    ids=("ascii-space", "no-break-space", "em-space", "ideographic-space"),
+)
+@pytest.mark.parametrize("placement", ["leading", "trailing"])
+def test_upload_jpeg_rejects_outer_whitespace_in_public_url(
+    whitespace: str,
+    placement: str,
+) -> None:
+    assert whitespace.isspace()
+    tainted_url = (
+        f"{whitespace}{PUBLIC_URL}"
+        if placement == "leading"
+        else f"{PUBLIC_URL}{whitespace}"
+    )
+
+    with pytest.raises(RuntimeError, match="public URL"):
+        repository(
+            FakeSupabase(bucket=FakeBucket(public_url=tainted_url))
+        ).upload_jpeg(batch=valid_batch(), jpeg=jpeg_bytes())
+
+
 def test_upload_jpeg_fails_closed_on_unexpected_upload_response() -> None:
     bucket = FakeBucket()
     bucket.upload_response = {"path": OBJECT_KEY}

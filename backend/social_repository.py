@@ -353,7 +353,11 @@ def _validated_public_url(
     bucket: str,
     object_key: str,
 ) -> str:
-    if not isinstance(value, str) or _ASCII_CONTROL.search(value) is not None:
+    if (
+        not isinstance(value, str)
+        or _ASCII_CONTROL.search(value) is not None
+        or value != value.strip()
+    ):
         raise RuntimeError("social JPEG public URL was invalid")
     try:
         parsed = urlsplit(value)

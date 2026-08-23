@@ -85,6 +85,18 @@ def test_collection_jobs_receive_no_delivery_or_meta_secrets():
         assert "--collect-only" in _step(job, "Collect and persist only")["run"]
 
 
+def test_residential_jobs_bypass_execution_policy_only_inside_the_job():
+    workflow = _workflow(COLLECTOR_WORKFLOW)
+
+    for job_name in ("collect_primary", "collect_recovery"):
+        assert (
+            workflow["jobs"][job_name]["env"]["PSExecutionPolicyPreference"]
+            == "Bypass"
+        )
+
+    assert "PSExecutionPolicyPreference" not in workflow["jobs"]["deliver_cloud"]["env"]
+
+
 def test_cloud_jobs_never_open_playdoit_or_target_residential_runner():
     collector = _workflow(COLLECTOR_WORKFLOW)
     verifier = _workflow(VERIFIER_WORKFLOW)

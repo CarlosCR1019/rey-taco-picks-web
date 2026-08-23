@@ -20,6 +20,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64, playdoit-residential]
     timeout-minutes: 25
     env:
+      PSExecutionPolicyPreference: Bypass
       SCRAPER_RUN_KEY: residential:${{ github.run_id }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -57,6 +58,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64, playdoit-residential]
     timeout-minutes: 25
     env:
+      PSExecutionPolicyPreference: Bypass
       SCRAPER_RUN_KEY: residential:${{ github.run_id }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

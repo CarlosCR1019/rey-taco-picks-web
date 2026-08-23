@@ -2425,7 +2425,8 @@ def parse_args(argv=None):
 def run_main(argv=None, *, values=None, pipeline=None):
     args = parse_args(argv)
     try:
-        settings = load_settings(values, dry_run=args.dry_run)
+        settings_values = {} if args.dry_run and values is None else values
+        settings = load_settings(settings_values, dry_run=args.dry_run)
         active_pipeline = pipeline or build_pipeline(settings)
         if args.collect_only:
             raw_result = active_pipeline.run(collect_only=True)

@@ -115,6 +115,21 @@ def test_dry_run_skips_writes_and_returns_success():
     assert fake_pipeline.deliveries == 0
 
 
+def test_cli_dry_run_does_not_load_dotenv_or_ambient_secrets(tmp_path, monkeypatch):
+    received_values = []
+
+    def fake_load_settings(values, *, dry_run):
+        received_values.append(values)
+        return settings(tmp_path, dry_run=dry_run)
+
+    monkeypatch.setattr(scraper, "load_settings", fake_load_settings)
+
+    code = run_main(["--dry-run"], values=None, pipeline=FakePipeline())
+
+    assert code == ExitCode.SUCCESS
+    assert received_values == [{}]
+
+
 @pytest.mark.parametrize(
     ("result", "expected"),
     [

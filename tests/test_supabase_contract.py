@@ -35,6 +35,9 @@ ADAPTIVE_CHECKS_SQL = (
 RESULT_BUDGET_SQL = (
     SQL.parent / "20260824100000_api_football_result_budget.sql"
 )
+SIX_PICK_SCHEMA_STATUS_SQL = (
+    SQL.parent / "20260824110000_six_pick_schema_status.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -93,6 +96,55 @@ def function_signature_pattern(signature: str) -> str:
 
 
 class SupabaseContractTests(unittest.TestCase):
+    def test_six_pick_schema_status_verifies_wrapper_and_legacy_implementation(self):
+        self.assertTrue(SIX_PICK_SCHEMA_STATUS_SQL.exists())
+        text = " ".join(
+            SIX_PICK_SCHEMA_STATUS_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "create or replace function public.six_pick_publish_schema_status()",
+            text,
+        )
+        self.assertIn("language sql stable security definer", text)
+        self.assertIn("search_path = public, pg_temp", text)
+        self.assertIn(
+            "public.publish_pick_batch(text,text,jsonb)", text
+        )
+        self.assertIn(
+            "public.publish_pick_batch_one_public_v2(text,text,jsonb)", text
+        )
+        for invariant in (
+            "jsonb_array_length(requested_picks) not between 1 and 6",
+            "when jsonb_array_length(requested_picks) = 6 then 2",
+            "public picks must come from distinct source events",
+            "requested picks must have unique source audit identities",
+            "public.publish_pick_batch_one_public_v2(",
+            "set visibility = ''public'', razonamiento = null",
+            "returned_match_count <> requested_pick_count",
+            "source_starts_at expired while waiting for publication lock",
+            "source_starts_at expired during batch persistence",
+        ):
+            self.assertIn(invariant, text)
+        self.assertIn("publish_pick_batch_one_public_v2", text)
+        self.assertIn("enforce_two_public_pending_picks", text)
+        self.assertIn("picks_at_most_two_public_pending", text)
+        self.assertIn("aclexplode", text)
+        self.assertIn("service_role", text)
+        self.assertIn(
+            "revoke all on function public.six_pick_publish_schema_status()",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.six_pick_publish_schema_status() "
+            "to service_role",
+            text,
+        )
+
     def test_six_pick_portfolio_migration_replaces_exact_one_policy_safely(self):
         self.assertTrue(SIX_PICK_PORTFOLIO_SQL.exists())
         text = " ".join(

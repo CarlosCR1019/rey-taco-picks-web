@@ -509,10 +509,12 @@ class FakeSupabase:
         *,
         policy_status=True,
         daily_status=True,
+        six_pick_status=False,
     ):
         self.status = status
         self.policy_status = policy_status
         self.daily_status = daily_status
+        self.six_pick_status = six_pick_status
         self.error = error
         self.calls = []
 
@@ -522,6 +524,8 @@ class FakeSupabase:
             data = self.policy_status
         elif name == "daily_pick_schema_status":
             data = self.daily_status
+        elif name == "six_pick_publish_schema_status":
+            data = self.six_pick_status
         else:
             data = self.status
         return FakeRpcCall(data, self.error)
@@ -550,6 +554,36 @@ def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
         ("picks_policy_allowlist_status", {}),
     ]
     assert driver_calls == []
+
+
+def test_schema_probe_accepts_only_verified_six_pick_wrapper(tmp_path):
+    status = {
+        "public_picks": True,
+        "publish_pick_batch": False,
+        "resume_pick_batch": True,
+        "source_audit": True,
+        "version": 2,
+    }
+    verified = FakeSupabase(status, six_pick_status=True)
+
+    pipeline = scraper.build_pipeline(
+        settings(tmp_path, dry_run=False),
+        client_factory=lambda _url, _key: verified,
+    )
+
+    assert isinstance(pipeline, LegacyPipeline)
+    assert verified.calls == [
+        ("scraper_schema_status", {}),
+        ("six_pick_publish_schema_status", {}),
+        ("picks_policy_allowlist_status", {}),
+    ]
+
+    unverified = FakeSupabase(status, six_pick_status=False)
+    with pytest.raises(scraper.ConfigError, match="secure Supabase scraper migration"):
+        scraper.build_pipeline(
+            settings(tmp_path, dry_run=False),
+            client_factory=lambda _url, _key: unverified,
+        )
 
 
 def test_build_pipeline_configures_shared_lineup_resolver_when_key_exists(

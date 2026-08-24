@@ -2528,11 +2528,18 @@ def probe_secure_schema(client):
         or type(status.get("version")) is not int
         or status.get("version") != 2
         or status.get("public_picks") is not True
-        or status.get("publish_pick_batch") is not True
         or status.get("resume_pick_batch") is not True
         or status.get("source_audit") is not True
     ):
         raise ConfigError("secure Supabase scraper migration is not applied")
+    if status.get("publish_pick_batch") is not True:
+        try:
+            response = client.rpc("six_pick_publish_schema_status", {}).execute()
+            six_pick_publish_ok = _schema_boolean_data(response.data)
+        except Exception:
+            six_pick_publish_ok = False
+        if not six_pick_publish_ok:
+            raise ConfigError("secure Supabase scraper migration is not applied")
     try:
         response = client.rpc("picks_policy_allowlist_status", {}).execute()
         policy_allowlist_ok = _schema_boolean_data(response.data)

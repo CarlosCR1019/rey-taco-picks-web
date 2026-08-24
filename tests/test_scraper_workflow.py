@@ -69,7 +69,13 @@ def test_cloud_delivery_always_uses_exact_residential_run_key():
     delivery = workflow["jobs"]["deliver_cloud"]
 
     assert delivery["needs"] == ["collect_primary", "collect_recovery"]
-    assert delivery["if"] == "always() && !cancelled()"
+    assert delivery["if"] == (
+        "always() && !cancelled() && ((needs.collect_primary.result == "
+        "'success' && needs.collect_primary.outputs.collection_eligible == "
+        "'true') || (needs.collect_primary.result == 'failure' && "
+        "needs.collect_recovery.result == 'success' && "
+        "needs.collect_recovery.outputs.collection_eligible == 'true'))"
+    )
     assert delivery["env"]["SCRAPER_RUN_KEY"] == RUN_KEY_EXPRESSION
     assert "--deliver-only" in _step(delivery, "Deliver exact persisted batch")["run"]
     assert "backend.social_poster" in _step(delivery, "Publish exact social batch")["run"]
@@ -77,9 +83,18 @@ def test_cloud_delivery_always_uses_exact_residential_run_key():
 
 def test_no_pull_request_event_can_reach_personal_computers():
     workflow = _workflow(COLLECTOR_WORKFLOW)
+    assert workflow["jobs"]["collect_primary"]["outputs"][
+        "collection_eligible"
+    ] == "${{ steps.collection_window.outputs.eligible }}"
+    assert workflow["jobs"]["collect_recovery"]["outputs"][
+        "collection_eligible"
+    ] == "${{ steps.collection_window.outputs.eligible }}"
 
     assert "pull_request" not in workflow["on"]
-    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+    }
     assert workflow["concurrency"] == {
         "group": "rey-taco-residential-${{ github.event.schedule || 'manual' }}",
         "cancel-in-progress": "false",
@@ -151,7 +166,10 @@ def test_workflows_keep_collection_and_verification_schedules():
 def test_workflows_use_python_311_and_non_persistent_checkout_credentials():
     for path in (COLLECTOR_WORKFLOW, VERIFIER_WORKFLOW):
         workflow = _workflow(path)
-        assert workflow["permissions"] == {"contents": "read"}
+        expected_permissions = {"contents": "read"}
+        if path == COLLECTOR_WORKFLOW:
+            expected_permissions["actions"] = "read"
+        assert workflow["permissions"] == expected_permissions
         for job in workflow["jobs"].values():
             setup = _step(job, "Setup Python")
             checkout = _step(job, "Checkout code")
@@ -197,3 +215,39 @@ def test_every_action_is_pinned_to_an_approved_full_commit():
         action: expected_count
         for action, (_, _, expected_count) in expected.items()
     }
+
+
+def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape():
+    workflow = _workflow(COLLECTOR_WORKFLOW)
+
+    for job_name in ("collect_primary", "collect_recovery"):
+        job = workflow["jobs"][job_name]
+        gate = _step(job, "Check collection window")
+        install = _step(job, "Install dependencies")
+        collect = _step(job, "Collect and persist only")
+
+        assert gate["id"] == "collection_window"
+        assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"
+        assert "actions/runs/$env:GITHUB_RUN_ID" in gate["run"]
+        assert 'Authorization = "Bearer $env:GH_TOKEN"' in gate["run"]
+        assert "backend.adaptive_schedule" in gate["run"]
+        assert "$env:GITHUB_EVENT_NAME" in gate["run"]
+        assert '"eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert '"eligible=true" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert install["if"] == "steps.collection_window.outputs.eligible == 'true'"
+        assert collect["if"] == "steps.collection_window.outputs.eligible == 'true'"
+
+
+def test_stale_gate_never_changes_power_state_or_logs_the_github_token():
+    text = COLLECTOR_WORKFLOW.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    for forbidden in (
+        "shutdown",
+        "set-sleep",
+        "powercfg",
+        "rundll32.exe powrprof",
+        "write-output $env:gh_token",
+        "write-host $env:gh_token",
+    ):
+        assert forbidden not in lowered

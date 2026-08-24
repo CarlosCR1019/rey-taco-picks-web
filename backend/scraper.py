@@ -47,7 +47,7 @@ from backend.playdoit_source import (
     normalize_playdoit_events,
 )
 from backend.playdoit_health import (
-    PlaydoitSourceBlocked,
+    PlaydoitSourceBlocked,  # noqa: F401 - backwards-compatible module export
     PlaydoitSourceError,
     assert_playdoit_source_healthy,
 )
@@ -64,7 +64,6 @@ from backend.daily_portfolio import physical_event_key
 from backend.pick_selection import (
     CandidatePick,
     EvidenceScore,
-    MAX_AI_RANKED_PICKS,
     RankedPick,
     _candidate_exclusivity_group,
     _canonical_line,
@@ -1073,11 +1072,12 @@ def ejecutar_groq_con_fallback(
     truncate_messages=True,
 ):
     """Ejecuta la llamada a Groq rotando inteligentemente con reintentos y pausa backoff."""
+    # Keep structured-output calls on the production models Groq documents as
+    # supporting JSON Schema mode. Unsupported systems used to turn one
+    # recoverable schema rejection into eight guaranteed HTTP 400 responses.
     modelos = [
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "groq/compound-mini",
-        "qwen/qwen3.6-27b"
     ]
     import re
     if (
@@ -1100,29 +1100,55 @@ def ejecutar_groq_con_fallback(
             c = c[:prefix_length] + truncation_marker
         mensajes_limpios.append({"role": m["role"], "content": c})
 
+    response_formats = [response_format]
+    if (
+        isinstance(response_format, Mapping)
+        and response_format.get("type") == "json_schema"
+    ):
+        # JSON Object Mode is intentionally only a transport fallback. The
+        # returned candidate IDs and rationale are still parsed and validated
+        # against the immutable local catalog before any pick can exist.
+        response_formats.append({"type": "json_object"})
+
     for intento in range(2):
-        for modelo in modelos:
-            try:
-                request = dict(
-                    messages=mensajes_limpios,
-                    model=modelo,
-                    temperature=temperature,
-                )
-                if response_format is not None:
-                    request["response_format"] = response_format
-                resp = client.chat.completions.create(
-                    **request,
-                ).choices[0].message.content.strip()
-                if resp:
-                    resp = re.sub(r'<think>.*?</think>', '', resp, flags=re.DOTALL).strip()
-                    return resp
-            except Exception as e:
-                if "429" in str(e) or "rate_limit" in str(e).lower():
-                    print(f"   ⚠️ Rate limit en {modelo}. Pausando 3s para reintentar...")
-                    time.sleep(3)
-                    continue
-                else:
-                    print(f"   ⚠️ Nota en Groq ({modelo}); failure={type(e).__name__}")
+        for active_response_format in response_formats:
+            for modelo in modelos:
+                try:
+                    request = dict(
+                        messages=mensajes_limpios,
+                        model=modelo,
+                        temperature=temperature,
+                    )
+                    if active_response_format is not None:
+                        request["response_format"] = active_response_format
+                    resp = client.chat.completions.create(
+                        **request,
+                    ).choices[0].message.content.strip()
+                    if resp:
+                        resp = re.sub(
+                            r'<think>.*?</think>',
+                            '',
+                            resp,
+                            flags=re.DOTALL,
+                        ).strip()
+                        return resp
+                except Exception as e:
+                    if "429" in str(e) or "rate_limit" in str(e).lower():
+                        print(
+                            f"   ⚠️ Rate limit en {modelo}. "
+                            "Pausando 3s para reintentar..."
+                        )
+                        time.sleep(3)
+                        continue
+                    format_name = (
+                        active_response_format.get("type", "unknown")
+                        if isinstance(active_response_format, Mapping)
+                        else "text"
+                    )
+                    print(
+                        f"   ⚠️ Nota en Groq ({modelo}, {format_name}); "
+                        f"failure={type(e).__name__}"
+                    )
                     continue
     return ""
 
@@ -1598,19 +1624,14 @@ def _fase6_candidate_ranking(
                 "properties": {
                     "rankings": {
                         "type": "array",
-                        "maxItems": MAX_AI_RANKED_PICKS,
                         "items": {
                             "type": "object",
                             "properties": {
                                 "candidate_id": {
                                     "type": "string",
-                                    "minLength": 1,
-                                    "maxLength": 2000,
                                 },
                                 "rationale": {
                                     "type": "string",
-                                    "minLength": 10,
-                                    "maxLength": 500,
                                 },
                             },
                             "required": ["candidate_id", "rationale"],

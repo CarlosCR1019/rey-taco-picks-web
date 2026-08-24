@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -481,13 +482,12 @@ def test_phase6_uses_only_strict_candidate_ids_and_copies_catalog_facts(monkeypa
     assert root_schema["additionalProperties"] is False
     ranking_schema = root_schema["properties"]["rankings"]
     assert ranking_schema["type"] == "array"
-    assert ranking_schema["maxItems"] == scraper.MAX_AI_RANKED_PICKS
+    assert "maxItems" not in ranking_schema
     item_schema = ranking_schema["items"]
     assert item_schema["required"] == ["candidate_id", "rationale"]
     assert item_schema["additionalProperties"] is False
-    assert item_schema["properties"]["candidate_id"]["minLength"] == 1
-    assert item_schema["properties"]["rationale"]["minLength"] == 10
-    assert item_schema["properties"]["rationale"]["maxLength"] == 500
+    assert item_schema["properties"]["candidate_id"] == {"type": "string"}
+    assert item_schema["properties"]["rationale"] == {"type": "string"}
     assert len(picks) == 1
     pick = picks[0]
     assert pick["source"] == candidate.source
@@ -689,7 +689,9 @@ def test_phase6_projects_exact_mexico_event_date_across_utc_midnight(monkeypatch
     assert picks[0]["fecha_evento"] == "2026-08-21"
 
 
-def test_groq_fallback_preserves_response_schema_on_every_retry(monkeypatch):
+def test_groq_fallback_uses_supported_models_and_json_object_after_schema_errors(
+    monkeypatch,
+):
     from backend import scraper
 
     calls = []
@@ -697,7 +699,17 @@ def test_groq_fallback_preserves_response_schema_on_every_retry(monkeypatch):
     class FailingCompletions:
         def create(self, **kwargs):
             calls.append(kwargs)
-            raise RuntimeError("model unavailable")
+            if kwargs.get("response_format", {}).get("type") == "json_schema":
+                raise RuntimeError("400 schema rejected")
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"rankings": []}',
+                        )
+                    )
+                ]
+            )
 
     class FakeClient:
         class Chat:
@@ -715,9 +727,19 @@ def test_groq_fallback_preserves_response_schema_on_every_retry(monkeypatch):
         response_format=response_format,
     )
 
-    assert result == ""
-    assert len(calls) == 8
-    assert all(call["response_format"] is response_format for call in calls)
+    assert result == '{"rankings": []}'
+    assert [call["model"] for call in calls] == [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+    ]
+    assert [call["response_format"]["type"] for call in calls] == [
+        "json_schema",
+        "json_schema",
+        "json_object",
+    ]
+    assert calls[0]["response_format"] is response_format
+    assert calls[1]["response_format"] is response_format
 
 
 def test_groq_fallback_does_not_call_api_when_no_truncation_bound_is_exceeded():

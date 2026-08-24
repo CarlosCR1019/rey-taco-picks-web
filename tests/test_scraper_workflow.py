@@ -361,6 +361,27 @@ def test_result_verifier_can_apply_explicit_manual_score_evidence():
     assert step["run"] == "python -m backend.manual_result_evidence"
 
 
+def test_result_verifier_can_open_a_verified_settled_round():
+    workflow = _workflow(VERIFIER_WORKFLOW)
+    dispatch = workflow["on"]["workflow_dispatch"]
+    assert dispatch["inputs"]["rollover_settled_portfolio_date"] == {
+        "description": "Open a new round after six audited final picks (YYYY-MM-DD)",
+        "required": "false",
+        "default": "",
+        "type": "string",
+    }
+
+    verifier = workflow["jobs"]["verificar"]
+    step = _step(verifier, "Open verified settled round")
+    assert step["if"] == "${{ inputs.rollover_settled_portfolio_date != '' }}"
+    assert step["env"]["SUPABASE_URL"] == "${{ secrets.SUPABASE_URL }}"
+    assert step["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
+    assert step["env"]["ROLLOVER_SETTLED_PORTFOLIO_DATE"] == (
+        "${{ inputs.rollover_settled_portfolio_date }}"
+    )
+    assert step["run"] == "python -m backend.settled_round_rollover"
+
+
 def test_result_report_secrets_are_scoped_to_the_verifier_step():
     verifier = _workflow(VERIFIER_WORKFLOW)["jobs"]["verificar"]
     verify_step = _step(verifier, "Verify Results")

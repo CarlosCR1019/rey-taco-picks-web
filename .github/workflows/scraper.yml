@@ -14,6 +14,11 @@ on:
         required: false
         default: ''
         type: string
+      rollover_settled_portfolio_date:
+        description: Open a new round after six audited final picks (YYYY-MM-DD)
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: rey-taco-results-verifier
@@ -66,3 +71,11 @@ jobs:
           SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
           RESULT_REPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && 'auto' || github.event.schedule == '0 1 * * *' && 'evening' || 'final_only' }}
         run: python backend/verificar_resultados.py
+
+      - name: Open verified settled round
+        if: ${{ inputs.rollover_settled_portfolio_date != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ROLLOVER_SETTLED_PORTFOLIO_DATE: ${{ inputs.rollover_settled_portfolio_date }}
+        run: python -m backend.settled_round_rollover

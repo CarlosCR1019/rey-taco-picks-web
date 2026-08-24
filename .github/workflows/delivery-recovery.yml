@@ -36,13 +36,15 @@ jobs:
           PORTFOLIO_DATE: ${{ inputs.portfolio_date }}
         run: |
           set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/master" ]]
           [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
           [[ "$PORTFOLIO_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
           [[ "$(date --date="$PORTFOLIO_DATE" +%F)" == "$PORTFOLIO_DATE" ]]
 
-      - name: Checkout code
+      - name: Checkout trusted master
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: master
           persist-credentials: false
 
       - name: Setup Python
@@ -53,7 +55,29 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r backend/requirements.txt
 
+      - name: Preflight exact recovery state
+        id: recovery_plan
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_VIP_CHANNEL_ID: ${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}
+          TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
+          META_SYSTEM_USER_ACCESS_TOKEN: ${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: |
+          set -euo pipefail
+          python -m backend.delivery_recovery | tee -a "$GITHUB_OUTPUT"
+
       - name: Resume exact persisted delivery
+        id: telegram_recovery
+        if: >-
+          steps.recovery_plan.outputs.telegram_recovery == 'eligible'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -65,6 +89,11 @@ jobs:
         run: python backend/scraper.py --deliver-only
 
       - name: Resume exact social delivery
+        id: social_recovery
+        if: >-
+          always() && steps.recovery_plan.conclusion == 'success' &&
+          steps.recovery_plan.outputs.social_recovery == 'eligible'
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -75,3 +104,32 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_AI_API_TOKEN: ${{ secrets.CLOUDFLARE_AI_API_TOKEN }}
         run: python -m backend.social_poster
+
+      - name: Verify independent recovery outcomes
+        if: always()
+        shell: bash
+        env:
+          PREFLIGHT_OUTCOME: ${{ steps.recovery_plan.outcome }}
+          TELEGRAM_PLAN: ${{ steps.recovery_plan.outputs.telegram_recovery }}
+          SOCIAL_PLAN: ${{ steps.recovery_plan.outputs.social_recovery }}
+          TELEGRAM_OUTCOME: ${{ steps.telegram_recovery.outcome }}
+          SOCIAL_OUTCOME: ${{ steps.social_recovery.outcome }}
+        run: |
+          set -euo pipefail
+          failed=false
+          if [[ "$PREFLIGHT_OUTCOME" != "success" ]]; then
+            failed=true
+          fi
+          if [[ "$TELEGRAM_PLAN" == "ambiguous" ]]; then
+            echo "telegram_recovery=ambiguous"
+            failed=true
+          elif [[ "$TELEGRAM_PLAN" == "eligible" && "$TELEGRAM_OUTCOME" != "success" ]]; then
+            failed=true
+          fi
+          if [[ "$SOCIAL_PLAN" == "ambiguous" ]]; then
+            echo "social_recovery=ambiguous"
+            failed=true
+          elif [[ "$SOCIAL_PLAN" == "eligible" && "$SOCIAL_OUTCOME" != "success" ]]; then
+            failed=true
+          fi
+          [[ "$failed" == "false" ]]

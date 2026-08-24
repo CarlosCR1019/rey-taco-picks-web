@@ -222,12 +222,35 @@ def test_delivery_recovery_is_manual_validated_and_idempotent():
     assert "^[1-9][0-9]{0,19}$" in validation
     assert "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" in validation
     assert "date --date" in validation
+    assert '"$GITHUB_REF" == "refs/heads/master"' in validation
+    checkout = _step(job, "Checkout trusted master")
+    assert checkout["with"]["ref"] == "master"
+    assert checkout["with"]["persist-credentials"] == "false"
+    preflight = _step(job, "Preflight exact recovery state")
+    assert preflight["id"] == "recovery_plan"
+    assert "backend.delivery_recovery" in preflight["run"]
     assert "backend/scraper.py --deliver-only" in _step(
         job, "Resume exact persisted delivery"
     )["run"]
     assert "backend.social_poster" in _step(
         job, "Resume exact social delivery"
     )["run"]
+    telegram = _step(job, "Resume exact persisted delivery")
+    social = _step(job, "Resume exact social delivery")
+    assert telegram["continue-on-error"] == "true"
+    assert social["continue-on-error"] == "true"
+    assert "steps.recovery_plan.outputs.telegram_recovery == 'eligible'" in (
+        telegram["if"]
+    )
+    assert social["if"] == (
+        "always() && steps.recovery_plan.conclusion == 'success' && "
+        "steps.recovery_plan.outputs.social_recovery == 'eligible'"
+    )
+    aggregate = _step(job, "Verify independent recovery outcomes")
+    assert aggregate["if"] == "always()"
+    assert "ambiguous" in aggregate["run"]
+    assert "TELEGRAM_OUTCOME" in aggregate["run"]
+    assert "SOCIAL_OUTCOME" in aggregate["run"]
 
     text = DELIVERY_RECOVERY_WORKFLOW.read_text(encoding="utf-8")
     assert "self-hosted" not in text

@@ -2,6 +2,7 @@ import './style.css';
 import type { User } from '@supabase/supabase-js';
 import { renderShell } from './app/render';
 import { visibleHistory } from './app/history';
+import { publicCounterLabel, renderPublicCards } from './app/picks';
 import { initDailyVerseBanner } from './dailyVerse';
 import { formatEvidenceSupport } from './domain/evidence';
 import { calculatePerformance } from './domain/metrics';
@@ -65,10 +66,14 @@ function renderPicks(): void {
   const root = byId('picks-container');
   if (!root) return;
   const rows = state.picks.filter(row => state.pickFilter === 'all' || categoryKey(row.categoria) === state.pickFilter);
-  root.innerHTML = rows.length ? rows.map(pickCard).join('') : `
-    <div class="state-card"><strong>No hay picks disponibles en este filtro.</strong><span>Vuelve más tarde; no publicamos selecciones solo para llenar espacio.</span></div>`;
+  root.innerHTML = state.isVip
+    ? rows.length
+      ? rows.map(pickCard).join('')
+      : '<div class="state-card"><strong>No hay picks disponibles en este filtro.</strong><span>Vuelve más tarde; no publicamos selecciones solo para llenar espacio.</span></div>'
+    : renderPublicCards(rows);
   const updated = byId('picks-updated');
-  if (updated) updated.textContent = state.isVip ? 'Cartera VIP activa' : rows.length ? '1 selección pública' : 'Sin selección disponible';
+  if (updated) updated.textContent = state.isVip ? 'Cartera VIP activa' : publicCounterLabel(rows.length);
+  byId<HTMLButtonElement>('inline-vip-button')?.addEventListener('click', startVipCheckout);
 }
 
 function renderHistory(): void {

@@ -20,4 +20,12 @@ describe('responsive navigation contract', () => {
     expect(baseRule).toMatch(/width:\s*44px/);
     expect(baseRule).toMatch(/height:\s*44px/);
   });
+
+  it('keeps the VIP discovery card branded and stacks it on phones', () => {
+    const discovery = styleSheet.match(/\.vip-discovery\s*\{([^}]*)\}/)?.[1] ?? '';
+
+    expect(discovery).toMatch(/background:\s*#0b172a/i);
+    expect(discovery).toMatch(/grid-column:\s*1\s*\/\s*-1/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.vip-discovery\s*\{[^}]*flex-direction:\s*column/);
+  });
 });

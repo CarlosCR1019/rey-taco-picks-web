@@ -29,4 +29,12 @@ describe('approved application shell', () => {
     expect(document.querySelector('a[href="/privacidad.html"]')).not.toBeNull();
     expect(document.querySelector('a[href="/terminos.html"]')).not.toBeNull();
   });
+
+  it('uses the approved public portfolio and verified history headings', () => {
+    renderShell();
+
+    expect(document.getElementById('picks-title')?.textContent).toBe('La mesa está servida');
+    expect(document.getElementById('history-title')?.textContent).toBe('Los picks que recibió VIP');
+    expect(document.querySelector('#resultados .section-kicker')?.textContent).toContain('Resultados verificados');
+  });
 });

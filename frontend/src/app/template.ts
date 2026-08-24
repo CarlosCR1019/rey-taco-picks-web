@@ -48,7 +48,7 @@ export function applicationTemplate(): string {
 
         <section class="content-section" id="picks" aria-labelledby="picks-title">
           <div class="section-heading">
-            <div><span class="section-kicker">Selección pública</span><h2 id="picks-title">Cartera del día</h2></div>
+            <div><span class="section-kicker">Selección pública</span><h2 id="picks-title">La mesa está servida</h2></div>
             <span id="picks-updated" class="updated-label">Consultando datos…</span>
           </div>
           <div class="filter-row" id="filter-row" aria-label="Filtrar picks">
@@ -64,7 +64,7 @@ export function applicationTemplate(): string {
 
         <section class="content-section history-section" id="resultados" aria-labelledby="history-title">
           <div class="section-heading">
-            <div><span class="section-kicker">Transparencia</span><h2 id="history-title">Historial completo</h2></div>
+            <div><span class="section-kicker">Transparencia · Resultados verificados</span><h2 id="history-title">Los picks que recibió VIP</h2></div>
             <div class="history-filters" id="history-filters">
               <button class="mini-filter active" type="button" data-status="all">Todos</button>
               <button class="mini-filter" type="button" data-status="ganado">Ganados</button>

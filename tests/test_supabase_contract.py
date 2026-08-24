@@ -44,6 +44,9 @@ DAILY_RELEASE_PGCRYPTO_PATH_SQL = (
 RESULT_REPORT_DELIVERY_SQL = (
     SQL.parent / "20260824150000_result_report_delivery.sql"
 )
+SETTLED_ROUND_ROLLOVER_SQL = (
+    SQL.parent / "20260824160000_settled_daily_round_rollover.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -1950,6 +1953,69 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("attempt_id = requested_attempt_id", complete)
         self.assertIn("report_digest = requested_report_digest", complete)
         self.assertIn("state = 'in_progress'", complete)
+
+    def test_settled_daily_round_rollover_requires_verified_final_results(self):
+        self.assertTrue(SETTLED_ROUND_ROLLOVER_SQL.exists())
+        text = " ".join(
+            SETTLED_ROUND_ROLLOVER_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "add column if not exists round_number integer not null default 1",
+            text,
+        )
+        self.assertIn(
+            "rename to stage_daily_pick_portfolio_one_round_v1",
+            text,
+        )
+        self.assertIn(
+            "rename to release_daily_pick_portfolio_one_round_v1",
+            text,
+        )
+
+        stage = function_body(
+            SETTLED_ROUND_ROLLOVER_SQL,
+            "public.stage_daily_pick_portfolio( requested_run_key text, requested_portfolio_date date, requested_source_hash text, requested_picks jsonb ) returns jsonb",
+        )
+        self.assertIn("pg_advisory_xact_lock", stage)
+        self.assertIn("released_pick_count between 1 and 6", stage)
+        self.assertIn("verified_final_count = released_pick_count", stage)
+        self.assertIn("picks.estado in ('ganado', 'perdido', 'void')", stage)
+        self.assertIn("picks.resultado_verificado_at is not null", stage)
+        self.assertIn("delete from public.daily_pick_entries", stage)
+        self.assertIn("round_number = round_number + 1", stage)
+        self.assertIn("batch_id = null", stage)
+        self.assertIn("public.stage_daily_pick_portfolio_one_round_v1(", stage)
+
+        release = function_body(
+            SETTLED_ROUND_ROLLOVER_SQL,
+            "public.release_daily_pick_portfolio( requested_run_key text, requested_portfolio_date date ) returns jsonb",
+        )
+        self.assertIn("public.release_daily_pick_portfolio_one_round_v1(", release)
+        self.assertIn("feed_eligible = first_release_in_round", release)
+        self.assertIn("'{feed_eligible}'", release)
+
+    def test_result_reports_survive_daily_round_rollover(self):
+        batches = function_body(
+            SETTLED_ROUND_ROLLOVER_SQL,
+            "public.get_result_report_batches() returns jsonb",
+        )
+        claim = function_body(
+            SETTLED_ROUND_ROLLOVER_SQL,
+            "public.claim_result_report_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_report_kind text, requested_destination text, requested_report_digest text, requested_attempt_id uuid ) returns jsonb",
+        )
+
+        self.assertIn("daily_pick_releases", batches)
+        self.assertIn("select distinct", batches)
+        self.assertIn("picks.batch_id = batches.batch_id", batches)
+        self.assertNotIn("daily_pick_entries", batches)
+        self.assertIn("daily_pick_releases", claim)
+        self.assertIn("picks.batch_id = requested_batch_id", claim)
+        self.assertNotIn("daily_pick_entries", claim)
 
 
 if __name__ == "__main__":

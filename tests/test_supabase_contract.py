@@ -41,6 +41,9 @@ SIX_PICK_SCHEMA_STATUS_SQL = (
 DAILY_RELEASE_PGCRYPTO_PATH_SQL = (
     SQL.parent / "20260824120000_daily_release_pgcrypto_path.sql"
 )
+RESULT_REPORT_DELIVERY_SQL = (
+    SQL.parent / "20260824150000_result_report_delivery.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -1901,6 +1904,52 @@ class SupabaseContractTests(unittest.TestCase):
                 f"grant execute on function {signature_text} to service_role",
                 text,
             )
+
+    def test_result_report_ledger_is_private_and_idempotent(self):
+        text = " ".join(
+            RESULT_REPORT_DELIVERY_SQL.read_text(encoding="utf-8").lower().split()
+        )
+
+        self.assertIn("create table public.result_report_deliveries", text)
+        self.assertIn("primary key (batch_id, report_kind, destination)", text)
+        self.assertIn(
+            "revoke all on table public.result_report_deliveries from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant select, insert, update, delete on table public.result_report_deliveries to service_role",
+            text,
+        )
+        for signature in (
+            "public.get_result_report_batches()",
+            "public.claim_result_report_delivery(uuid, date, text, text, text, uuid)",
+            "public.complete_result_report_delivery(uuid, text, text, text, uuid, boolean, text, text)",
+        ):
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated",
+                text,
+            )
+            self.assertIn(f"grant execute on function {signature} to service_role", text)
+
+    def test_result_report_claims_lock_and_do_not_retry_ambiguous_delivery(self):
+        claim = function_body(
+            RESULT_REPORT_DELIVERY_SQL,
+            "public.claim_result_report_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_report_kind text, requested_destination text, requested_report_digest text, requested_attempt_id uuid ) returns jsonb",
+        )
+        complete = function_body(
+            RESULT_REPORT_DELIVERY_SQL,
+            "public.complete_result_report_delivery( requested_batch_id uuid, requested_report_kind text, requested_destination text, requested_report_digest text, requested_attempt_id uuid, requested_success boolean, requested_error text, requested_receipt text ) returns jsonb",
+        )
+
+        self.assertIn("pg_advisory_xact_lock", claim)
+        self.assertIn("for update", claim)
+        self.assertIn("existing_delivery.state = 'success'", claim)
+        self.assertIn("existing_delivery.state = 'in_progress'", claim)
+        self.assertIn("'state', 'ambiguous'", claim)
+        self.assertIn("existing_delivery.state = 'failed'", claim)
+        self.assertIn("attempt_id = requested_attempt_id", complete)
+        self.assertIn("report_digest = requested_report_digest", complete)
+        self.assertIn("state = 'in_progress'", complete)
 
 
 if __name__ == "__main__":

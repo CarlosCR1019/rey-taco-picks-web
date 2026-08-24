@@ -229,20 +229,30 @@ class MetaHttpTransport:
         if not isinstance(jpeg, bytes) or not jpeg or not _valid_caption(caption):
             return self._result(destination, "delivery_failed")
         try:
-            response = cast(
-                _HttpResponse,
-                self._session.post(
-                    self._graph_url(settings, f"{settings.facebook_page_id}/photos"),
-                    headers=self._headers(settings),
-                    data={"message": caption},
-                    files={"source": ("rey-taco-pick.jpg", jpeg, "image/jpeg")},
-                    timeout=30,
-                    stream=True,
-                ),
+            status, payload = self._post_facebook_photo(
+                jpeg=jpeg,
+                caption=caption,
+                settings=settings,
+                access_token=settings.token,
             )
-            status, payload = _response_payload(response)
             if status < 200 or status >= 300:
                 _log_meta_http_failure(destination, status=status, payload=payload)
+                if _is_permission_error(payload):
+                    page_token, resolution_failure = self._resolve_page_access_token(
+                        settings
+                    )
+                    if resolution_failure is not None:
+                        return self._result(destination, resolution_failure)
+                    status, payload = self._post_facebook_photo(
+                        jpeg=jpeg,
+                        caption=caption,
+                        settings=settings,
+                        access_token=page_token,
+                    )
+                    if status < 200 or status >= 300:
+                        _log_meta_http_failure(
+                            destination, status=status, payload=payload
+                        )
             if _is_token_invalid(payload):
                 return self._result(destination, "token_invalid")
             if status < 200 or status >= 300:
@@ -253,6 +263,51 @@ class MetaHttpTransport:
             return self._result(destination, "success", receipt=receipt)
         except Exception as exc:
             return self._result(destination, "delivery_failed", exception=type(exc).__name__)
+
+    def _post_facebook_photo(
+        self,
+        *,
+        jpeg: bytes,
+        caption: str,
+        settings: MetaSettings,
+        access_token: str,
+    ) -> tuple[int, object]:
+        response = cast(
+            _HttpResponse,
+            self._session.post(
+                self._graph_url(settings, f"{settings.facebook_page_id}/photos"),
+                headers=self._headers_for_token(access_token),
+                data={"message": caption},
+                files={"source": ("rey-taco-pick.jpg", jpeg, "image/jpeg")},
+                timeout=30,
+                stream=True,
+            ),
+        )
+        return _response_payload(response)
+
+    def _resolve_page_access_token(
+        self, settings: MetaSettings
+    ) -> tuple[str, MetaStatus | None]:
+        response = cast(
+            _HttpResponse,
+            self._session.get(
+                self._graph_url(
+                    settings,
+                    f"{settings.facebook_page_id}?fields=access_token",
+                ),
+                headers=self._headers(settings),
+                timeout=30,
+                stream=True,
+            ),
+        )
+        status, payload = _response_payload(response)
+        if status < 200 or status >= 300:
+            _log_meta_http_failure("facebook", status=status, payload=payload)
+            return "", "token_invalid" if _is_token_invalid(payload) else "delivery_failed"
+        page_token = _safe_page_access_token(payload)
+        if page_token is None:
+            return "", "delivery_failed"
+        return page_token, None
 
     def publish_instagram(
         self, *, image_url: str, caption: str, settings: MetaSettings
@@ -335,8 +390,12 @@ class MetaHttpTransport:
 
     @staticmethod
     def _headers(settings: MetaSettings) -> dict[str, str]:
+        return MetaHttpTransport._headers_for_token(settings.token)
+
+    @staticmethod
+    def _headers_for_token(access_token: str) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {settings.token}",
+            "Authorization": f"Bearer {access_token}",
             # iter_content yields decoded bytes; identity keeps Content-Length
             # comparable to the bytes counted by the bounded parser.
             "Accept-Encoding": "identity",
@@ -429,6 +488,28 @@ def _is_token_invalid(payload: object) -> bool:
     if not isinstance(error, Mapping):
         return False
     return error.get("code") == 190
+
+
+def _is_permission_error(payload: object) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    error = payload.get("error")
+    return isinstance(error, Mapping) and error.get("code") == 200
+
+
+def _safe_page_access_token(payload: object) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    value = payload.get("access_token")
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 4096
+        or value != value.strip()
+        or _has_forbidden_control(value)
+    ):
+        return None
+    return value
 
 
 def _log_meta_http_failure(

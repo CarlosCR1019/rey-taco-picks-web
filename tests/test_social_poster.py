@@ -362,6 +362,55 @@ def test_facebook_http_failure_logs_only_safe_error_metadata(
     assert "private provider explanation" not in caplog.text
 
 
+def test_facebook_permission_error_resolves_page_token_and_retries_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    page_token = "page-access-secret"
+    session = FakeSession()
+    session.post_responses = [
+        FakeResponse(403, {"error": {"code": 200}}),
+        FakeResponse(200, {"id": "facebook-post-123"}),
+    ]
+    session.get_responses = [
+        FakeResponse(200, {"access_token": page_token}),
+    ]
+
+    with caplog.at_level(logging.INFO, logger="backend.social_poster"):
+        result = MetaHttpTransport(session=session).publish_facebook(
+            jpeg=b"jpeg",
+            caption="caption",
+            settings=configured_settings(),
+        )
+
+    assert result == MetaDelivery("facebook", "success", "facebook-post-123")
+    assert len(session.post_calls) == 2
+    assert len(session.get_calls) == 1
+    assert session.get_calls[0] == (
+        f"https://graph.facebook.com/v26.0/{FACEBOOK_ID}?fields=access_token",
+        {
+            "headers": {
+                "Authorization": f"Bearer {TOKEN}",
+                "Accept-Encoding": "identity",
+            },
+            "timeout": 30,
+            "stream": True,
+        },
+    )
+    assert session.post_calls[0][1]["headers"] == {
+        "Authorization": f"Bearer {TOKEN}",
+        "Accept-Encoding": "identity",
+    }
+    assert session.post_calls[1][1]["headers"] == {
+        "Authorization": f"Bearer {page_token}",
+        "Accept-Encoding": "identity",
+    }
+    combined = caplog.text + repr(session.post_calls) + repr(session.get_calls)
+    assert page_token not in caplog.text
+    assert TOKEN not in caplog.text
+    assert page_token not in session.post_calls[0][0]
+    assert TOKEN not in session.get_calls[0][0]
+
+
 def test_transport_returns_not_configured_without_http_calls() -> None:
     session = FakeSession()
     settings = MetaSettings.from_mapping(

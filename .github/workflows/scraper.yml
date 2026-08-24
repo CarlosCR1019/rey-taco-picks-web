@@ -8,6 +8,12 @@ on:
     - cron: '0 1 * * *'
     - cron: '0 5 * * *'
   workflow_dispatch:
+    inputs:
+      manual_result_evidence_json:
+        description: Reviewed final-score evidence JSON; leave blank for automatic verification
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: rey-taco-results-verifier
@@ -34,6 +40,14 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -r backend/requirements.txt
+
+      - name: Apply reviewed result evidence
+        if: ${{ inputs.manual_result_evidence_json != '' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MANUAL_RESULT_EVIDENCE_JSON: ${{ inputs.manual_result_evidence_json }}
+        run: python -m backend.manual_result_evidence
 
       - name: Verify Results
         env:

@@ -340,6 +340,27 @@ def test_result_verifier_receives_detailed_stats_key_only_as_a_secret():
     assert "python backend/verificar_resultados.py" == verify_step["run"]
 
 
+def test_result_verifier_can_apply_explicit_manual_score_evidence():
+    workflow = _workflow(VERIFIER_WORKFLOW)
+    dispatch = workflow["on"]["workflow_dispatch"]
+    assert dispatch["inputs"]["manual_result_evidence_json"] == {
+        "description": "Reviewed final-score evidence JSON; leave blank for automatic verification",
+        "required": "false",
+        "default": "",
+        "type": "string",
+    }
+
+    verifier = workflow["jobs"]["verificar"]
+    step = _step(verifier, "Apply reviewed result evidence")
+    assert step["if"] == "${{ inputs.manual_result_evidence_json != '' }}"
+    assert step["env"]["SUPABASE_URL"] == "${{ secrets.SUPABASE_URL }}"
+    assert step["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
+    assert step["env"]["MANUAL_RESULT_EVIDENCE_JSON"] == (
+        "${{ inputs.manual_result_evidence_json }}"
+    )
+    assert step["run"] == "python -m backend.manual_result_evidence"
+
+
 def test_result_report_secrets_are_scoped_to_the_verifier_step():
     verifier = _workflow(VERIFIER_WORKFLOW)["jobs"]["verificar"]
     verify_step = _step(verifier, "Verify Results")

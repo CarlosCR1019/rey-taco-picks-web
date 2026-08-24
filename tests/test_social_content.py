@@ -651,6 +651,24 @@ def test_fallback_captions_include_only_required_factual_persisted_copy():
         captions.facebook = "Cambio"  # type: ignore[misc]
 
 
+def test_fallback_captions_use_premium_balanced_platform_specific_voice():
+    captions = build_fallback_captions(
+        content_from_public_pick(valid_row(), reference_at=NOW)
+    )
+
+    assert captions.facebook.startswith("👑 PICK PÚBLICO DEL REY")
+    assert "🎯 Selección: América gana" in captions.facebook
+    assert "📊 Momio observado: 1.80" in captions.facebook
+    assert "🕒 Horario:" in captions.facebook
+    assert "🌐 Consulta la cartelera: reytacopicks.com" in captions.facebook
+    assert captions.instagram.startswith("🌮 LA MESA ESTÁ SERVIDA")
+    assert "Guarda esta selección y revisa la cartelera pública." in captions.instagram
+    assert captions.facebook != captions.instagram
+    for unsafe in ("seguro", "garantizado", "profit", "+EV", "va a ganar"):
+        assert unsafe.casefold() not in captions.facebook.casefold()
+        assert unsafe.casefold() not in captions.instagram.casefold()
+
+
 def assert_persisted_claim_is_rejected(predictive_claim):
     with pytest.raises(ValueError, match="pick"):
         content_from_public_pick(

@@ -20,10 +20,9 @@ from backend.social_content import (
 
 _LOGGER = logging.getLogger(__name__)
 _OPTIONAL_NEUTRAL_LINES = (
-    "Información del pick",
-    "Pick público del día.",
-    "Información deportiva basada en datos observados.",
-    "Consulta los datos disponibles.",
+    "Selección pública de la jornada.",
+    "Datos observados antes del evento.",
+    "Consulta la cartelera pública.",
 )
 _SYSTEM_PROMPT = (
     "Redacta dos captions informativos en español usando únicamente los datos "
@@ -272,20 +271,7 @@ def _required_caption_lines(
     platform: str,
 ) -> tuple[str, ...]:
     normalized_fallback = normalize_unicode("NFKC", getattr(fallback, platform))
-    fallback_lines = normalized_fallback.splitlines()
-    observation_line = next(
-        line for line in fallback_lines if line.startswith("Observado:")
-    )
-    hashtag_line = next(line for line in fallback_lines if line.startswith("#"))
-    return (
-        normalize_unicode("NFKC", content.event),
-        f"Selección: {normalize_unicode('NFKC', content.selection)}",
-        f"Momio observado: {normalize_unicode('NFKC', content.odds_text)}",
-        observation_line,
-        "Consulta: reytacopicks.com",
-        "18+ · Apuesta con responsabilidad",
-        hashtag_line,
-    ) + _conditional_caption_lines(content)
+    return tuple(line.strip() for line in normalized_fallback.splitlines() if line.strip())
 
 
 def _caption_line_policy(
@@ -363,9 +349,11 @@ def _validate_caption(
         platform=platform,
     )
     conditional_lines = _conditional_caption_lines(content)
-    normalized_event = required_lines[0]
+    normalized_event = normalize_unicode("NFKC", content.event)
     normalized_selection = normalize_unicode("NFKC", content.selection)
-    observation_line = required_lines[3]
+    observation_line = next(
+        line for line in required_lines if line.startswith("Observado:")
+    )
     candidate_lines = [
         stripped
         for line in normalized.splitlines()
@@ -398,7 +386,7 @@ def _validate_caption(
         protected_fragments=(
             normalized_event,
             normalized_selection,
-            required_lines[2],
+            normalize_unicode("NFKC", content.odds_text),
             observation_line,
             "reytacopicks.com",
             "18+",

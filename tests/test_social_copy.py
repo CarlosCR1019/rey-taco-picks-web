@@ -66,9 +66,9 @@ def response_with_content(content: object) -> object:
 def valid_candidate(content: SocialContent) -> SocialCaptions:
     fallback = build_fallback_captions(content)
     return SocialCaptions(
-        facebook=f"Pick público del día.\n{fallback.facebook}",
+        facebook=f"Selección pública de la jornada.\n{fallback.facebook}",
         instagram=(
-            "Información deportiva basada en datos observados.\n"
+            "Datos observados antes del evento.\n"
             f"{fallback.instagram}"
         ),
     )
@@ -176,16 +176,13 @@ def test_request_is_lazy_bounded_structured_and_public_only(model, expected_mode
     line_policy = json.loads(messages[-2]["content"])["caption_line_policy"]
     fallback = build_fallback_captions(content)
     optional_lines = [
-        "Información del pick",
-        "Pick público del día.",
-        "Información deportiva basada en datos observados.",
-        "Consulta los datos disponibles.",
+        "Selección pública de la jornada.",
+        "Datos observados antes del evento.",
+        "Consulta la cartelera pública.",
     ]
     for platform in ("facebook", "instagram"):
         fallback_lines = getattr(fallback, platform).splitlines()
-        assert set(line_policy[platform]["required_lines"]) == (
-            set(fallback_lines) - {"Información del pick"}
-        )
+        assert set(line_policy[platform]["required_lines"]) == set(fallback_lines)
         assert line_policy[platform]["optional_lines"] == optional_lines
     assert messages[-1]["role"] == "user"
     public_payload = json.loads(messages[-1]["content"])
@@ -401,14 +398,14 @@ def test_public_caption_validator_normalizes_the_complete_result():
     content = social_content()
     fallback = build_fallback_captions(content)
     candidate = SocialCaptions(
-        facebook=f"Ｐｉｃｋ público del día.\n{fallback.facebook}",
-        instagram=f"Ｃｏｎｓｕｌｔａ los datos disponibles.\n{fallback.instagram}",
+        facebook=f"Ｓｅｌｅｃｃｉóｎ pública de la jornada.\n{fallback.facebook}",
+        instagram=f"Ｄａｔｏｓ observados antes del evento.\n{fallback.instagram}",
     )
 
     result = validate_social_captions(candidate, content)
 
-    assert result.facebook.startswith("Pick público del día.\n")
-    assert result.instagram.startswith("Consulta los datos disponibles.\n")
+    assert result.facebook.startswith("Selección pública de la jornada.\n")
+    assert result.instagram.startswith("Datos observados antes del evento.\n")
 
 
 @pytest.mark.parametrize(
@@ -517,8 +514,8 @@ def test_missing_each_required_fact_or_footer_falls_back_wholly(
         ("América vs Tigres", "Evento descartado: América vs Tigres"),
         ("Selección: América gana", "Selección descartada: América gana"),
         (
-            "Consulta: reytacopicks.com",
-            "No consultes: reytacopicks.com",
+            "🌐 Consulta la cartelera: reytacopicks.com",
+            "🌐 No consultes la cartelera: reytacopicks.com",
         ),
         (
             "18+ · Apuesta con responsabilidad",
@@ -543,16 +540,10 @@ def test_required_facts_and_footer_reject_altered_context(
 def test_required_canonical_lines_use_stripped_line_equality():
     content = social_content()
     candidate = valid_candidate(content)
-    observation_line = required_fragments(content)[3][1]
-    canonical_lines = {
-        content.event,
-        f"Selección: {content.selection}",
-        f"Momio observado: {content.odds_text}",
-        observation_line,
-        "Consulta: reytacopicks.com",
-        "18+ · Apuesta con responsabilidad",
-        "Señal de valor comparada",
-    }
+    fallback = build_fallback_captions(content)
+    canonical_lines = set(fallback.facebook.splitlines()) | set(
+        fallback.instagram.splitlines()
+    )
     padded_candidate = SocialCaptions(
         facebook="\n".join(
             f"  {line}  " if line in canonical_lines else line
@@ -891,14 +882,14 @@ def test_nfkc_normalized_safe_candidate_is_returned_normalized():
     content = social_content()
     fallback = build_fallback_captions(content)
     compatibility_candidate = SocialCaptions(
-        facebook=f"Ｐｉｃｋ público del día.\n{fallback.facebook}",
-        instagram=f"Ｃｏｎｓｕｌｔａ los datos disponibles.\n{fallback.instagram}",
+        facebook=f"Ｓｅｌｅｃｃｉóｎ pública de la jornada.\n{fallback.facebook}",
+        instagram=f"Ｄａｔｏｓ observados antes del evento.\n{fallback.instagram}",
     )
 
     result = caption_result(content, compatibility_candidate)
 
-    assert result.facebook.startswith("Pick público del día.\n")
-    assert result.instagram.startswith("Consulta los datos disponibles.\n")
+    assert result.facebook.startswith("Selección pública de la jornada.\n")
+    assert result.instagram.startswith("Datos observados antes del evento.\n")
 
 
 def test_allowed_neutral_and_required_lines_may_be_reordered():
@@ -906,10 +897,10 @@ def test_allowed_neutral_and_required_lines_may_be_reordered():
     fallback = build_fallback_captions(content)
     candidate = SocialCaptions(
         facebook="\n".join(
-            ["Consulta los datos disponibles.", *reversed(fallback.facebook.splitlines())]
+            ["Consulta la cartelera pública.", *reversed(fallback.facebook.splitlines())]
         ),
         instagram="\n".join(
-            ["Pick público del día.", *reversed(fallback.instagram.splitlines())]
+            ["Selección pública de la jornada.", *reversed(fallback.instagram.splitlines())]
         ),
     )
 

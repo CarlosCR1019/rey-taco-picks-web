@@ -598,24 +598,58 @@ def _observation_label(observed_at: datetime) -> str:
     )
 
 
-def _caption_lines(content: SocialContent) -> list[str]:
+def _caption_fact_lines(content: SocialContent) -> None:
     _validate_caption_fact(content.event, field="event")
     _validate_caption_fact(content.selection, field="selection")
+    _validate_caption_fact(content.schedule, field="schedule")
+    _validate_caption_fact(content.market, field="market")
     _validate_odds_text(content.odds_text)
-    lines = [
-        "Información del pick",
-        content.event,
-        f"Selección: {content.selection}",
-        f"Momio observado: {content.odds_text}",
-        _observation_label(content.observed_at),
-    ]
+
+
+def _append_conditional_line(lines: list[str], content: SocialContent) -> None:
     if content.is_demo is True:
         lines.append("DEMO NO VIGENTE")
     elif content.has_value_signal is True:
         lines.append("Señal de valor comparada")
+
+
+def _facebook_lines(content: SocialContent) -> list[str]:
+    _caption_fact_lines(content)
+    lines = [
+        "👑 PICK PÚBLICO DEL REY",
+        f"⚽ {content.event}",
+        f"🎯 Selección: {content.selection}",
+        f"📊 Momio observado: {content.odds_text}",
+        f"🕒 Horario: {content.schedule}",
+        f"🏟️ Mercado: {content.market}",
+        _observation_label(content.observed_at),
+    ]
+    _append_conditional_line(lines, content)
     lines.extend(
         [
-            "Consulta: reytacopicks.com",
+            "🌐 Consulta la cartelera: reytacopicks.com",
+            "18+ · Apuesta con responsabilidad",
+        ]
+    )
+    return lines
+
+
+def _instagram_lines(content: SocialContent) -> list[str]:
+    _caption_fact_lines(content)
+    lines = [
+        "🌮 LA MESA ESTÁ SERVIDA",
+        f"⚽ {content.event}",
+        f"👑 Selección del Rey: {content.selection}",
+        f"📊 Momio observado: {content.odds_text}",
+        f"🕒 Horario: {content.schedule}",
+        f"🏟️ Mercado: {content.market}",
+        _observation_label(content.observed_at),
+    ]
+    _append_conditional_line(lines, content)
+    lines.extend(
+        [
+            "Guarda esta selección y revisa la cartelera pública.",
+            "🌐 reytacopicks.com",
             "18+ · Apuesta con responsabilidad",
         ]
     )
@@ -631,10 +665,9 @@ def build_fallback_captions(content: SocialContent) -> SocialCaptions:
         raise ValueError("is_demo must be boolean")
     if type(content.has_value_signal) is not bool:
         raise ValueError("has_value_signal must be boolean")
-    base = "\n".join(_caption_lines(content))
     return SocialCaptions(
-        facebook=f"{base}\n{_FACEBOOK_HASHTAGS}",
-        instagram=f"{base}\n{_INSTAGRAM_HASHTAGS}",
+        facebook="\n".join([*_facebook_lines(content), _FACEBOOK_HASHTAGS]),
+        instagram="\n".join([*_instagram_lines(content), _INSTAGRAM_HASHTAGS]),
     )
 
 

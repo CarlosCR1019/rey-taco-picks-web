@@ -186,7 +186,13 @@ def _plain(value: str) -> str:
 
 def normalize_team(value: str) -> frozenset[str]:
     tokens = re.findall(r"[a-z0-9]+", _plain(value))
-    return frozenset(token for token in tokens if token not in _TEAM_STOP_WORDS)
+    return frozenset(
+        token[:-1]
+        if len(token) >= 5 and token.endswith("s") and not token.endswith("ss")
+        else token
+        for token in tokens
+        if token not in _TEAM_STOP_WORDS
+    )
 
 
 def _team_matches(expected: str, actual: str) -> bool:

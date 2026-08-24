@@ -362,6 +362,18 @@ def _parlay_decision(pick, events, statuses):
         'resultado_verificado_at': datetime.now(timezone.utc).isoformat(),
     }
 
+def load_active_pending_picks(client):
+    """Return only current active picks that are still awaiting a result."""
+    response = (
+        client.table("picks")
+        .select("*")
+        .eq("estado", "pendiente")
+        .eq("active", True)
+        .execute()
+    )
+    return response.data
+
+
 def verificar_picks():
     """Verifica los picks pendientes contra resultados reales."""
     print("\n" + "="*60)
@@ -374,8 +386,7 @@ def verificar_picks():
     
     # Obtener picks pendientes
     try:
-        res = supabase.table("picks").select("*").eq("estado", "pendiente").execute()
-        picks_pendientes = res.data
+        picks_pendientes = load_active_pending_picks(supabase)
     except Exception as e:
         print(f"❌ Error leyendo picks: {e}")
         return

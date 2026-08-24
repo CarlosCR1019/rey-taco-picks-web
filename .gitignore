@@ -8,10 +8,14 @@ __pycache__/
 .env.local
 .env.*
 backend/.env
+!.env.example
+!backend/.env.example
 
 # Chrome data & offsets
 .telegram_offset
 backend/.telegram_offset
+backend/private_receipts/
+backend/channel_queue.json
 
 # OS & Logs
 .DS_Store
@@ -21,6 +25,10 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Codex / Superpowers workspaces
+.superpowers/
+.worktrees/
 
 # Build
 frontend/dist/
@@ -38,6 +46,8 @@ meta_*.py
 upload_*.py
 get_*.py
 render_story_hd.py
+!tests/
+!tests/**/*.py
 *.jpg
 *.png
 !frontend/public/logo.jpg

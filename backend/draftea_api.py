@@ -5,8 +5,6 @@ Rey Taco Picks Autonomous Sportsbook Engine
 
 import os
 import requests
-import json
-import time
 from typing import List, Dict, Any
 
 DRAFTEA_BASE_URL = os.getenv("DRAFTEA_API_URL", "https://api.draftea.com")

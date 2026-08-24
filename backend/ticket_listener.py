@@ -3,24 +3,38 @@ import json
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from dotenv import load_dotenv
-from supabase import create_client, Client
+from supabase import create_client
+
+try:
+    from backend.payment_review import classify_receipt
+    from backend.membership_admin import is_active_subscription
+except ModuleNotFoundError:  # Allows `python backend/ticket_listener.py`.
+    from payment_review import classify_receipt
+    from membership_admin import is_active_subscription
 
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 VIP_CHANNEL_ID = os.getenv("TELEGRAM_VIP_CHANNEL_ID") or os.getenv("TELEGRAM_CHANNEL_ID")
-FREE_CHANNEL_ID = os.getenv("TELEGRAM_FREE_CHANNEL_ID", "-1004387927424")
-ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "5912533842"))
+FREE_CHANNEL_ID = os.getenv("TELEGRAM_FREE_CHANNEL_ID", "")
+ADMIN_CHAT_ID = int(os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_CHAT_ID") or "0")
+SUPABASE_ADMIN_USER_ID = os.getenv("SUPABASE_ADMIN_USER_ID", "")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY else None
 
-TICKETS_DIR = os.path.join("..", "frontend", "public", "tickets")
-os.makedirs(TICKETS_DIR, exist_ok=True)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TICKETS_DIR = PROJECT_ROOT / "frontend" / "public" / "tickets"
+RECEIPTS_DIR = Path(
+    os.getenv("PRIVATE_RECEIPTS_DIR", PROJECT_ROOT / "backend" / "private_receipts")
+)
+TICKETS_DIR.mkdir(parents=True, exist_ok=True)
+RECEIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
 OFFSET_FILE = os.path.join(os.path.dirname(__file__), ".telegram_offset")
 
@@ -52,7 +66,7 @@ def telegram_api(method, payload):
         return None
 
 def get_updates(offset=0):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{getUpdates}?offset={offset}&timeout=30".replace("{getUpdates}", "getUpdates")
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=30"
     try:
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=35) as resp:
@@ -119,20 +133,58 @@ def responder_publico(chat_id):
     }
     responder(chat_id, texto, keyboard)
 
+def procesar_vinculacion_telegram(message, raw_text):
+    """Consume a short-lived web token and binds this Telegram account once."""
+    if not raw_text.startswith("/start link_"):
+        return False
+    if not supabase:
+        responder(message.get("chat", {}).get("id"), "⚠️ La vinculación no está disponible en este momento.")
+        return True
+    user = message.get("from", {})
+    token = raw_text.removeprefix("/start link_").strip()
+    try:
+        result = supabase.rpc("consume_telegram_link_token", {
+            "raw_token": token,
+            "new_telegram_id": str(user.get("id", "")),
+            "new_telegram_username": user.get("username"),
+        }).execute()
+        linked = bool(result.data)
+        responder(
+            message.get("chat", {}).get("id"),
+            "✅ Tu cuenta de Telegram quedó vinculada a Rey Taco Picks." if linked
+            else "⚠️ El enlace expiró o ya fue utilizado. Genera uno nuevo desde tu cuenta web.",
+        )
+    except Exception as error:
+        print(f"Error vinculando Telegram: {error}")
+        responder(message.get("chat", {}).get("id"), "⚠️ No pudimos vincular la cuenta. Genera un enlace nuevo.")
+    return True
+
+def buscar_usuario_auth_por_correo(email):
+    """Resolve an Auth user with the server-only admin API, not a profile column."""
+    if not supabase:
+        return None
+    target = str(email).strip().lower()
+    for page in range(1, 101):
+        users = supabase.auth.admin.list_users(page=page, per_page=100)
+        match = next((user for user in users if str(user.email or "").lower() == target), None)
+        if match:
+            return str(match.id)
+        if len(users) < 100:
+            break
+    return None
+
 def verificar_usuario_vip(telegram_id=None, username=None):
     """Verifica en Supabase si el usuario tiene suscripción VIP activa."""
     if not supabase:
         return False
     try:
+        profile = None
         if telegram_id:
-            res = supabase.table("profiles").select("is_premium").eq("telegram_id", str(telegram_id)).execute()
-            if res.data and res.data[0].get("is_premium"):
-                return True
-        if username:
-            clean_user = username.replace("@", "").strip().lower()
-            res = supabase.table("profiles").select("is_premium").eq("telegram_username", clean_user).execute()
-            if res.data and res.data[0].get("is_premium"):
-                return True
+            res = supabase.table("profiles").select("id").eq("telegram_id", str(telegram_id)).limit(1).execute()
+            profile = res.data[0] if res.data else None
+        if profile:
+            sub = supabase.rpc("is_active_subscriber", {"check_user": profile["id"]}).execute()
+            return sub.data is True
     except Exception as e:
         print(f"Error verificando usuario VIP en Supabase: {e}")
     return False
@@ -227,11 +279,11 @@ def procesar_comprobante_cliente(update):
         
     best_photo = photos[-1]
     file_id = best_photo['file_id']
-    save_path = os.path.join(TICKETS_DIR, f"comprobante_{user_id}_{int(time.time())}.jpg")
+    save_path = RECEIPTS_DIR / f"comprobante_{user_id}_{int(time.time())}.jpg"
     
     print(f"\n💳 [COMPROBANTE RECIBIDO] de {first_name} (@{username}, ID: {user_id})")
     
-    if download_photo(file_id, save_path):
+    if download_photo(file_id, str(save_path)):
         texto_ocr = ""
         try:
             from PIL import Image
@@ -242,50 +294,43 @@ def procesar_comprobante_cliente(update):
         except Exception as e:
             print(f"   ⚠️ OCR no disponible o error: {e}")
             
-        es_valido = ("299" in texto_ocr or "012180015228133759" in texto_ocr or "taco" in texto_ocr) and ("bbva" in texto_ocr or "transferencia" in texto_ocr or "exitosa" in texto_ocr or "spei" in texto_ocr or "enviado" in texto_ocr)
-        
-        if es_valido:
-            # 1. Activar VIP en Supabase
-            if supabase:
-                try:
-                    import uuid
-                    supabase.table("profiles").upsert({
-                        "id": str(uuid.uuid4()),
-                        "telegram_id": str(user_id),
-                        "telegram_username": username.replace("@", "").lower(),
-                        "is_premium": True
-                    }, on_conflict="telegram_id").execute()
-                except Exception as e:
-                    print(f"Error upsert profile: {e}")
-            
-            # 2. Aprobar en Canal VIP
-            if VIP_CHANNEL_ID:
-                telegram_api("approveChatJoinRequest", {"chat_id": VIP_CHANNEL_ID, "user_id": user_id})
-                
-            msg_exito = (
-                f"🎉 ¡PAGO DE $299 MXN CONFIRMADO EXITOSAMENTE!\n\n"
-                f"👑 Bienvenido al servicio VIP de Rey Taco Picks, {first_name}.\n"
-                f"✅ Tu acceso al Canal VIP y a la plataforma web ha sido activado de inmediato.\n\n"
-                f"👉 Entra a la web oficial: https://reytacopicks.com"
-            )
-            responder(user_id, msg_exito)
-            
-            # 3. Notificar a Carlos
-            responder(ADMIN_CHAT_ID, 
-                f"💰 [PAGO SPEI VERIFICADO POR IA]\n\n"
-                f"👤 {first_name} (@{username})\n"
-                f"🆔 ID Telegram: `{user_id}`\n"
-                f"💵 Monto: $299.00 MXN\n"
-                f"⚡ El bot verificó el comprobante BBVA y activó su VIP en automático."
-            )
-        else:
-            # Reenviar a Carlos para aprobación con 1 clic
+        review = classify_receipt(texto_ocr)
+        review_id = None
+        if supabase:
+            try:
+                linked_profile = supabase.table("profiles").select("id").eq(
+                    "telegram_id", str(user_id)
+                ).limit(1).execute()
+                review_record = supabase.table("payment_reviews").insert({
+                    "user_id": linked_profile.data[0]["id"] if linked_profile.data else None,
+                    "telegram_id": str(user_id),
+                    "telegram_username": username.replace("@", "").lower(),
+                    "status": review.status,
+                    "detected_amount": review.detected_amount,
+                    "detected_bank": review.detected_bank,
+                    "receipt_filename": save_path.name,
+                }).execute()
+                review_id = review_record.data[0]["id"] if review_record.data else None
+            except Exception as e:
+                print(f"   ⚠️ No se pudo registrar payment_reviews: {e}")
+
+        if ADMIN_CHAT_ID:
             telegram_api("sendPhoto", {
                 "chat_id": ADMIN_CHAT_ID,
                 "photo": file_id,
-                "caption": f"📩 [COMPROBANTE RECIBIDO DE CLIENTE]\n👤 {first_name} (@{username}, ID: `{user_id}`)\n\nComandos rápidos para Carlos:\n• `/aprobar {user_id}` ➔ Aprobar en Canal VIP\n• `/vip {username}@telegram.com` ➔ Activar en Web"
+                "caption": (
+                    "📩 [COMPROBANTE PENDIENTE DE REVISIÓN]\n"
+                    f"👤 {first_name} (@{username}, ID: `{user_id}`)\n"
+                    f"💵 OCR detectó $299: {'sí' if review.detected_amount else 'no'}\n"
+                    f"🏦 OCR detectó banco/SPEI: {'sí' if review.detected_bank else 'no'}\n\n"
+                    f"📝 Revisión: `{review_id or 'no registrada'}`\n\n"
+                    "El OCR no activa membresías. Verifica el movimiento y usa /vip REVISION_UUID correo."
+                ),
             })
-            responder(user_id, "📨 ¡Comprobante recibido! Nuestro sistema lo está procesando. Tu acceso VIP será activado en breve. 🌮👑")
+        responder(
+            user_id,
+            "📨 Recibimos tu comprobante. Está pendiente de revisión manual; te avisaremos cuando el pago sea confirmado.",
+        )
 
 def procesar_foto(update):
     """Procesa una foto recibida del admin."""
@@ -379,6 +424,8 @@ def main():
                 if chat_id != ADMIN_CHAT_ID:
                     if 'photo' in message:
                         procesar_comprobante_cliente(update)
+                    elif procesar_vinculacion_telegram(message, message.get('text', '').strip()):
+                        pass
                     else:
                         print(f"👤 Mensaje de usuario {chat_id}. Enviando respuesta comercial...")
                         responder_publico(chat_id)
@@ -399,15 +446,19 @@ def main():
                             "• El bot rechaza automáticamente a quienes intenten entrar sin suscripción.\n"
                             "• /aprobar 123456789 ➔ Aprueba manualmente a un usuario por su ID\n"
                             "• /expulsar 123456789 ➔ Expulsa a un usuario del Canal VIP\n"
-                            "• /vip correo@ejemplo.com ➔ Activa el VIP en la web\n"
+                            "• /vip REVISION_UUID correo@ejemplo.com ➔ Aprueba SPEI y activa VIP\n"
+                            "• /rechazar REVISION_UUID ➔ Rechaza un comprobante\n"
                             "• /usuarios ➔ Ver clientes registrados"
                         )
                     elif texto.startswith('/aprobar '):
                         partes = raw_text.split()
                         if len(partes) >= 2:
                             target_id = int(partes[1].strip())
-                            telegram_api("approveChatJoinRequest", {"chat_id": VIP_CHANNEL_ID, "user_id": target_id})
-                            responder(chat_id, f"✅ Usuario {target_id} APROBADO manualmente en el Canal VIP.")
+                            if verificar_usuario_vip(telegram_id=target_id):
+                                telegram_api("approveChatJoinRequest", {"chat_id": VIP_CHANNEL_ID, "user_id": target_id})
+                                responder(chat_id, f"✅ Usuario {target_id} APROBADO: membresía verificada.")
+                            else:
+                                responder(chat_id, f"⚠️ Usuario {target_id} no tiene una membresía activa; no fue aprobado.")
                     elif texto.startswith('/expulsar '):
                         partes = raw_text.split()
                         if len(partes) >= 2:
@@ -417,26 +468,50 @@ def main():
                             responder(chat_id, f"🚫 Usuario {target_id} EXPULSADO del Canal VIP.")
                     elif texto.startswith('/vip '):
                         partes = raw_text.split()
-                        if len(partes) >= 2:
-                            target_email = partes[1].strip()
-                            if supabase:
+                        if len(partes) == 3:
+                            review_id = partes[1].strip()
+                            target_email = partes[2].strip().lower()
+                            if supabase and SUPABASE_ADMIN_USER_ID:
                                 try:
-                                    supabase.table("profiles").update({"is_premium": True}).eq("email", target_email).execute()
-                                    responder(chat_id, f"✅ ¡ACCESO VIP ACTIVADO en web para {target_email}!")
+                                    user_id = buscar_usuario_auth_por_correo(target_email)
+                                    if not user_id:
+                                        responder(chat_id, f"⚠️ No existe una cuenta para {target_email}.")
+                                        continue
+                                    result = supabase.rpc("approve_spei_review", {
+                                        "review_id": review_id,
+                                        "review_user": user_id,
+                                        "reviewer": SUPABASE_ADMIN_USER_ID,
+                                    }).execute()
+                                    responder(chat_id, f"✅ SPEI aprobado y membresía activa para {target_email} hasta {result.data}.")
                                 except Exception as e:
                                     responder(chat_id, f"⚠️ Error: {e}")
+                            else:
+                                responder(chat_id, "⚠️ Configura Supabase y SUPABASE_ADMIN_USER_ID antes de aprobar pagos.")
+                        else:
+                            responder(chat_id, "Uso: /vip REVISION_UUID correo@ejemplo.com")
+                    elif texto.startswith('/rechazar '):
+                        partes = raw_text.split()
+                        if len(partes) == 2 and supabase and SUPABASE_ADMIN_USER_ID:
+                            try:
+                                result = supabase.rpc("reject_spei_review", {
+                                    "review_id": partes[1].strip(),
+                                    "reviewer": SUPABASE_ADMIN_USER_ID,
+                                }).execute()
+                                responder(chat_id, "✅ Comprobante rechazado." if result.data else "⚠️ La revisión no estaba pendiente.")
+                            except Exception as e:
+                                responder(chat_id, f"⚠️ Error: {e}")
                     elif texto == '/usuarios':
                         if supabase:
                             try:
-                                res = supabase.table("profiles").select("email, is_premium").limit(20).execute()
+                                res = supabase.table("subscriptions").select("user_id,status,current_period_end,provider").order("current_period_end", desc=True).limit(20).execute()
                                 if res.data:
-                                    msg_users = "📋 USUARIOS REGISTRADOS:\n\n"
+                                    msg_users = "📋 MEMBRESÍAS RECIENTES:\n\n"
                                     for u in res.data:
-                                        vip_icon = "👑 VIP" if u.get('is_premium') else "⚪ Free"
-                                        msg_users += f"• {u.get('email', 'Sin correo')} ➔ {vip_icon}\n"
+                                        vip_icon = "👑 Activa" if is_active_subscription(u) else "⚪ Inactiva"
+                                        msg_users += f"• {u.get('user_id')} · {u.get('provider')} ➔ {vip_icon}\n"
                                     responder(chat_id, msg_users)
                                 else:
-                                    responder(chat_id, "No hay usuarios registrados aún.")
+                                    responder(chat_id, "No hay membresías registradas aún.")
                             except Exception as e:
                                 responder(chat_id, f"Error: {e}")
                     elif texto == '/tickets':

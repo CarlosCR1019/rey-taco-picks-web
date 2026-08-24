@@ -6,3 +6,4 @@ supabase
 Pillow
 requests
 pytesseract
+tzdata

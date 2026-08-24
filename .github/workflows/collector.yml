@@ -1,0 +1,484 @@
+name: Rey Taco Residential Collector
+
+on:
+  schedule:
+    # Lightweight residential checks every 30 minutes; the planner chooses full scans.
+    - cron: '7 * * * *'
+    - cron: '37 * * * *'
+    # Existing 10:00 Mexico City cloud-only release.
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: rey-taco-residential-${{ github.event.schedule || 'manual' }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  collect_primary:
+    if: github.event_name != 'schedule' || github.event.schedule != '0 16 * * *'
+    runs-on: [self-hosted, Windows, X64, playdoit-residential]
+    timeout-minutes: 25
+    outputs:
+      recovery_label: ${{ steps.recovery_route.outputs.recovery_label }}
+      collection_eligible: ${{ steps.collection_lease.outputs.acquired }}
+      release_eligible: ${{ steps.collection_window.outputs.release_eligible }}
+      portfolio_date: ${{ steps.collection_window.outputs.portfolio_date }}
+    env:
+      PSExecutionPolicyPreference: Bypass
+      REY_TACO_BROWSER_MODE: interactive
+      DAILY_PORTFOLIO_ENABLED: 'true'
+      SCRAPER_RUN_KEY: residential:${{ github.run_id }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Check collection window
+        id: collection_window
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          try {
+            $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2022-11-28"
+            }
+            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            $run = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+          } catch {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
+            "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            "window_key=invalid" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $portfolioDate = [string](& python -m backend.daily_portfolio --created-at ([string]$run.created_at))
+          if ($LASTEXITCODE -ne 0 -or $portfolioDate -notmatch '^portfolio_date=[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
+            "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            "window_key=invalid" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $portfolioDate >> $env:GITHUB_OUTPUT
+          $portfolioDateValue = $portfolioDate.Substring("portfolio_date=".Length)
+          if ($env:GITHUB_EVENT_NAME -eq "schedule") {
+            "window_key=$portfolioDateValue|schedule|$env:GITHUB_EVENT_SCHEDULE" >> $env:GITHUB_OUTPUT
+          } else {
+            "window_key=$portfolioDateValue|manual|$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
+          }
+          $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME, "--plan")
+          if ($env:GITHUB_EVENT_NAME -eq "schedule") {
+            $gateArgs += @(
+              "--created-at", [string]$run.created_at,
+              "--schedule", $env:GITHUB_EVENT_SCHEDULE
+            )
+          }
+          $planOutput = @(& python -m backend.adaptive_schedule @gateArgs)
+          $gateStatus = $LASTEXITCODE
+          if ($gateStatus -eq 0) {
+            $eligibleLines = @($planOutput | Where-Object { $_ -eq "collection_window=eligible" })
+            $scanModeLines = @($planOutput | Where-Object { $_ -match '^scan_mode=(full|adaptive)$' })
+            $releaseLines = @($planOutput | Where-Object { $_ -match '^release_eligible=(true|false)$' })
+            if ($eligibleLines.Count -ne 1 -or $scanModeLines.Count -ne 1 -or $releaseLines.Count -ne 1) {
+              throw "Invalid collection plan response"
+            }
+            "eligible=true" >> $env:GITHUB_OUTPUT
+            $scanModeLines[0] >> $env:GITHUB_OUTPUT
+            $releaseLines[0] >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($gateStatus -eq 3) {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid collection window response"
+
+      - name: Check adaptive work
+        id: adaptive_work
+        if: steps.collection_window.outputs.eligible == 'true'
+        shell: powershell
+        env:
+          SCAN_MODE: ${{ steps.collection_window.outputs.scan_mode }}
+          PORTFOLIO_DATE: ${{ steps.collection_window.outputs.portfolio_date }}
+        run: |
+          $result = [string](& python -m backend.adaptive_work --scan-mode $env:SCAN_MODE --portfolio-date $env:PORTFOLIO_DATE)
+          $status = $LASTEXITCODE
+          if ($status -eq 0 -and $result -eq "adaptive_work=needed") {
+            "needed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($status -eq 3 -and $result -eq "adaptive_work=idle") {
+            "needed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid adaptive work response"
+
+      - name: Install dependencies
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true'
+        shell: powershell
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: Claim collection lease
+        id: collection_lease
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true'
+        shell: powershell
+        env:
+          COLLECTION_WINDOW_KEY: ${{ steps.collection_window.outputs.window_key }}
+        run: |
+          $ownerNonce = [guid]::NewGuid().ToString("N")
+          $ownerKey = "residential:$env:GITHUB_RUN_ID:$env:GITHUB_RUN_ATTEMPT:$env:GITHUB_JOB:$env:RUNNER_NAME:$ownerNonce"
+          $env:COLLECTION_LEASE_OWNER_KEY = $ownerKey
+          "COLLECTION_LEASE_OWNER_KEY=$ownerKey" >> $env:GITHUB_ENV
+          "COLLECTION_WINDOW_KEY=$env:COLLECTION_WINDOW_KEY" >> $env:GITHUB_ENV
+          $leaseResult = [string](& python -m backend.collection_lease --window-key $env:COLLECTION_WINDOW_KEY)
+          $leaseStatus = $LASTEXITCODE
+          if ($leaseStatus -eq 0 -and $leaseResult -eq "collection_lease=acquired") {
+            "acquired=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($leaseStatus -eq 3 -and $leaseResult -eq "collection_lease=busy") {
+            "acquired=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid collection lease response"
+
+      - name: Collect and persist only
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true' &&
+          steps.collection_lease.outputs.acquired == 'true'
+        shell: powershell
+        env:
+          DAILY_PORTFOLIO_DATE: ${{ steps.collection_window.outputs.portfolio_date }}
+        run: |
+          & python backend/scraper.py --collect-only
+          $scraperStatus = $LASTEXITCODE
+          & python -m backend.collection_lease --window-key $env:COLLECTION_WINDOW_KEY --release | Out-Null
+          if ($scraperStatus -in @(0, 3, 4)) {
+            exit 0
+          }
+          exit $scraperStatus
+
+      - name: Choose opposite recovery runner
+        id: recovery_route
+        if: always()
+        shell: powershell
+        run: |
+          if ("${{ runner.name }}" -eq "rey-taco-carlos") {
+            "recovery_label=rey-taco-respaldo" >> $env:GITHUB_OUTPUT
+          } elseif ("${{ runner.name }}" -eq "rey-taco-respaldo") {
+            "recovery_label=rey-taco-carlos" >> $env:GITHUB_OUTPUT
+          } else {
+            throw "Unknown residential runner name"
+          }
+
+  collect_recovery:
+    needs: collect_primary
+    if: failure()
+    runs-on: [self-hosted, Windows, X64, playdoit-residential, "${{ needs.collect_primary.outputs.recovery_label }}"]
+    timeout-minutes: 25
+    outputs:
+      collection_eligible: ${{ steps.collection_lease.outputs.acquired }}
+      release_eligible: ${{ steps.collection_window.outputs.release_eligible }}
+      portfolio_date: ${{ steps.collection_window.outputs.portfolio_date }}
+    env:
+      PSExecutionPolicyPreference: Bypass
+      REY_TACO_BROWSER_MODE: interactive
+      DAILY_PORTFOLIO_ENABLED: 'true'
+      SCRAPER_RUN_KEY: residential:${{ github.run_id }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Check collection window
+        id: collection_window
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          try {
+            $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2022-11-28"
+            }
+            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            $run = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+          } catch {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
+            "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            "window_key=invalid" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $portfolioDate = [string](& python -m backend.daily_portfolio --created-at ([string]$run.created_at))
+          if ($LASTEXITCODE -ne 0 -or $portfolioDate -notmatch '^portfolio_date=[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
+            "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            "window_key=invalid" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $portfolioDate >> $env:GITHUB_OUTPUT
+          $portfolioDateValue = $portfolioDate.Substring("portfolio_date=".Length)
+          if ($env:GITHUB_EVENT_NAME -eq "schedule") {
+            "window_key=$portfolioDateValue|schedule|$env:GITHUB_EVENT_SCHEDULE" >> $env:GITHUB_OUTPUT
+          } else {
+            "window_key=$portfolioDateValue|manual|$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
+          }
+          $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME, "--plan")
+          if ($env:GITHUB_EVENT_NAME -eq "schedule") {
+            $gateArgs += @(
+              "--created-at", [string]$run.created_at,
+              "--schedule", $env:GITHUB_EVENT_SCHEDULE
+            )
+          }
+          $planOutput = @(& python -m backend.adaptive_schedule @gateArgs)
+          $gateStatus = $LASTEXITCODE
+          if ($gateStatus -eq 0) {
+            $eligibleLines = @($planOutput | Where-Object { $_ -eq "collection_window=eligible" })
+            $scanModeLines = @($planOutput | Where-Object { $_ -match '^scan_mode=(full|adaptive)$' })
+            $releaseLines = @($planOutput | Where-Object { $_ -match '^release_eligible=(true|false)$' })
+            if ($eligibleLines.Count -ne 1 -or $scanModeLines.Count -ne 1 -or $releaseLines.Count -ne 1) {
+              throw "Invalid collection plan response"
+            }
+            "eligible=true" >> $env:GITHUB_OUTPUT
+            $scanModeLines[0] >> $env:GITHUB_OUTPUT
+            $releaseLines[0] >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($gateStatus -eq 3) {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid collection window response"
+
+      - name: Check adaptive work
+        id: adaptive_work
+        if: steps.collection_window.outputs.eligible == 'true'
+        shell: powershell
+        env:
+          SCAN_MODE: ${{ steps.collection_window.outputs.scan_mode }}
+          PORTFOLIO_DATE: ${{ steps.collection_window.outputs.portfolio_date }}
+        run: |
+          $result = [string](& python -m backend.adaptive_work --scan-mode $env:SCAN_MODE --portfolio-date $env:PORTFOLIO_DATE)
+          $status = $LASTEXITCODE
+          if ($status -eq 0 -and $result -eq "adaptive_work=needed") {
+            "needed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($status -eq 3 -and $result -eq "adaptive_work=idle") {
+            "needed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid adaptive work response"
+
+      - name: Install dependencies
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true'
+        shell: powershell
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: Claim collection lease
+        id: collection_lease
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true'
+        shell: powershell
+        env:
+          COLLECTION_WINDOW_KEY: ${{ steps.collection_window.outputs.window_key }}
+        run: |
+          $ownerNonce = [guid]::NewGuid().ToString("N")
+          $ownerKey = "residential:$env:GITHUB_RUN_ID:$env:GITHUB_RUN_ATTEMPT:$env:GITHUB_JOB:$env:RUNNER_NAME:$ownerNonce"
+          $env:COLLECTION_LEASE_OWNER_KEY = $ownerKey
+          "COLLECTION_LEASE_OWNER_KEY=$ownerKey" >> $env:GITHUB_ENV
+          "COLLECTION_WINDOW_KEY=$env:COLLECTION_WINDOW_KEY" >> $env:GITHUB_ENV
+          $leaseResult = [string](& python -m backend.collection_lease --window-key $env:COLLECTION_WINDOW_KEY)
+          $leaseStatus = $LASTEXITCODE
+          if ($leaseStatus -eq 0 -and $leaseResult -eq "collection_lease=acquired") {
+            "acquired=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($leaseStatus -eq 3 -and $leaseResult -eq "collection_lease=busy") {
+            "acquired=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid collection lease response"
+
+      - name: Collect and persist only
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true' &&
+          steps.collection_lease.outputs.acquired == 'true'
+        shell: powershell
+        env:
+          DAILY_PORTFOLIO_DATE: ${{ steps.collection_window.outputs.portfolio_date }}
+        run: |
+          & python backend/scraper.py --collect-only
+          $scraperStatus = $LASTEXITCODE
+          & python -m backend.collection_lease --window-key $env:COLLECTION_WINDOW_KEY --release | Out-Null
+          if ($scraperStatus -in @(0, 3, 4)) {
+            exit 0
+          }
+          exit $scraperStatus
+
+  deliver_cloud:
+    needs: [collect_primary, collect_recovery]
+    if: >-
+      always() && !cancelled() &&
+      ((github.event_name == 'schedule' &&
+      github.event.schedule == '0 16 * * *') ||
+      (needs.collect_primary.result == 'success' &&
+      needs.collect_primary.outputs.collection_eligible == 'true' &&
+      needs.collect_primary.outputs.release_eligible == 'true') ||
+      (needs.collect_primary.result == 'failure' &&
+      needs.collect_recovery.result == 'success' &&
+      needs.collect_recovery.outputs.collection_eligible == 'true' &&
+      needs.collect_recovery.outputs.release_eligible == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SCRAPER_RUN_KEY: residential:${{ github.run_id }}
+      DAILY_PORTFOLIO_ENABLED: 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Check cloud release window
+        id: cloud_window
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          COLLECTED_PORTFOLIO_DATE: ${{ needs.collect_primary.outputs.portfolio_date || needs.collect_recovery.outputs.portfolio_date }}
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") {
+            if ($env:COLLECTED_PORTFOLIO_DATE -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+              "eligible=false" >> $env:GITHUB_OUTPUT
+              "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+              exit 0
+            }
+            "portfolio_date=$env:COLLECTED_PORTFOLIO_DATE" >> $env:GITHUB_OUTPUT
+            "eligible=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          try {
+            $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = "application/vnd.github+json"
+              "X-GitHub-Api-Version" = "2022-11-28"
+            }
+            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            $run = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+          } catch {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $portfolioDate = [string](& python -m backend.daily_portfolio --created-at ([string]$run.created_at))
+          if ($LASTEXITCODE -ne 0 -or $portfolioDate -notmatch '^portfolio_date=[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $portfolioDate >> $env:GITHUB_OUTPUT
+          $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME)
+          if ($env:GITHUB_EVENT_NAME -eq "schedule") {
+            $gateArgs += @("--created-at", [string]$run.created_at)
+          }
+          & python -m backend.adaptive_schedule @gateArgs
+          if ($LASTEXITCODE -eq 0) {
+            "eligible=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($LASTEXITCODE -eq 3) {
+            "eligible=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid cloud release window response"
+
+      - name: Install dependencies
+        if: steps.cloud_window.outputs.eligible == 'true'
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: Deliver exact persisted batch
+        if: steps.cloud_window.outputs.eligible == 'true'
+        env:
+          DAILY_PORTFOLIO_DATE: ${{ steps.cloud_window.outputs.portfolio_date }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_VIP_CHANNEL_ID: ${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}
+          TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
+        run: python backend/scraper.py --deliver-only
+
+      - name: Publish exact social batch
+        if: success() && steps.cloud_window.outputs.eligible == 'true'
+        env:
+          DAILY_PORTFOLIO_DATE: ${{ steps.cloud_window.outputs.portfolio_date }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          META_SYSTEM_USER_ACCESS_TOKEN: ${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_AI_API_TOKEN: ${{ secrets.CLOUDFLARE_AI_API_TOKEN }}
+        run: python -m backend.social_poster

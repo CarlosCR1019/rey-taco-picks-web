@@ -1,52 +1,170 @@
+from __future__ import annotations
+
+from argparse import ArgumentParser
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import IntEnum
 import os
 import json
+import math
 import time
 import sys
 import re
-from datetime import datetime, date, timedelta, timezone
-from selenium.webdriver.common.by import By
-import undetected_chromedriver as uc
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import undetected_chromedriver as uc  # type: ignore[import-untyped]
 import urllib.request
 from groq import Groq
-from dotenv import load_dotenv
-from supabase import create_client, Client
+from supabase import create_client
+
+from backend.playdoit_browser import (
+    configure_chrome_options,
+    gate_interactive_driver,
+    resolve_browser_mode,
+)
+from backend.publishing_policy import (
+    assign_visibility,
+    expected_public_pick_count,
+    public_payload,
+    scheduled_event_date,
+)
+from backend.odds_source import (
+    OddsSourceError,
+    SUPPORTED_MARKETS,
+    SUPPORTED_SPORT_KEYS,
+    fetch_odds_events,
+    normalize_odds_event,
+)
+from backend.playdoit_source import (
+    extract_playdoit_raw_events,
+    normalize_playdoit_events,
+)
+from backend.playdoit_health import (
+    PlaydoitSourceBlocked,  # noqa: F401 - backwards-compatible module export
+    PlaydoitSourceError,
+    assert_playdoit_source_healthy,
+)
+from backend.pick_publisher import (
+    AuditedBatchPublisher,
+    DailyPortfolioPublisher,
+    PERSISTED_PICK_COLUMNS,
+    SupabaseBatchRepository,
+    revalidate_daily_portfolio,
+    revalidate_delivery_picks,
+    revalidate_persisted_picks,
+)
+from backend.daily_portfolio import physical_event_key
+from backend.pick_selection import (
+    CandidatePick,
+    EvidenceScore,
+    RankedPick,
+    _candidate_exclusivity_group,
+    _canonical_line,
+    _is_individually_valid,
+    build_candidates,
+    evidence_for_candidate,
+    score_evidence,
+    select_daily_portfolio,
+    validate_ai_ranking,
+)
+from backend.lineup_source import (
+    ApiFootballClient,
+    LineupResolver,
+    SupabaseLineupStore,
+)
+from backend.scraper_config import ConfigError, ScraperSettings, load_settings
+from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
 
 # Forzar codificación UTF-8
-sys.stdout.reconfigure(encoding='utf-8')
+_reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+if callable(_reconfigure_stdout):
+    _reconfigure_stdout(encoding="utf-8")
 
-# Cargar variables de entorno
-load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+# Legacy phase helpers retain optional module defaults for backwards-compatible
+# direct calls. The command path injects values loaded by scraper_config instead
+# of reading dotenv or creating a privileged client during import.
+GROQ_API_KEY = ""
+ODDS_API_KEY = ""
+SUPABASE_SERVICE_ROLE_KEY = ""
+supabase = None
+_VERIFIED_CANDIDATES_FIELD = "_verified_candidates"
+# Keep the ranking request comfortably below Groq context/request limits while
+# bounding model-controlled fan-out and preserving complete market groups.
+MAX_AI_CATALOG_CANDIDATES = 32
+MAX_AI_PROMPT_CHARS = 24_000
+_AI_RANKING_SYSTEM_MESSAGE = (
+    "Respondes solo con un objeto JSON que contiene rankings de "
+    "candidate_id y rationale. "
+    "No produces hechos de apuestas."
+)
 
-if not GROQ_API_KEY:
-    print("⚠️ ADVERTENCIA: No se encontró GROQ_API_KEY en el archivo .env")
 
-# Configurar Supabase
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-else:
-    supabase = None
-    print("⚠️ ADVERTENCIA: No se encontraron credenciales de Supabase.")
+class PersistenceFailure(RuntimeError):
+    """A bounded persistence phase failure safe to map at the CLI boundary."""
 
-def normalizar_cuota_decimal(val, default="1.85"):
-    try:
-        val_str = str(val).strip()
-        m = re.search(r'([+-]?\d+(?:\.\d+)?)', val_str)
-        if not m: return default
-        n = float(m.group(1))
-        if n > 50:
-            return f"{round((n / 100) + 1, 2):.2f}"
-        elif n < -50:
-            return f"{round((100 / abs(n)) + 1, 2):.2f}"
-        elif 1.01 <= n <= 50.0:
-            return f"{n:.2f}"
-        else:
-            return default
-    except Exception:
-        return default
+
+class DeliveryFailure(RuntimeError):
+    """A bounded delivery bookkeeping failure safe to map at the CLI boundary."""
+
+def retire_previous_public_pending_pick():
+    """Fail closed: retire the old free pick before publishing today's batch."""
+    if supabase:
+        supabase.table("picks").update({"visibility": "premium"}).eq(
+            "estado", "pendiente"
+        ).eq("visibility", "public").execute()
+
+def require_publish_backend():
+    if supabase is None:
+        raise RuntimeError(
+            "Publicación cancelada: faltan SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY."
+        )
+
+def normalizar_cuota_decimal(val: object) -> str | None:
+    """Return an exact decimal quote or ``None`` for untrusted input.
+
+    American odds are converted only when the source includes an explicit
+    sign and an integer magnitude of at least 100.  Bare large numbers are not
+    assumed to use a different odds format.
+    """
+
+    if val is None or isinstance(val, bool):
+        return None
+
+    if isinstance(val, (int, float)):
+        number = float(val)
+        if not math.isfinite(number) or not 1.01 <= number <= 50.0:
+            return None
+        return f"{number:.2f}"
+
+    if not isinstance(val, str):
+        return None
+    value = val.strip()
+    if re.fullmatch(r"[+-]\d+", value):
+        american = int(value)
+        if abs(american) < 100:
+            return None
+        decimal = (
+            (american / 100) + 1
+            if american > 0
+            else (100 / abs(american)) + 1
+        )
+        if not 1.01 <= decimal <= 50.0:
+            return None
+        return f"{decimal:.2f}"
+
+    if not re.fullmatch(r"\d+(?:\.\d+)?", value):
+        return None
+    decimal = float(value)
+    if not math.isfinite(decimal) or not 1.01 <= decimal <= 50.0:
+        return None
+    return f"{decimal:.2f}"
 
 def inferir_categoria_deporte(local, visitante, fallback="Fútbol Internacional"):
     """Infiere la liga y deporte exacto según los equipos involucrados."""
@@ -120,42 +238,213 @@ def get_chrome_version():
 
     return None
 
+
+
+
+def _normalized_event_identity(value):
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.strip().casefold().split())
+    return normalized or None
+
+
+def _normalized_quote_mapping(value):
+    if not isinstance(value, dict):
+        return ()
+    return tuple(
+        sorted(
+            (
+                str(key).strip().casefold(),
+                str(price).strip(),
+            )
+            for key, price in value.items()
+        )
+    )
+
+
+def _event_record_identity(event):
+    if not isinstance(event, dict):
+        return None
+    source_event_id = str(event.get('source_event_id') or '').strip()
+    if source_event_id:
+        source = _normalized_event_identity(event.get('source')) or 'unknown'
+        return ('source', source, source_event_id)
+
+    home = _normalized_event_identity(event.get('local'))
+    away = _normalized_event_identity(event.get('visitante'))
+    schedule = _normalized_event_identity(event.get('horario'))
+    if (
+        home is None
+        or away is None
+        or schedule is None
+        or re.search(r'\d{1,2}:\d{2}', schedule) is None
+    ):
+        return None
+    return ('legacy', home, away, schedule)
+
+
+def _event_record_evidence(event):
+    private_candidates = event.get(_VERIFIED_CANDIDATES_FIELD)
+    if not isinstance(private_candidates, tuple) or not all(
+        isinstance(candidate, CandidatePick) for candidate in private_candidates
+    ):
+        private_candidates = ()
+    return (
+        _normalized_event_identity(event.get('source')),
+        _normalized_event_identity(event.get('source_event_id')),
+        _normalized_event_identity(event.get('local')),
+        _normalized_event_identity(event.get('visitante')),
+        _normalized_event_identity(event.get('horario')),
+        _normalized_event_identity(event.get('starts_at')),
+        _normalized_event_identity(event.get('observed_at')),
+        _normalized_event_identity(event.get('bookmaker_key')),
+        _normalized_quote_mapping(event.get('cuotas_por_resultado')),
+        tuple(str(value).strip() for value in event.get('cuotas_superficie', ())),
+        private_candidates,
+    )
+
+
+def _deduplicate_event_records(events):
+    """Keep stable event identities and omit identities with conflicting evidence."""
+
+    selected = {}
+    order = []
+    conflicts = set()
+    for event in events:
+        identity = _event_record_identity(event)
+        if identity is None or identity in conflicts:
+            continue
+        if identity not in selected:
+            selected[identity] = event
+            order.append(identity)
+            continue
+        if _event_record_evidence(selected[identity]) != _event_record_evidence(
+            event
+        ):
+            selected.pop(identity)
+            conflicts.add(identity)
+    return [selected[identity] for identity in order if identity in selected]
+
+
+def _verified_market_coverage(events):
+    """Count events carrying canonical or official source-backed candidates."""
+
+    coverage = {
+        "h2h": 0,
+        "totals": 0,
+        "spreads": 0,
+        "source_markets": 0,
+    }
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        candidates = event.get(_VERIFIED_CANDIDATES_FIELD)
+        if not isinstance(candidates, tuple):
+            continue
+        event_markets = set()
+        for candidate in candidates:
+            if not isinstance(candidate, CandidatePick):
+                continue
+            if candidate.market_key in {"h2h", "totals", "spreads"}:
+                event_markets.add(candidate.market_key)
+            elif candidate.market_key.startswith("playdoit_market:"):
+                event_markets.add("source_markets")
+        for market_key in event_markets:
+            coverage[market_key] += 1
+    return coverage
+
+
+def _surface_event_record(event, category, schedule):
+    """Project surface data without treating positional prices as named quotes."""
+
+    home = event['local']
+    away = event['visitante']
+    match_name = f"{home} vs {away}"
+    surface_prices = event.get('cuotas', [])
+    return {
+        "source_event_id": event.get('source_event_id'),
+        "bookmaker_key": event.get('bookmaker_key'),
+        "categoria": category,
+        "partido": match_name,
+        "local": home,
+        "visitante": away,
+        "horario": schedule,
+        "cuotas_por_resultado": {},
+        "cuotas_superficie": surface_prices[:4],
+        "info_texto": (
+            f"{category}: {match_name}. Horario: {schedule}. "
+            f"Cuotas Playdoit: {' | '.join(surface_prices)}"
+        ),
+    }
+
+
+def _match_observed_event(partido, source_event_id, events):
+    """Match one exact home/away identity, optionally pinned to a source id."""
+
+    requested_identity = _normalized_event_identity(partido)
+    if requested_identity is None:
+        return None
+    requested_source_id = (
+        str(source_event_id).strip() if source_event_id is not None else ""
+    )
+
+    matches = []
+    seen = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        home = str(event.get("local") or "").strip()
+        away = str(event.get("visitante") or "").strip()
+        if not home or not away:
+            continue
+        event_identity = _normalized_event_identity(f"{home} vs {away}")
+        if event_identity != requested_identity:
+            continue
+        event_source_id = str(event.get("source_event_id") or "").strip()
+        if requested_source_id and event_source_id != requested_source_id:
+            continue
+        identity_token = (
+            ("source", event_source_id)
+            if event_source_id
+            else ("object", id(event))
+        )
+        if identity_token in seen:
+            prior_prices = seen[identity_token].get('cuotas_por_resultado')
+            current_prices = event.get('cuotas_por_resultado')
+            if prior_prices != current_prices:
+                return None
+            continue
+        seen[identity_token] = event
+        matches.append(event)
+
+    return matches[0] if len(matches) == 1 else None
+
 def get_chrome_driver():
+    mode = resolve_browser_mode(os.environ)
+
     def make_options():
         options = uc.ChromeOptions()
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--start-maximized")
-        options.add_argument("--disable-gpu")
-        
-        # Modo headless para la nube (GitHub Actions / CI)
-        is_ci = os.getenv("CI") or os.getenv("GITHUB_ACTIONS")
-        if is_ci:
-            options.add_argument("--headless=new")
-        return options, is_ci
+        return configure_chrome_options(options, mode)
 
-    opts, is_ci = make_options()
-    if is_ci:
-        print("   ☁️ Modo NUBE detectado (headless)")
-    else:
-        print("   🖥️ Modo LOCAL detectado (con ventana)")
+    def create_driver(**kwargs):
+        driver = uc.Chrome(options=make_options(), **kwargs)
+        gate_interactive_driver(driver, mode)
+        return driver
+
+    print(f"browser_mode={mode.value}")
 
     chrome_ver = get_chrome_version()
     if chrome_ver:
         print(f"   🌐 Google Chrome v{chrome_ver} detectado")
         try:
-            fresh_opts, _ = make_options()
-            return uc.Chrome(options=fresh_opts, version_main=chrome_ver)
+            return create_driver(version_main=chrome_ver)
         except Exception as e:
-            print(f"   ⚠️ Intentando inicialización estándar: {e}")
+            print(f"   ⚠️ Intentando inicialización estándar; failure={type(e).__name__}")
 
     try:
-        fresh_opts, _ = make_options()
-        return uc.Chrome(options=fresh_opts)
+        return create_driver()
     except Exception:
-        fresh_opts, _ = make_options()
-        return uc.Chrome(options=fresh_opts, version_main=None)
+        return create_driver(version_main=None)
 
 # ============================================================
 #  UTILIDADES DE NAVEGACIÓN (Shadow DOM de Altenar)
@@ -299,14 +588,14 @@ def click_category(driver, category):
             pass
 
     # 1. Buscar en Top Leagues y Menú deportivo
-    script = get_shadow_script() + f"""
-    try {{
+    script = get_shadow_script() + """
+    try {
         var shadow = getShadow();
         if (!shadow) return false;
         var all = Array.from(shadow.querySelectorAll('*'));
-        var catLower = '{catLower}';
+        var catLower = arguments[0];
         
-        var match = all.find(n => {{
+        var match = all.find(n => {
             if (n.children.length > 0) return false;
             var t = (n.textContent || '').trim().toLowerCase();
             if ((catLower.includes('champions') || catLower.includes('uefa champions')) && (t === 'uefa champions league' || t.includes('champions league') || t.includes('liga de campeones'))) return true;
@@ -318,17 +607,17 @@ def click_category(driver, category):
             if (catLower.includes('mls') && (t === 'mls')) return true;
             if (catLower.includes('nfl') && (t === 'nfl' || t.includes('fútbol americano'))) return true;
             return t === catLower;
-        }});
+        });
         
-        if (match) {{
+        if (match) {
             (match.parentElement || match).click();
             match.click();
             return true;
-        }}
+        }
         return false;
-    }} catch(e) {{ return false; }}
+    } catch(e) { return false; }
     """
-    return driver.execute_script(script)
+    return driver.execute_script(script, catLower)
 
 def es_partido_futuro_valido(horario_str):
     """
@@ -364,7 +653,7 @@ def es_partido_futuro_valido(horario_str):
             if fecha_partido <= (ahora + timedelta(minutes=5)):
                 return False, f"Ya inició/terminó ({dia:02d}/{mes:02d} {hora:02d}:{minuto:02d})"
                 
-            # Si es de una fecha lejana (> 30 horas, ej. 19/08, 21/08, 22/08)
+            # Si es de una fecha lejana (> 30 horas), se descarta.
             if fecha_partido > limite_maximo:
                 return False, f"Descartado fecha lejana ({dia:02d}/{mes:02d} no es de hoy)"
                 
@@ -401,194 +690,192 @@ def es_partido_futuro_valido(horario_str):
             
         return False, "Sin horario específico confirmado"
     except Exception as e:
-        return False, f"Error validación: {e}"
+        return False, f"Error validación; failure={type(e).__name__}"
 
-def extract_events_from_page(driver):
-    """Extrae ÚNICAMENTE eventos PRE-MATCH directamente de Playdoit y convierte momios a Decimal."""
-    script = get_shadow_script() + """
-    var shadow = getShadow();
-    if(!shadow) return [];
-    
-    var containers = Array.from(shadow.querySelectorAll('div[class*="EventBoxContainer"]'));
-    var result = [];
+def _sport_for_category(category):
+    normalized = str(category or '').casefold()
+    if any(token in normalized for token in ('mlb', 'kbo', 'béisbol', 'beisbol')):
+        return 'baseball'
+    if 'nfl' in normalized or 'fútbol americano' in normalized:
+        return 'americanfootball'
+    return 'soccer'
 
-    containers.forEach(function(c) {
-        try {
-            var rawText = c.innerText.trim();
-            // Descartar solo si realmente tiene marcador en juego terminado o esports/virtuales
-            if (/e-fútbol|esports|virtual|cyber|2x4\\s*min|2x5\\s*min|gt\\s*sports/i.test(rawText)) return;
 
-            var lines = rawText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+def extract_events_from_page(
+    driver,
+    *,
+    observed_at=None,
+    fallback_league=None,
+    fallback_sport=None,
+    detail_cache=None,
+    lineup_resolver=None,
+):
+    """Extract and normalize Playdoit records before legacy phase projection."""
 
-            // 1. Extraer Fecha y Hora
-            var timeLine = lines.find(l => /^(?:0?[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$/.test(l)) || "Hoy";
-            var dateLine = lines.find(l => /\\d{1,2}[\\/\\-]\\d{1,2}/.test(l)) || "18/08";
-            var horario = dateLine + " " + timeLine + " hrs";
+    observed = observed_at or datetime.now(ZoneInfo("America/Mexico_City"))
+    extraction_options = {}
+    if detail_cache is not None:
+        extraction_options["detail_cache"] = detail_cache
+        extraction_options["detail_observed_at"] = observed
+    raw_records = extract_playdoit_raw_events(driver, **extraction_options)
+    enriched = []
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            continue
+        record = dict(raw)
+        inferred_league = fallback_league or inferir_categoria_deporte(
+            record.get('home', ''), record.get('away', '')
+        )
+        record['league'] = record.get('league') or inferred_league
+        record['sport'] = (
+            record.get('sport')
+            or fallback_sport
+            or _sport_for_category(record['league'])
+        )
+        enriched.append(record)
+    return [
+        _legacy_odds_projection(event, lineup_resolver=lineup_resolver)
+        for event in normalize_playdoit_events(enriched, observed)
+        if event.markets
+    ]
 
-            // 2. Extraer Nombres de Equipos
-            var compEls = Array.from(c.querySelectorAll('[class*="CompetitorName"], [class*="Competitors"], [class*="NameContainer"], [class*="EventName"]'));
-            var teamNames = compEls.map(el => el.innerText.trim()).filter(t => t.length >= 3);
-            
-            var local = teamNames[0] || "";
-            var visitante = teamNames[1] || "";
-            
-            if (!local || !visitante) {
-                var candidates = lines.filter(l => {
-                    if (l.length < 3 || l.length > 35) return false;
-                    if (/^(sgp|en vivo|live|hoy|mañana|resultado final|tiempo regular|hándicap|totales|ganador)$/i.test(l)) return false;
-                    if (/^[\\+\\-]?\\d+(\\.\\d+)?$/.test(l)) return false;
-                    if (/^\\d{1,2}[\\/\\:]\\d{1,2}/.test(l)) return false;
-                    if (/champions|league|copa|mlb|premier|laliga|liga/i.test(l) && !/pumas|américa|chivas|santos|tigres|monterrey|cruz azul/i.test(l)) return false;
-                    return true;
-                });
-                if (candidates.length >= 2) {
-                    local = candidates[0];
-                    visitante = candidates[1];
-                }
-            }
+def _legacy_odds_projection(event, *, lineup_resolver=None):
+    """Project a normalized event for legacy phases during the migration."""
 
-            // 3. Extraer y Normalizar Cuotas a Formato Decimal
-            var oddsElements = c.querySelectorAll('button[class*="OddBoxButton-"], div[class*="OddBox-"], span[class*="OddValue-"], [class*="Price"], [class*="OddButton"]');
-            var cuotas = [];
-            oddsElements.forEach(function(o) {
-                var val = o.innerText.trim();
-                if (val) {
-                    // Convertir formato americano a decimal ej: -143 -> 1.70, +100 -> 2.00, +260 -> 3.60
-                    if (/^[+-]\\d+$/.test(val)) {
-                        var n = parseFloat(val);
-                        if (n > 0) {
-                            val = ((n / 100) + 1).toFixed(2);
-                        } else if (n < 0) {
-                            val = ((100 / Math.abs(n)) + 1).toFixed(2);
-                        }
-                    }
-                    cuotas.push(val);
-                }
-            });
+    if lineup_resolver is not None:
+        try:
+            event = lineup_resolver.resolve(event)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            pass
 
-            if (local && visitante) {
-                // Limpiar nombres con abridores de MLB
-                local = local.split('\\n')[0].trim();
-                visitante = visitante.split('\\n')[0].trim();
+    h2h = next((market for market in event.markets if market.key == "h2h"), None)
+    named_h2h = {}
+    surface_odds = []
+    bookmaker_key = (
+        event.markets[0].bookmaker_key if event.markets else None
+    )
+    if h2h is not None:
+        bookmaker_key = h2h.bookmaker_key
+        for key in ("home", "draw", "away"):
+            try:
+                price = f"{h2h.outcome(key).price:.2f}"
+            except KeyError:
+                continue
+            named_h2h[key] = price
+            surface_odds.append(price)
 
-                if (/^\\d+$/.test(local) || /^\\d+$/.test(visitante) || local.length < 3 || visitante.length < 3) return;
-                if (local.toLowerCase() === visitante.toLowerCase()) return;
+    market_descriptions = []
+    for market in event.markets:
+        selections = ", ".join(
+            f"{outcome.name} @ {outcome.price:.2f}"
+            for outcome in market.outcomes
+        )
+        line = "" if market.line is None else f" {market.line:g}"
+        market_descriptions.append(
+            f"[{market.key.upper()}{line}]: {selections}"
+        )
 
-                result.push({
-                    local: local,
-                    visitante: visitante,
-                    partido: local + " vs " + visitante,
-                    horario: horario,
-                    cuotas: cuotas,
-                    texto_completo: rawText.replace(/\\n+/g, ' | ')
-                });
-            }
-        } catch(e) {}
-    });
-    return result;
-    """
-    return driver.execute_script(script) or []
+    mexico_start = event.starts_at.astimezone(ZoneInfo("America/Mexico_City"))
+    mexico_observed = event.observed_at.astimezone(ZoneInfo("America/Mexico_City"))
+    if mexico_start.date() == mexico_observed.date():
+        schedule = f"Hoy {mexico_start.strftime('%H:%M')} hrs"
+    elif mexico_start.date() == mexico_observed.date() + timedelta(days=1):
+        schedule = f"Mañana {mexico_start.strftime('%H:%M')} hrs"
+    else:
+        schedule = mexico_start.strftime("%d/%m %H:%M hrs")
 
-def obtener_eventos_odds_api():
+    match_name = f"{event.home_team} vs {event.away_team}"
+    return {
+        "source": event.source,
+        "source_event_id": event.source_event_id,
+        "sport": event.sport,
+        "starts_at": event.starts_at.isoformat(),
+        "observed_at": event.observed_at.isoformat(),
+        "bookmaker_key": bookmaker_key,
+        "categoria": event.league,
+        "partido": match_name,
+        "local": event.home_team,
+        "visitante": event.away_team,
+        "horario": schedule,
+        "cuotas_por_resultado": named_h2h,
+        "cuotas_superficie": surface_odds,
+        "mercados_reales": market_descriptions,
+        "info_texto": (
+            f"{event.league}: {match_name}. Horario: {schedule}. "
+            f"Mercados verificados: {' | '.join(market_descriptions)}"
+        ),
+        _VERIFIED_CANDIDATES_FIELD: tuple(build_candidates([event])),
+    }
+
+
+def obtener_eventos_odds_api(odds_api_key=None, *, observed_at=None):
     """Obtiene ÚNICAMENTE partidos PRE-MATCH futuros con cuotas reales y exactas (1X2, Totales Over/Under y Spreads)."""
-    if not ODDS_API_KEY:
+    active_odds_api_key = odds_api_key or ODDS_API_KEY
+    if not active_odds_api_key:
         return []
     
     print("\n🌐 Conectando satélite The Odds API (Champions League, Liga MX, MLB, La Liga, MLS, Premier, NFL)...")
-    sports = [
-        'soccer_uefa_champs_league_qualification',
-        'soccer_uefa_champs_league',
-        'soccer_uefa_europa_league',
-        'soccer_conmebol_copa_libertadores',
-        'soccer_mexico_ligamx',
-        'baseball_mlb',
-        'soccer_spain_la_liga',
-        'soccer_epl',
-        'soccer_usa_mls',
-        'americanfootball_nfl'
-    ]
     eventos_api = []
-    
-    from datetime import datetime, timezone, timedelta
-    now_utc = datetime.now(timezone.utc)
+
+    now_utc = observed_at or datetime.now(ZoneInfo("UTC"))
     min_time_utc = now_utc + timedelta(minutes=15) # Mínimo 15 minutos en el futuro
     max_time_utc = now_utc + timedelta(hours=36)
-    
-    for s in sports:
-        try:
-            url = f"https://api.the-odds-api.com/v4/sports/{s}/odds/?apiKey={ODDS_API_KEY}&regions=us,eu&markets=h2h,totals,spreads"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode())
-                for match in data:
-                    commence_str = match.get('commence_time')
-                    horario_str = "Hoy"
-                    if commence_str:
-                        try:
-                            match_dt = datetime.fromisoformat(commence_str.replace('Z', '+00:00'))
-                            if match_dt < min_time_utc or match_dt > max_time_utc:
-                                continue 
-                            
-                            # Convertir a hora de México (UTC-6)
-                            cdmx_dt = match_dt - timedelta(hours=6)
-                            hoy_cdmx = (now_utc - timedelta(hours=6)).date()
-                            if cdmx_dt.date() == hoy_cdmx:
-                                horario_str = f"Hoy {cdmx_dt.strftime('%H:%M')} hrs"
-                            elif cdmx_dt.date() == hoy_cdmx + timedelta(days=1):
-                                horario_str = f"Mañana {cdmx_dt.strftime('%H:%M')} hrs"
-                            else:
-                                horario_str = cdmx_dt.strftime("%d/%m %H:%M hrs")
-                        except Exception:
-                            continue
 
-                    home = match.get('home_team')
-                    away = match.get('away_team')
-                    
-                    # Extraer cuotas exactas de todos los mercados disponibles
-                    cuotas_mercados = []
-                    h2h_cuotas = []
-                    for bookmaker in match.get('bookmakers', []):
-                        for market in bookmaker.get('markets', []):
-                            mkey = market.get('key')
-                            outcomes = market.get('outcomes', [])
-                            if mkey == 'h2h' and not h2h_cuotas:
-                                h2h_cuotas = [str(o.get('price')) for o in outcomes]
-                            
-                            outs = [f"{o.get('name')} {o.get('point', '')} @ {o.get('price')}".strip() for o in outcomes]
-                            if outs and not any(mkey in x for x in cuotas_mercados):
-                                cuotas_mercados.append(f"[{mkey.upper()}]: {', '.join(outs)}")
-                    
-                    nombre = f"{home} vs {away}"
-                    if not any(x["partido"] == nombre for x in eventos_api):
-                        deporte_cat = "UEFA Champions League" if "champs" in s else ("Liga MX" if "ligamx" in s else ("MLB" if "baseball" in s else ("La Liga" if "spain" in s else ("Copa Libertadores" if "libertadores" in s else ("NFL" if "nfl" in s else "Fútbol")))))
-                        eventos_api.append({
-                            "categoria": deporte_cat,
-                            "partido": nombre,
-                            "local": home,
-                            "visitante": away,
-                            "horario": horario_str,
-                            "cuotas_superficie": h2h_cuotas[:3] if h2h_cuotas else ["1.85", "3.20", "2.10"],
-                            "mercados_reales": cuotas_mercados,
-                            "info_texto": f"{deporte_cat}: {home} vs {away}. Horario: {horario_str}. Mercados verificados: {' | '.join(cuotas_mercados)}"
-                        })
-        except Exception as e:
-            print(f"   ⚠️ Error en {s}: {e}")
+    for sport_key in SUPPORTED_SPORT_KEYS:
+        try:
+            raw_events = fetch_odds_events(
+                active_odds_api_key,
+                sport_key,
+                regions=("us", "eu"),
+                markets=SUPPORTED_MARKETS,
+                timeout=10.0,
+                opener=urllib.request.urlopen,
+            )
+            for raw_event in raw_events:
+                try:
+                    event = normalize_odds_event(raw_event, now_utc)
+                except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                    print(
+                        f"   ⚠️ Evento inválido en {sport_key}; "
+                        f"failure={type(exc).__name__}"
+                    )
+                    continue
+                if not min_time_utc <= event.starts_at <= max_time_utc:
+                    continue
+                eventos_api.append(_legacy_odds_projection(event))
+        except OddsSourceError as exc:
+            print(f"   ⚠️ Error en {sport_key}; {exc}")
+        except Exception as exc:
+            print(f"   ⚠️ Error en {sport_key}; failure={type(exc).__name__}")
             
+    eventos_api = _deduplicate_event_records(eventos_api)
     print(f"   ✅ {len(eventos_api)} partidos PRE-MATCH verificados listos con mercados reales.")
     return eventos_api
 
 # ============================================================
 #  FASE 1: ESCÁNER RADAR DE SUPERFICIE
 # ============================================================
-def fase1_escaneo_superficie(driver):
+def fase1_escaneo_superficie(
+    driver, *, odds_api_key=None, lineup_resolver=None
+):
     print("\n" + "="*60)
     print("🕵️  FASE 1: ESCÁNER RADAR DE SUPERFICIE (Solo Hoy y Mañana)")
     print("="*60)
     
     partidos_data = []
+    detail_cache = {}
+    observed_playdoit = datetime.now(ZoneInfo("America/Mexico_City"))
     try:
         driver.get("https://www.playdoit.mx/es/")
         time.sleep(8)
+
+        assert_playdoit_source_healthy(
+            title=str(driver.title or ""),
+            body=str(driver.find_element("tag name", "body").text or ""),
+            source=str(driver.page_source or ""),
+        )
         
         # Configuración inicial: Formato Decimal (sin restringir a solo hoy para captar Champions/mañana)
         click_decimal_toggle(driver)
@@ -597,28 +884,25 @@ def fase1_escaneo_superficie(driver):
         # Esperar hasta que Altenar termine de renderizar los eventos en pantalla
         eventos_iniciales = []
         for intento_carga in range(5):
-            eventos_iniciales = extract_events_from_page(driver)
+            eventos_iniciales = extract_events_from_page(
+                driver,
+                observed_at=observed_playdoit,
+                detail_cache=detail_cache,
+                lineup_resolver=lineup_resolver,
+            )
             if eventos_iniciales:
                 break
             time.sleep(2)
             
         print(f"   📡 Cartelera detectada con {len(eventos_iniciales)} eventos principales.")
         for e in eventos_iniciales:
-            nombre = f"{e['local']} vs {e['visitante']}"
-            es_valido_tiempo, horario_limpio = es_partido_futuro_valido(e.get('horario', 'Hoy'))
+            es_valido_tiempo, horario_limpio = es_partido_futuro_valido(
+                e.get('horario') or ''
+            )
             if not es_valido_tiempo:
                 continue
-            cat_real = inferir_categoria_deporte(e['local'], e['visitante'])
-            if not any(x["partido"] == nombre for x in partidos_data):
-                partidos_data.append({
-                    "categoria": cat_real,
-                    "partido": nombre,
-                    "local": e['local'],
-                    "visitante": e['visitante'],
-                    "horario": horario_limpio,
-                    "cuotas_superficie": e.get('cuotas', [])[:4],
-                    "info_texto": f"{cat_real}: {nombre}. Horario: {horario_limpio}. Cuotas Playdoit: {' | '.join(e.get('cuotas', []))}"
-                })
+            e['horario'] = horario_limpio
+            partidos_data.append(e)
         
         # 2. Exploración de categorías específicas adicionales (Champions, Liga MX, Premier, MLB, KBO, etc.)
         categorias = [
@@ -633,41 +917,70 @@ def fase1_escaneo_superficie(driver):
                 time.sleep(3.5)
                 eventos = []
                 for _ in range(4):
-                    eventos = extract_events_from_page(driver)
+                    eventos = extract_events_from_page(
+                        driver,
+                        observed_at=observed_playdoit,
+                        fallback_league=cat,
+                        fallback_sport=_sport_for_category(cat),
+                        detail_cache=detail_cache,
+                        lineup_resolver=lineup_resolver,
+                    )
                     if eventos: break
                     time.sleep(2.0)
                 nuevos = 0
                 for e in eventos:
-                    nombre = f"{e['local']} vs {e['visitante']}"
-                    es_valido_tiempo, horario_limpio = es_partido_futuro_valido(e.get('horario', 'Hoy'))
+                    es_valido_tiempo, horario_limpio = es_partido_futuro_valido(
+                        e.get('horario') or ''
+                    )
                     if not es_valido_tiempo:
                         continue
-                    
-                    cat_real = inferir_categoria_deporte(e['local'], e['visitante'], fallback=cat)
-                    if not any(x["partido"] == nombre for x in partidos_data):
-                        partidos_data.append({
-                            "categoria": cat_real,
-                            "partido": nombre,
-                            "local": e['local'],
-                            "visitante": e['visitante'],
-                            "horario": horario_limpio,
-                            "cuotas_superficie": e.get('cuotas', [])[:4],
-                            "info_texto": f"{cat_real}: {nombre}. Horario: {horario_limpio}. Cuotas Playdoit: {' | '.join(e.get('cuotas', []))}"
-                        })
-                        nuevos += 1
+
+                    e['horario'] = horario_limpio
+                    partidos_data.append(e)
+                    nuevos += 1
                 print(f"✅ {nuevos} nuevos futuros" if nuevos else "⏭️ sin nuevos")
             else:
                 print("⚠️ no encontrada")
+    except PlaydoitSourceError:
+        raise
     except Exception as e:
-        print(f"   ⚠️ Nota en escáner Playdoit: {e}")
+        print(f"   ⚠️ Nota en escáner Playdoit; failure={type(e).__name__}")
     
     # Si la lista inicial en Playdoit tuviera pocos eventos o fuera entre semana (martes/miércoles)
+    partidos_data = _deduplicate_event_records(partidos_data)
+    coverage = _verified_market_coverage(partidos_data)
+    print(
+        "   market_coverage="
+        f"h2h:{coverage['h2h']} "
+        f"totals:{coverage['totals']} "
+        f"spreads:{coverage['spreads']} "
+        f"source_markets:{coverage['source_markets']}"
+    )
+    lineup_stats = (
+        getattr(lineup_resolver, "stats", None)
+        if lineup_resolver is not None
+        else None
+    )
+    if not isinstance(lineup_stats, Mapping):
+        lineup_stats = {
+            "events_checked": 0,
+            "confirmed_markets": 0,
+            "excluded_player_markets": 0,
+            "requests_used": 0,
+        }
+    lineup_state = "enabled" if lineup_resolver is not None else "disabled"
+    print(
+        f"   lineup_api={lineup_state} "
+        f"requests:{lineup_stats['requests_used']} "
+        f"events_checked:{lineup_stats['events_checked']} "
+        f"confirmed_markets:{lineup_stats['confirmed_markets']} "
+        "excluded_player_markets:"
+        f"{lineup_stats['excluded_player_markets']}"
+    )
     if len(partidos_data) < 4:
         print(f"\n   🌐 Cartelera en Playdoit reducida ({len(partidos_data)}). Conectando satélite The Odds API...")
-        api_events = obtener_eventos_odds_api()
-        for ae in api_events:
-            if not any(x["partido"].lower() == ae["partido"].lower() for x in partidos_data):
-                partidos_data.append(ae)
+        api_events = obtener_eventos_odds_api(odds_api_key)
+        partidos_data = _deduplicate_event_records(partidos_data + api_events)
         
     print(f"\n   📊 Total eventos únicos de HOY/MAÑANA para análisis: {len(partidos_data)}")
     return partidos_data
@@ -675,105 +988,174 @@ def fase1_escaneo_superficie(driver):
 # ============================================================
 #  FASE 2: COMPARACIÓN CON MERCADO (The Odds API)
 # ============================================================
-def fase2_comparacion_mercado(partidos_data):
+def fase2_comparacion_mercado(
+    partidos_data, *, odds_api_key=None, observed_at=None
+):
     print("\n" + "="*60)
     print("📈  FASE 2: COMPARACIÓN CON CUOTAS DEL MERCADO")
     print("="*60)
     
-    if not ODDS_API_KEY:
+    active_odds_api_key = odds_api_key or ODDS_API_KEY
+    if not active_odds_api_key:
         print("   ⚠️ No hay ODDS_API_KEY. Saltando comparación de mercado.")
         print("   ℹ️ Para activar esta función, agrega ODDS_API_KEY en tu .env")
         return {}
     
     try:
-        # Obtener cuotas de fútbol (soccer) y otros deportes
-        sports_map = {
-            'soccer': ['Liga MX', 'La Liga', 'UEFA Champions League', 'Copa Italia', 'MLS'],
-            'americanfootball_nfl': ['NFL'],
-            'baseball_mlb': ['MLB']
+        market_odds = {}
+        observed = observed_at or datetime.now(ZoneInfo("UTC"))
+
+        for sport_key in SUPPORTED_SPORT_KEYS:
+            try:
+                raw_events = fetch_odds_events(
+                    active_odds_api_key,
+                    sport_key,
+                    regions=("us",),
+                    markets=("h2h",),
+                    timeout=10.0,
+                    opener=urllib.request.urlopen,
+                )
+                normalized_events = []
+                for raw_event in raw_events:
+                    try:
+                        normalized_events.append(
+                            normalize_odds_event(raw_event, observed)
+                        )
+                    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                        print(
+                            f"   ⚠️ Evento inválido en {sport_key}; "
+                            f"failure={type(exc).__name__}"
+                        )
+
+                for event in normalized_events:
+                    for market in event.markets:
+                        if market.key != "h2h":
+                            continue
+                        for key, team in (
+                            ("home", event.home_team),
+                            ("away", event.away_team),
+                        ):
+                            price = market.outcome(key).price
+                            market_odds.setdefault(team.casefold(), []).append(price)
+
+                print(
+                    f"   ✅ {sport_key}: {len(normalized_events)} "
+                    "eventos del mercado global."
+                )
+            except OddsSourceError as exc:
+                print(f"   ⚠️ Error consultando {sport_key}; {exc}")
+            except Exception as exc:
+                print(
+                    f"   ⚠️ Error consultando {sport_key}; "
+                    f"failure={type(exc).__name__}"
+                )
+
+        averaged_odds = {
+            team: round(sum(prices) / len(prices), 2)
+            for team, prices in market_odds.items()
         }
         
-        market_odds = {}
-        
-        for sport_key, categorias in sports_map.items():
-            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={ODDS_API_KEY}&regions=us&markets=h2h&oddsFormat=decimal"
-            try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = json.loads(resp.read().decode())
-                    for game in data:
-                        home = game.get('home_team', '')
-                        away = game.get('away_team', '')
-                        
-                        # Calcular cuota promedio del mercado
-                        all_home_odds = []
-                        all_away_odds = []
-                        for bm in game.get('bookmakers', []):
-                            for market in bm.get('markets', []):
-                                for outcome in market.get('outcomes', []):
-                                    if outcome['name'] == home:
-                                        all_home_odds.append(outcome['price'])
-                                    elif outcome['name'] == away:
-                                        all_away_odds.append(outcome['price'])
-                        
-                        if all_home_odds:
-                            market_odds[home.lower()] = round(sum(all_home_odds) / len(all_home_odds), 2)
-                        if all_away_odds:
-                            market_odds[away.lower()] = round(sum(all_away_odds) / len(all_away_odds), 2)
-                
-                print(f"   ✅ {sport_key}: {len(data)} eventos del mercado global.")
-            except Exception as e:
-                print(f"   ⚠️ Error consultando {sport_key}: {e}")
-        
-        print(f"   📊 {len(market_odds)} cuotas de referencia del mercado obtenidas.")
-        return market_odds
+        print(f"   📊 {len(averaged_odds)} cuotas de referencia del mercado obtenidas.")
+        return averaged_odds
         
     except Exception as e:
-        print(f"   ❌ Error general en comparación de mercado: {e}")
+        print(f"   ❌ Error general en comparación de mercado; failure={type(e).__name__}")
         return {}
 
-def ejecutar_groq_con_fallback(client, messages, temperature=0.2):
+def ejecutar_groq_con_fallback(
+    client,
+    messages,
+    temperature=0.2,
+    *,
+    response_format=None,
+    message_char_limit=4000,
+    truncate_messages=True,
+):
     """Ejecuta la llamada a Groq rotando inteligentemente con reintentos y pausa backoff."""
+    # Keep structured-output calls on the production models Groq documents as
+    # supporting JSON Schema mode. Unsupported systems used to turn one
+    # recoverable schema rejection into eight guaranteed HTTP 400 responses.
     modelos = [
         "openai/gpt-oss-120b",
         "openai/gpt-oss-20b",
-        "groq/compound-mini",
-        "qwen/qwen3.6-27b"
     ]
     import re
-    # Truncar mensajes excesivamente largos para evitar error 413
+    if (
+        isinstance(message_char_limit, bool)
+        or not isinstance(message_char_limit, int)
+        or message_char_limit <= 0
+    ):
+        return ""
+
+    # Truncar mensajes excesivamente largos para evitar error 413. Callers
+    # carrying structured JSON can disable truncation and fail closed instead.
     mensajes_limpios = []
+    truncation_marker = "\n[...datos sintetizados...]"
     for m in messages:
         c = m.get("content", "")
-        if len(c) > 4000:
-            c = c[:4000] + "\n[...datos sintetizados...]"
+        if len(c) > message_char_limit:
+            if not truncate_messages:
+                return ""
+            prefix_length = max(0, message_char_limit - len(truncation_marker))
+            c = c[:prefix_length] + truncation_marker
         mensajes_limpios.append({"role": m["role"], "content": c})
 
+    response_formats = [response_format]
+    if (
+        isinstance(response_format, Mapping)
+        and response_format.get("type") == "json_schema"
+    ):
+        # JSON Object Mode is intentionally only a transport fallback. The
+        # returned candidate IDs and rationale are still parsed and validated
+        # against the immutable local catalog before any pick can exist.
+        response_formats.append({"type": "json_object"})
+
     for intento in range(2):
-        for modelo in modelos:
-            try:
-                resp = client.chat.completions.create(
-                    messages=mensajes_limpios,
-                    model=modelo,
-                    temperature=temperature
-                ).choices[0].message.content.strip()
-                if resp:
-                    resp = re.sub(r'<think>.*?</think>', '', resp, flags=re.DOTALL).strip()
-                    return resp
-            except Exception as e:
-                if "429" in str(e) or "rate_limit" in str(e).lower():
-                    print(f"   ⚠️ Rate limit en {modelo}. Pausando 3s para reintentar...")
-                    time.sleep(3)
-                    continue
-                else:
-                    print(f"   ⚠️ Nota en Groq ({modelo}): {e}")
+        for active_response_format in response_formats:
+            for modelo in modelos:
+                try:
+                    request = dict(
+                        messages=mensajes_limpios,
+                        model=modelo,
+                        temperature=temperature,
+                    )
+                    if active_response_format is not None:
+                        request["response_format"] = active_response_format
+                    resp = client.chat.completions.create(
+                        **request,
+                    ).choices[0].message.content.strip()
+                    if resp:
+                        resp = re.sub(
+                            r'<think>.*?</think>',
+                            '',
+                            resp,
+                            flags=re.DOTALL,
+                        ).strip()
+                        return resp
+                except Exception as e:
+                    if "429" in str(e) or "rate_limit" in str(e).lower():
+                        print(
+                            f"   ⚠️ Rate limit en {modelo}. "
+                            "Pausando 3s para reintentar..."
+                        )
+                        time.sleep(3)
+                        continue
+                    format_name = (
+                        active_response_format.get("type", "unknown")
+                        if isinstance(active_response_format, Mapping)
+                        else "text"
+                    )
+                    print(
+                        f"   ⚠️ Nota en Groq ({modelo}, {format_name}); "
+                        f"failure={type(e).__name__}"
+                    )
                     continue
     return ""
 
 # ============================================================
 #  FASE 3: FILTRO INTELIGENTE (Top 8 por Groq)
 # ============================================================
-def fase3_filtro_inteligente(partidos_data):
+def fase3_filtro_inteligente(partidos_data, *, groq_api_key=None):
     print("\n" + "="*60)
     print("🧠  FASE 3: FILTRO INTELIGENTE (Groq selecciona Top 8 Pre-Match Multideporte)")
     print("="*60)
@@ -781,12 +1163,12 @@ def fase3_filtro_inteligente(partidos_data):
     if not partidos_data:
         return []
     
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(api_key=groq_api_key or GROQ_API_KEY)
     
     # Filtrar solo eventos con horario futuro y priorizar deportes principales
     eventos_filtrados = []
     for p in partidos_data:
-        es_val, h_limpio = es_partido_futuro_valido(p.get('horario', 'Hoy'))
+        es_val, h_limpio = es_partido_futuro_valido(p.get('horario') or '')
         if es_val:
             eventos_filtrados.append({
                 "cat": p['categoria'],
@@ -851,7 +1233,7 @@ def fase3_filtro_inteligente(partidos_data):
             print(f"      {i}. {obj}")
         return objetivos_finales
     except Exception as e:
-        print(f"   ⚠️ Nota en filtro IA: {e}. Aplicando balanceador multideporte...")
+        print(f"   ⚠️ Nota en filtro IA; failure={type(e).__name__}. Aplicando balanceador multideporte...")
         # Selección balanceada: Champions League + KBO + MLB + Liga MX / Fútbol
         champs = [p['partido'] for p in partidos_data if 'champions' in p.get('categoria', '').lower() or 'uefa' in p.get('categoria', '').lower()]
         kbo = [p['partido'] for p in partidos_data if 'kbo' in p.get('categoria', '').lower() or 'corea' in p.get('categoria', '').lower()]
@@ -866,151 +1248,80 @@ def fase3_filtro_inteligente(partidos_data):
 # ============================================================
 #  FASE 4: INMERSIÓN QUIRÚRGICA (Insights, Córners, Crear Apuesta)
 # ============================================================
+def _resolve_deep_objective(objective, events):
+    """Resolve one exact unique event; text-only doubleheaders are ambiguous."""
+
+    requested_source_id = ""
+    requested_source = ""
+    if isinstance(objective, dict):
+        requested_match = _normalized_event_identity(objective.get('partido'))
+        requested_source_id = str(
+            objective.get('source_event_id') or ''
+        ).strip()
+        requested_source = str(objective.get('source') or '').strip().casefold()
+    else:
+        requested_match = _normalized_event_identity(objective)
+    if requested_match is None:
+        return None
+
+    matches = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if _normalized_event_identity(event.get('partido')) != requested_match:
+            continue
+        event_source_id = str(event.get('source_event_id') or '').strip()
+        event_source = str(event.get('source') or '').strip().casefold()
+        if requested_source_id and event_source_id != requested_source_id:
+            continue
+        if requested_source and event_source != requested_source:
+            continue
+        matches.append(event)
+    return matches[0] if len(matches) == 1 else None
+
+
 def fase4_inmersion(driver, objetivos, partidos_data):
+    """Use only already structured markets; unbounded deep DOM tabs are disabled."""
+
     print("\n" + "="*60)
-    print("🎯  FASE 4: INMERSIÓN QUIRÚRGICA (Insights + Mercados Profundos)")
+    print("🎯  FASE 4: MERCADOS ESTRUCTURADOS VERIFICADOS")
     print("="*60)
-    
     datos_profundos = []
-    
-    for i, obj in enumerate(objetivos, 1):
-        base = next((p for p in partidos_data if p['partido'].lower() == obj.lower() or obj.lower() in p['partido'].lower()), None)
-        if not base:
-            base = next((p for p in partidos_data if (p.get('local') and p.get('local').lower() in obj.lower()) or (p.get('visitante') and p.get('visitante').lower() in obj.lower())), None)
-        if not base:
-            base = partidos_data[min(i-1, len(partidos_data)-1)]
-        
-        print(f"\n   [{i}/{len(objetivos)}] Infiltrando: {obj}")
-        
-        # Clic confiable con mouse dispatch en el partido dentro del Shadow DOM
-        script_click = f"""
-        try {{
-            var host = document.querySelector('div#altenar > div') || document.querySelector('asb-sports-app, asb-app, altenar-app');
-            if (!host || !host.shadowRoot) return false;
-            var shadow = host.shadowRoot;
-            
-            var containers = Array.from(shadow.querySelectorAll('div[class*="EventBoxContainer"]'));
-            var targetContainer = containers.find(function(c) {{
-                var t = c.innerText.toLowerCase();
-                return t.includes("{base['local'].lower()}") || t.includes("{base['visitante'].lower()}");
-            }});
-            
-            if(targetContainer) {{ 
-                var clickEl = targetContainer.querySelector('div[class*="Competitors"], div[class*="NameContainer"], div[class*="EventName"], [class*="CompetitorName"]') || targetContainer;
-                ['mousedown', 'click', 'mouseup'].forEach(function(evtType) {{
-                    clickEl.dispatchEvent(new MouseEvent(evtType, {{ bubbles: true, cancelable: true, view: window }}));
-                }});
-                return true; 
-            }}
-            return false;
-        }} catch(e) {{ return false; }}
-        """
-        
-        clicked = driver.execute_script(script_click)
-        if not clicked:
-            # Reintentar navegando si estaba en otra vista
-            click_category(driver, base.get('categoria', 'Liga MX'))
-            time.sleep(2)
-            clicked = driver.execute_script(script_click)
-            
-        if clicked:
-            time.sleep(3)
-            
-            # PASO A: Extraer Pestañas Profundas (Tiros de Esquina, Goles, Tarjetas, Jugador)
-            script_extract_deep = """
-            try {
-                var host = document.querySelector('div#altenar > div') || document.querySelector('asb-sports-app, asb-app, altenar-app');
-                if (!host || !host.shadowRoot) return "";
-                var shadow = host.shadowRoot;
-                
-                var tabsToExplore = ['tiros esquina', 'goles', 'tarjetas', 'especiales por jugador', 'crear apuesta'];
-                var allNodes = Array.from(shadow.querySelectorAll('*'));
-                var marketSummary = [];
-                
-                tabsToExplore.forEach(function(tabName) {
-                    var tabEl = allNodes.find(function(n) {
-                        return n.children.length === 0 && n.textContent && n.textContent.trim().toLowerCase().includes(tabName);
-                    });
-                    if (tabEl) {
-                        try {
-                            tabEl.click();
-                            if (tabEl.parentElement) tabEl.parentElement.click();
-                        } catch(e) {}
-                    }
-                    
-                    var boxes = Array.from(shadow.querySelectorAll('[class*="MarketBox"], [class*="EventDetailsMarketBox"]'));
-                    boxes.forEach(function(box) {
-                        var titleEl = box.querySelector('[class*="MarketName"], [class*="Title"], [class*="HeaderMarket"]');
-                        var title = titleEl ? titleEl.innerText.trim() : box.innerText.split('\\n')[0];
-                        
-                        var buttons = Array.from(box.querySelectorAll('button, [class*="OddBoxButton"], [class*="SelectionButton"]'));
-                        var odds = buttons.map(function(b) {
-                            return b.innerText.replace(/\\n+/g, ' ').trim();
-                        }).filter(Boolean);
-                        
-                        if (odds.length > 0) {
-                            var entry = "▶ MERCADO [" + title + "]: " + odds.join(" | ");
-                            if (!marketSummary.includes(entry)) {
-                                marketSummary.push(entry);
-                            }
-                        }
-                    });
-                });
-                
-                return marketSummary.join("\\n");
-            } catch(e) { return ""; }
-            """
-            
-            mercados_texto = driver.execute_script(script_extract_deep) or ""
-            if mercados_texto:
-                print(f"      🎯 {len(mercados_texto.splitlines())} Mercados profundos extraídos (Córners, Goles, Tarjetas).")
-            
-            # Regresar al listado general haciendo clic en el botón 'Volver' o pestaña principal
-            script_back = """
-            try {
-                var host = document.querySelector('div#altenar > div') || document.querySelector('asb-sports-app, asb-app, altenar-app');
-                if (host && host.shadowRoot) {
-                    var backBtn = host.shadowRoot.querySelector('button[class*="BackButton"], [class*="HeaderBack"]');
-                    if (backBtn) backBtn.click();
-                }
-            } catch(e) {}
-            """
-            driver.execute_script(script_back)
-            time.sleep(1)
-            
-            datos_profundos.append({
-                "categoria": base['categoria'],
-                "partido": obj,
-                "local": base.get('local', ''),
-                "visitante": base.get('visitante', ''),
-                "horario": base.get('horario', 'Hoy'),
-                "cuotas_superficie": base.get('cuotas_superficie', []),
-                "mercados_profundos": mercados_texto[:1200]
-            })
-        else:
-            if base.get('mercados_reales'):
-                base['mercados_profundos'] = "\n".join(base['mercados_reales'])[:1200]
-                print(f"      🎯 Usando {len(base['mercados_reales'])} mercados verificados del satélite.")
-            else:
-                print(f"      ⚠️ No se pudo entrar al partido, usando cuotas de superficie.")
-            datos_profundos.append(base)
-    
-    print(f"\n   📊 Inmersión completada: {len(datos_profundos)} partidos analizados a fondo.")
+    for i, objective in enumerate(objetivos, 1):
+        base = _resolve_deep_objective(objective, partidos_data)
+        if base is None:
+            print(
+                f"\n   [{i}/{len(objetivos)}] Omitido sin identidad exacta: "
+                f"{objective}"
+            )
+            continue
+        verified = base.get('mercados_reales')
+        market_text = (
+            "\n".join(str(item) for item in verified)[:1200]
+            if isinstance(verified, list)
+            else ""
+        )
+        datos_profundos.append({**base, "mercados_profundos": market_text})
+    print(
+        f"\n   📊 Inmersión completada: {len(datos_profundos)} "
+        "partidos con evidencia estructurada."
+    )
     return datos_profundos
 
 # ============================================================
 #  FASE 5: MEMORIA HISTÓRICA
 # ============================================================
-def fase5_memoria_historica():
+def fase5_memoria_historica(database=None):
     print("\n" + "="*60)
     print("📚  FASE 5: RECUPERANDO MEMORIA HISTÓRICA")
     print("="*60)
     
-    if not supabase:
+    active_database = database or supabase
+    if not active_database:
         return "Sin conexión a base de datos."
     
     try:
-        res = supabase.table("picks").select("categoria, partido, pick, cuota, estado, fecha_generacion").order("id", desc=True).limit(30).execute()
+        res = active_database.table("picks").select("categoria, partido, pick, cuota, estado, fecha_generacion").order("id", desc=True).limit(30).execute()
         picks = res.data
         
         if not picks:
@@ -1036,847 +1347,1622 @@ PICKS RECIENTES:
         print(f"   ✅ Memoria cargada: {len(picks)} picks, {ganados}W-{perdidos}L")
         return memoria
     except Exception as e:
-        print(f"   ⚠️ Error leyendo historial: {e}")
+        print(f"   ⚠️ Error leyendo historial; failure={type(e).__name__}")
         return "Error leyendo historial."
 
 # ============================================================
 #  FASE 6: ANÁLISIS FINAL — DEBATE Y CONSENSO MULTI-IA
 # ============================================================
-def fase6_analisis_final(datos_profundos, memoria, market_odds, partidos_data=None):
-    print("\n" + "="*60)
-    print("🧠⚡  FASE 6: DEBATE Y CONSENSO MULTI-IA (Quant vs Auditor vs Juez)")
-    print("="*60)
-    
+def _collect_verified_candidates(records) -> list[CandidatePick]:
+    """Deduplicate exact private candidates and omit conflicting identities."""
+
+    selected: dict[str, CandidatePick] = {}
+    order: list[str] = []
+    conflicts: set[str] = set()
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        private_candidates = record.get(_VERIFIED_CANDIDATES_FIELD)
+        if not isinstance(private_candidates, tuple):
+            continue
+        for candidate in private_candidates:
+            if not _is_individually_valid(candidate):
+                continue
+            candidate_id = candidate.candidate_id
+            if candidate_id in conflicts:
+                continue
+            existing = selected.get(candidate_id)
+            if existing is None:
+                selected[candidate_id] = candidate
+                order.append(candidate_id)
+            elif existing != candidate:
+                selected.pop(candidate_id, None)
+                conflicts.add(candidate_id)
+    return [
+        selected[candidate_id]
+        for candidate_id in order
+        if candidate_id in selected
+    ]
+
+
+def _candidate_prompt_row(candidate: CandidatePick) -> dict[str, object]:
+    """Serialize only read-only catalog facts, never the private object field."""
+
+    return {
+        "candidate_id": candidate.candidate_id,
+        "source": candidate.source,
+        "source_event_id": candidate.source_event_id,
+        "bookmaker_key": candidate.bookmaker_key,
+        "starts_at": candidate.starts_at.isoformat(),
+        "observed_at": candidate.observed_at.isoformat(),
+        "sport": candidate.sport,
+        "league": candidate.league,
+        "home_team": candidate.home_team,
+        "away_team": candidate.away_team,
+        "market_key": candidate.market_key,
+        "market_name": candidate.market_name or candidate.market_key,
+        "source_market_id": candidate.source_market_id,
+        "period": candidate.period,
+        "line": candidate.line,
+        "selection_key": candidate.selection_key,
+        "selection_name": candidate.selection_name,
+        "source_selection_id": candidate.source_selection_id,
+        "market_scope": candidate.market_scope,
+        "participant_id": candidate.participant_id,
+        "team_id": candidate.team_id,
+        "competitor_id": candidate.competitor_id,
+        "offer_kind": candidate.offer_kind,
+        "offer_description": candidate.offer_description,
+        "source_market_selection_ids": (
+            candidate.source_market_selection_ids
+        ),
+        "lineup_confirmed": candidate.lineup_confirmed,
+        "price": candidate.price,
+    }
+
+
+def _render_candidate_ranking_prompt(candidates) -> str:
+    prompt_catalog = [_candidate_prompt_row(candidate) for candidate in candidates]
+    catalog_json = json.dumps(
+        prompt_catalog,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"""
+Ordena los candidatos verificados de mayor a menor utilidad editorial.
+Los hechos del catálogo son de SOLO LECTURA: no cambies partido, mercado,
+selección, horario, fuente, casa de apuestas ni cuota.
+El objetivo editorial es 4 picks fuertes; normalmente elige de 3 a 5 y nunca
+más de 6. Si no hay suficientes oportunidades sólidas, devuelve menos o cero:
+no fuerces picks débiles. No repitas el mismo partido con mercados distintos.
+
+CATÁLOGO VERIFICADO:
+{catalog_json}
+
+Devuelve ÚNICAMENTE este objeto JSON:
+{{"rankings": [{{"candidate_id": "ID exacto del catálogo", "rationale": "Explicación de 10 a 500 caracteres"}}]}}
+No devuelvas partido, pick, cuota, precio, confianza, valor ni parlays.
+"""
+
+
+def _bounded_prompt_candidates(candidates):
+    """Choose complete deterministic groups that fit both request bounds."""
+
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (candidate.starts_at, candidate.candidate_id),
+    )
+    grouped = {}
+    for candidate in ordered:
+        grouped.setdefault(
+            _candidate_exclusivity_group(candidate),
+            [],
+        ).append(candidate)
+
+    selected = []
+    prompt = _render_candidate_ranking_prompt(selected)
+    for group in grouped.values():
+        if len(selected) + len(group) > MAX_AI_CATALOG_CANDIDATES:
+            continue
+        trial = [*selected, *group]
+        trial_prompt = _render_candidate_ranking_prompt(trial)
+        total_chars = len(_AI_RANKING_SYSTEM_MESSAGE) + len(trial_prompt)
+        if total_chars > MAX_AI_PROMPT_CHARS:
+            continue
+        selected = trial
+        prompt = trial_prompt
+    return selected, prompt
+
+
+def _parse_strict_json_array(raw_response):
+    """Parse one JSON array, optionally inside a complete Markdown fence."""
+
+    if not isinstance(raw_response, str):
+        return []
+    clean_response = raw_response.strip()
+    fenced = re.fullmatch(
+        r"```(?:json)?\s*(.*?)\s*```",
+        clean_response,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fenced is not None:
+        clean_response = fenced.group(1).strip()
+
+    def reject_non_finite_constant(_value):
+        raise ValueError("non-finite JSON constants are not allowed")
+
+    try:
+        parsed = json.loads(
+            clean_response,
+            parse_constant=reject_non_finite_constant,
+        )
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict) and set(parsed) == {"rankings"}:
+        rankings = parsed.get("rankings")
+        return rankings if isinstance(rankings, list) else []
+    return []
+
+
+def _candidate_schedule(candidate: CandidatePick) -> str:
+    start = candidate.starts_at.astimezone(ZoneInfo("America/Mexico_City"))
+    observed = candidate.observed_at.astimezone(
+        ZoneInfo("America/Mexico_City")
+    )
+    if start.date() == observed.date():
+        return f"Hoy {start.strftime('%H:%M')} hrs"
+    if start.date() == observed.date() + timedelta(days=1):
+        return f"Mañana {start.strftime('%H:%M')} hrs"
+    return start.strftime("%d/%m %H:%M hrs")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _legacy_ranked_pick_projection(
+    ranked_pick: RankedPick,
+    evidence_score: EvidenceScore,
+) -> dict[str, object]:
+    """Copy catalog facts plus a bounded data-support score, never win odds."""
+
+    candidate = ranked_pick.candidate
+    return {
+        "source": candidate.source,
+        "source_event_id": candidate.source_event_id,
+        "bookmaker_key": candidate.bookmaker_key,
+        "starts_at": candidate.starts_at.isoformat(),
+        "observed_at": candidate.observed_at.isoformat(),
+        "sport": candidate.sport,
+        "categoria": candidate.league,
+        "liga": candidate.league,
+        "partido": f"{candidate.home_team} vs {candidate.away_team}",
+        "local": candidate.home_team,
+        "visitante": candidate.away_team,
+        "horario": _candidate_schedule(candidate),
+        "fecha_evento": candidate.starts_at.astimezone(
+            ZoneInfo("America/Mexico_City")
+        ).date().isoformat(),
+        "market_key": candidate.market_key,
+        "mercado": candidate.market_name or candidate.market_key,
+        "period": candidate.period,
+        "line": candidate.line,
+        "selection_key": candidate.selection_key,
+        "selection_name": candidate.selection_name,
+        "pick": candidate.selection_name,
+        "cuota": candidate.price,
+        "source_market_key": _source_market_audit_key(candidate),
+        "source_selection_key": (
+            candidate.source_selection_id or candidate.selection_key
+        ),
+        "source_observed_at": candidate.observed_at.astimezone(
+            timezone.utc
+        ).isoformat().replace("+00:00", "Z"),
+        "source_starts_at": candidate.starts_at.astimezone(
+            timezone.utc
+        ).isoformat().replace("+00:00", "Z"),
+        "razonamiento": ranked_pick.rationale,
+        "confianza": f"{evidence_score.percent}% respaldo de datos",
+        "riesgo": evidence_score.label,
+        "tiene_valor": evidence_score.has_value,
+        "es_parlay": False,
+    }
+
+
+def _fase6_candidate_ranking(
+    datos_profundos,
+    partidos_data,
+    *,
+    groq_api_key,
+    reference_at=None,
+):
+    records = list(datos_profundos or ()) + list(partidos_data or ())
+    candidates = _collect_verified_candidates(records)
+    if not groq_api_key or not candidates:
+        return []
+
+    try:
+        catalog_reference_at = (
+            datetime.now(timezone.utc)
+            if reference_at is None
+            else reference_at
+        )
+        if (
+            catalog_reference_at.tzinfo is None
+            or catalog_reference_at.utcoffset() is None
+        ):
+            return []
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.starts_at.astimezone(timezone.utc)
+            > catalog_reference_at.astimezone(timezone.utc)
+        ]
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return []
+    if not candidates:
+        return []
+
+    prompt_candidates, prompt = _bounded_prompt_candidates(candidates)
+    if not prompt_candidates:
+        return []
+    messages = [
+        {"role": "system", "content": _AI_RANKING_SYSTEM_MESSAGE},
+        {"role": "user", "content": prompt},
+    ]
+    if sum(len(message["content"]) for message in messages) > MAX_AI_PROMPT_CHARS:
+        return []
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "verified_candidate_ranking",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "rankings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "candidate_id": {
+                                    "type": "string",
+                                },
+                                "rationale": {
+                                    "type": "string",
+                                },
+                            },
+                            "required": ["candidate_id", "rationale"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["rankings"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    try:
+        client = Groq(api_key=groq_api_key)
+        raw_response = ejecutar_groq_con_fallback(
+            client,
+            messages,
+            temperature=0.1,
+            response_format=response_format,
+            message_char_limit=MAX_AI_PROMPT_CHARS,
+            truncate_messages=False,
+        )
+    except Exception as exc:
+        print(f"   ⚠️ Ranking IA no disponible; failure={type(exc).__name__}")
+        return []
+
+    raw_ranking = _parse_strict_json_array(raw_response)
+    ranked = validate_ai_ranking(raw_ranking, prompt_candidates)
+    try:
+        evidence_reference_at = (
+            datetime.now(timezone.utc)
+            if reference_at is None
+            else reference_at
+        )
+        ranked = [
+            row
+            for row in ranked
+            if row.candidate.starts_at.astimezone(timezone.utc)
+            > evidence_reference_at.astimezone(timezone.utc)
+        ]
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return []
+    ranked = select_daily_portfolio(ranked)
+    picks = []
+    for row in ranked:
+        evidence = evidence_for_candidate(
+            row.candidate,
+            candidates,
+            reference_at=evidence_reference_at,
+        )
+        picks.append(
+            _legacy_ranked_pick_projection(row, score_evidence(evidence))
+        )
+    print(f"   🏆 Ranking verificado: {len(picks)} selecciones de catálogo.")
+    for pick in picks:
+        print(
+            f"      → [{pick['categoria']}] {pick['partido']} | "
+            f"{pick['pick']} @ {pick['cuota']}"
+        )
+    return picks
+
+
+def fase6_analisis_final(
+    datos_profundos,
+    memoria,
+    market_odds,
+    partidos_data=None,
+    *,
+    groq_api_key=None,
+    reference_at=None,
+):
     if partidos_data is None:
         partidos_data = datos_profundos
-        
-    if not GROQ_API_KEY or not (datos_profundos or partidos_data):
-        return []
-    
-    client = Groq(api_key=GROQ_API_KEY)
-    
-    # Contexto de mercado global
-    market_context = ""
-    if market_odds:
-        market_context = f"""
-CUOTAS PROMEDIO DEL MERCADO GLOBAL (15+ casas de apuestas):
-{json.dumps(market_odds, indent=2)}
-"""
+    return _fase6_candidate_ranking(
+        datos_profundos,
+        partidos_data,
+        groq_api_key=groq_api_key or GROQ_API_KEY,
+        reference_at=reference_at,
+    )
 
-    datos_partidos_str = json.dumps(datos_profundos, indent=2)
-
-    # -------------------------------------------------------------
-    # RONDA 1: IA CUANTITATIVA ("Alpha Quant")
-    # Busca valor matemático (+EV), córners, combos y estadísticas.
-    # -------------------------------------------------------------
-    print("   🤖 [IA 1: Alpha Quant] Analizando mercados profundos (Córners, Combos, Props, Totales)...")
-    prompt_quant = f"""
-Eres "Alpha Quant", la IA líder en análisis cuantitativo y micro-estadísticas para apuestas deportivas de élite.
-Analiza los siguientes partidos y mercados especiales:
-
-{memoria}
-{market_context}
-DATOS DE PARTIDOS Y MERCADOS:
-{datos_partidos_str}
-
-REGLAS ESTRICTAS DE TAXONOMÍA DEPORTIVA (CERO TOLERANCIA A ERRORES):
-1. FÚTBOL (Soccer / Liga MX / La Liga / Champions / Premier):
-   - Mercados válidos: Tiros de Esquina (Córners ej. "Más de 8.5 Córners"), Ambos Anotan (BTTS), Over/Under Goles (ej. "Más de 2.5 Goles"), 1X2 / Doble Oportunidad, Hándicap Asiático, Tarjetas.
-   - NUNCA uses términos de béisbol o americano en fútbol.
-2. BÉISBOL (MLB):
-   - Mercados válidos: Over/Under Carreras (ej. "Más de 8.5 Carreras"), Carreras en 1er Inning (ej. "Sin Carreras en el 1er Inning - NRFI" o "Más de 0.5 Carreras 1er Inning"), Ponches del Pitcher (ej. "Más de 6.5 Ponches"), Moneyline (-1.5 Run Line).
-   - ¡PROHIBIDO ROTUNDAMENTE usar "Córners", "Goles" o "Tiros de esquina" en Béisbol! En béisbol son CARRERAS, HITS y PONCHES.
-3. FÚTBOL AMERICANO (NFL):
-   - Mercados válidos: Spread / Hándicap (ej. "-3.5"), Over/Under Puntos Totales (ej. "Más de 44.5 Puntos"), Player Props (ej. "Anotador de Touchdown", "Más de 75.5 Yardas").
-   - ¡PROHIBIDO usar "Goles" o "Córners" en NFL! En americano son PUNTOS, TOUCHDOWNS y YARDAS.
-
-REGLAS DE PARLAYS ESTRATÉGICOS:
-- "Parlay Seguro": 2 selecciones de altísima probabilidad con cuota combinada 2.10 - 2.80.
-- "Parlay Estadístico Córners/Props": 2 selecciones de micro-estadísticas (Córners de fútbol o Ponches/Carreras de MLB) cuota 2.70 - 3.80.
-- "Parlay Rompe-Bancas (+EV)": 3 selecciones de alto valor combinado (cuota 4.50 - 7.50).
-
-Devuelve tu catálogo cuantitativo con las justificaciones matemáticas respetando estrictamente la terminología de cada deporte.
-"""
-    try:
-        resp_quant = ejecutar_groq_con_fallback(client, [{"role": "user", "content": prompt_quant}], temperature=0.2)
-        print("   ✅ [Alpha Quant] Propuestas de córners, combos y parlays generadas.")
-    except Exception as e:
-        print(f"   ⚠️ Error en IA Quant: {e}")
-        resp_quant = "Análisis quant no disponible."
-
-    # -------------------------------------------------------------
-    # RONDA 2: IA AUDITORA DE RIESGO ("Risk Auditor")
-    # Audita trampas, líneas infladas de córners y correlación de parlays.
-    # -------------------------------------------------------------
-    print("   🛡️ [IA 2: Risk Auditor] Auditando riesgo en córners, combos y combinaciones de parlays...")
-    prompt_auditor = f"""
-Eres "Risk Auditor", auditor senior de gestión de riesgo en apuestas deportivas.
-Revisa las propuestas de Alpha Quant:
-
-PROPUESTAS DE ALPHA QUANT:
-{resp_quant}
-
-DATOS REALES:
-{datos_partidos_str}
-
-TAREA DE AUDITORÍA:
-1. Verifica que la taxonomía deportiva sea 100% precisa (Córners y Goles SOLO en Fútbol; Carreras y Ponches SOLO en Béisbol; Puntos y Yardas SOLO en NFL). Rechaza cualquier propuesta que confunda deportes.
-2. Evalúa si las líneas de Tiros de Esquina, Totales y Combos son realistas según el estilo de juego de los equipos.
-3. Audita los Parlays: Asegúrate de que las selecciones combinadas tengan correlación positiva o bajo riesgo de cruzarse.
-4. Si un pick o combinación es arriesgado, sugiere un ajuste más inteligente.
-
-Devuelve tu dictamen de aprobación y ajustes recomendados.
-"""
-    try:
-        resp_auditor = ejecutar_groq_con_fallback(client, [{"role": "user", "content": prompt_auditor}], temperature=0.2)
-        print("   ✅ [Risk Auditor] Auditoría de riesgo y correlación completada.")
-    except Exception as e:
-        print(f"   ⚠️ Error en IA Auditor: {e}")
-        resp_auditor = "Auditoría no disponible."
-
-    # -------------------------------------------------------------
-    # RONDA 3: IA JUEZ SUPREMO ("Chief Arbiter")
-    # Emite la selección definitiva multideporte + Tiros de Esquina + 2 Parlays.
-    # -------------------------------------------------------------
-    print("   ⚖️ [IA 3: Chief Arbiter] Emitiendo cartera definitiva (Córners, Combos y Parlays Múltiples)...")
-    prompt_juez = f"""
-Eres el "Chief Odds Arbiter" de Rey Taco Picks. Emite la cartera oficial del día tras evaluar el debate.
-
-REGLAS CRÍTICAS ESTRICTAS (CERO TOLERANCIA):
-1. SELECCIONA ÚNICAMENTE PARTIDOS QUE ESTÉN EN LA LISTA DE DATOS REALES EXTRAÍDOS HOY. ESTÁ TOTALMENTE PROHIBIDO INVENTAR O USAR PARTIDOS DE OTROS DÍAS.
-2. Utiliza exactamente el horario y nombres de equipos que vienen en los datos reales.
-3. DIVERSIDAD MULTIDEPORTE OBLIGATORIA:
-   - Incluye al menos 1 o 2 selecciones de UEFA Champions League.
-   - Incluye al menos 1 o 2 selecciones de Béisbol KBO (Corea del Sur para madrugadores).
-   - Incluye al menos 1 o 2 selecciones de Béisbol MLB.
-   - Incluye al menos 1 o 2 Parlays combinados de alto valor (+EV).
-4. Cuotas estrictamente en formato decimal (ej: 1.85, 1.62, 2.18, 3.11).
-5. Explica claramente en el campo "razonamiento" el por qué táctico/estadístico de cada elección.
-
-DATOS REALES DISPONIBLES DE PLAYDOIT HOY:
-{datos_partidos_str}
-
-DEBATE DE LOS EXPERTOS:
---- ALPHA QUANT ---
-{resp_quant}
-
---- AUDITORÍA DE RIESGO ---
-{resp_auditor}
-
---- CUOTAS DE MERCADO GLOBAL ---
-{market_context}
-
-Devuelve ÚNICAMENTE un JSON array válido con este formato:
-[
-    {{
-        "categoria": "UEFA Champions League",
-        "partido": "Nombre Real Local vs Nombre Real Visitante",
-        "horario": "19/08 • 13:00",
-        "pick": "Nombre Equipo Gana Directo",
-        "cuota": "1.85",
-        "confianza": "90%",
-        "razonamiento": "Explicación táctica y estadística del pick...",
-        "es_parlay": false,
-        "tiene_valor": true,
-        "odds_mercado": "1.80"
-    }}
-]
-"""
-    try:
-        resp_final = ejecutar_groq_con_fallback(client, [
-            {"role": "system", "content": "Devuelves únicamente JSON puro sin bloques markdown ni texto extra."},
-            {"role": "user", "content": prompt_juez}
-        ], temperature=0.15)
-
-        # Extractor ultra robusto de JSON tolerante a texto alrededor
-        clean_resp = re.sub(r'```(?:json)?', '', resp_final).strip()
-        raw_picks = []
-        try:
-            idx1 = clean_resp.find('[')
-            idx2 = clean_resp.rfind(']')
-            if idx1 != -1 and idx2 != -1:
-                raw_picks = json.loads(clean_resp[idx1:idx2+1])
-        except Exception:
-            for m in re.finditer(r'\{[^{}]*\}', clean_resp, re.DOTALL):
-                try:
-                    obj = json.loads(m.group(0))
-                    if 'pick' in obj or 'partido' in obj:
-                        raw_picks.append(obj)
-                except Exception:
-                    pass
-        
-        # -------------------------------------------------------------
-        # VALIDACIÓN Y FILTRADO DETERMINISTA ANTI-ALUCINACIONES (PYTHON)
-        # -------------------------------------------------------------
-        picks_validados = []
-        for p in raw_picks:
-            p_partido = p.get('partido', '').strip()
-            p_pick = p.get('pick')
-            if not p_partido or not p_pick or str(p_pick).strip().lower() in ('none', '', 'null'):
-                continue
-            
-            # 1. Verificar existencia contra partidos reales escaneados
-            match_encontrado = None
-            for dp in (datos_profundos + partidos_data):
-                dp_partido = dp.get('partido', '').lower()
-                dp_local = dp.get('local', '').lower()
-                dp_vis = dp.get('visitante', '').lower()
-                
-                if (dp_local and len(dp_local) > 3 and dp_local in p_partido.lower()) or \
-                   (dp_vis and len(dp_vis) > 3 and dp_vis in p_partido.lower()) or \
-                   (dp_partido and dp_partido in p_partido.lower()) or \
-                   (p_partido.lower() in dp_partido):
-                    match_encontrado = dp
-                    break
-            
-            # Si es parlay, validar que TODAS las partes existan
-            if p.get('es_parlay'):
-                partes = re.split(r'[+&/]|(?:\s+y\s+)', p_partido, flags=re.IGNORECASE)
-                todas_partes_validas = True
-                for parte in partes:
-                    parte = parte.strip()
-                    if len(parte) < 3: continue
-                    parte_existe = any(
-                        (dp.get('local', '') and len(dp.get('local', '')) > 3 and dp.get('local', '').lower() in parte.lower()) or
-                        (dp.get('visitante', '') and len(dp.get('visitante', '')) > 3 and dp.get('visitante', '').lower() in parte.lower()) or
-                        (dp.get('partido', '').lower() in parte.lower()) or
-                        (parte.lower() in dp.get('partido', '').lower())
-                        for dp in (datos_profundos + partidos_data)
-                    )
-                    if not parte_existe:
-                        todas_partes_validas = False
-                        break
-                
-                if todas_partes_validas and len(partes) >= 2:
-                    match_encontrado = datos_profundos[0] if datos_profundos else (partidos_data[0] if partidos_data else {})
-                else:
-                    match_encontrado = None
-            
-            if not match_encontrado:
-                print(f"   🛑 DESCARTADO (Partido o pierna de parlay no existe en catálogo): {p_partido}")
-                continue
-
-            # 2. Asignar categoría exacta
-            if p.get('es_parlay'):
-                p['categoria'] = "Parlays +EV"
-            else:
-                p['categoria'] = inferir_categoria_deporte(
-                    match_encontrado.get('local', ''), 
-                    match_encontrado.get('visitante', ''), 
-                    fallback=match_encontrado.get('categoria', 'Fútbol Internacional')
-                )
-
-            # 3. Corregir y forzar Horario Real y verificar que sea futuro en CDMX
-            if match_encontrado and match_encontrado.get('horario'):
-                p['horario'] = match_encontrado.get('horario')
-            
-            es_valido_tiempo, horario_limpio = es_partido_futuro_valido(p.get('horario', 'Hoy'))
-            if not es_valido_tiempo:
-                print(f"   🛑 DESCARTADO (El partido ya inició): {p_partido} [{p.get('horario')}]")
-                continue
-            p['horario'] = horario_limpio
-            
-            # 4. Limpieza y Normalización Matemática de Cuota
-            p['cuota'] = normalizar_cuota_decimal(p.get('cuota', '1.85'))
-            
-            if not p.get('razonamiento') or len(p.get('razonamiento', '')) < 10:
-                p['razonamiento'] = f"Consenso IA: Ventaja matemática +EV detectada con alta probabilidad según métricas de Playdoit."
-
-            picks_validados.append(p)
-
-        if len(picks_validados) >= 3:
-            picks = picks_validados
-            print(f"\n   🏆 CARTERA APROBADA ({len(picks)} selecciones validadas):")
-            for p in picks:
-                print(f"      → [{p.get('categoria')}] {p.get('partido')} | {p.get('pick')} @ {p.get('cuota')}")
-            return picks
-        else:
-            raise ValueError(f"Solo {len(picks_validados)} picks validados, activando generador de respaldo...")
-            
-    except Exception as e:
-        print(f"   ⚠️ Nota en síntesis de debate IA: {e}. Activando generador de cartera cuantitativa...")
-        
-        # Generador de respaldo cuantitativo 100% DINÁMICO e infalible
-        picks_fallback = []
-        parlay_candidatos = []
-        
-        pool_partidos = list(datos_profundos) + [p for p in partidos_data if not any(x['partido'] == p['partido'] for x in datos_profundos)]
-        
-        for dp in pool_partidos:
-            partido = dp.get('partido', '')
-            local = dp.get('local', '')
-            vis = dp.get('visitante', '')
-            horario = dp.get('horario', 'Hoy')
-            mercados = dp.get('mercados_profundos', '') or dp.get('info_texto', '')
-            cuotas_sup = dp.get('cuotas_superficie', [])
-            categoria = inferir_categoria_deporte(local, vis, fallback=dp.get('categoria', 'Fútbol Internacional'))
-            
-            es_valido, horario_limpio = es_partido_futuro_valido(horario)
-            if not es_valido: continue
-            
-            # A) Totales Over/Under (Córners, Goles en fútbol o Carreras en MLB/KBO)
-            match_totals = re.search(r'(?:más\s+de|over)\s*\(?\s*(\d+\.5)\s*\)?\s*(?:@\s*)?([+-]?\d+(?:\.\d+)?)', mercados, re.IGNORECASE)
-            if match_totals and len(picks_fallback) < 8:
-                linea = match_totals.group(1)
-                raw_c = match_totals.group(2)
-                c_val_str = normalizar_cuota_decimal(raw_c if raw_c else "1.75")
-                c_val = float(c_val_str)
-                
-                f_linea = float(linea)
-                if categoria in ["MLB", "KBO"] or "baseball" in categoria.lower() or "béisbol" in categoria.lower():
-                    if not (6.5 <= f_linea <= 13.5): continue
-                    unidad = "Carreras Totales"
-                    cat_nombre = categoria
-                elif "NFL" in categoria or "football" in categoria.lower():
-                    if not (36.5 <= f_linea <= 58.5): continue
-                    unidad = "Puntos Totales"
-                    cat_nombre = "NFL"
-                else:
-                    # Fútbol (Champions, Liga MX, MLS, etc.)
-                    if 7.5 <= f_linea <= 13.5:
-                        unidad = "Tiros de Esquina"
-                        cat_nombre = "Tiros de Esquina"
-                    elif 1.5 <= f_linea <= 4.5:
-                        unidad = "Goles Totales"
-                        cat_nombre = categoria
-                    else:
-                        continue
-                
-                p_item = {
-                    "categoria": cat_nombre,
-                    "partido": partido,
-                    "local": local or partido.split(' vs ')[0],
-                    "horario": horario_limpio,
-                    "pick": f"Más de {linea} {unidad}",
-                    "cuota": f"{c_val:.2f}",
-                    "confianza": "90%",
-                    "razonamiento": f"Consenso Quant: Ventaja estadística en ritmo ofensivo y promedio histórico proyectado en Playdoit.",
-                    "es_parlay": False,
-                    "tiene_valor": True,
-                    "odds_mercado": f"{max(1.30, c_val - 0.05):.2f}"
-                }
-                picks_fallback.append(p_item)
-                if c_val <= 1.85:
-                    parlay_candidatos.append(p_item)
-            
-            # B) Buscar Línea de Dinero (ML) o Hándicap
-            if len(cuotas_sup) >= 1 and len(picks_fallback) < 6:
-                try:
-                    c_local_str = normalizar_cuota_decimal(cuotas_sup[0])
-                    c_local = float(c_local_str)
-                    if 1.20 <= c_local <= 2.25:
-                        p_ml = {
-                            "categoria": categoria,
-                            "partido": partido,
-                            "local": local or partido.split(' vs ')[0],
-                            "horario": horario_limpio,
-                            "pick": f"{local or partido.split(' vs ')[0]} Gana Directo",
-                            "cuota": f"{c_local:.2f}",
-                            "confianza": "89%",
-                            "razonamiento": f"Consenso Quant: Ventaja táctica y solvencia proyectada respaldada por cuotas de mercado.",
-                            "es_parlay": False,
-                            "tiene_valor": True,
-                            "odds_mercado": f"{max(1.20, c_local - 0.05):.2f}"
-                        }
-                        if not any(x['partido'] == partido for x in picks_fallback):
-                            picks_fallback.append(p_ml)
-                        if c_local <= 1.80 and not any(x['partido'] == partido for x in parlay_candidatos):
-                            parlay_candidatos.append(p_ml)
-                except:
-                    pass
-
-        # Garantizar SIEMPRE al menos 3 picks activos diarios (para días como viernes/lunes)
-        if len(picks_fallback) < 3 and partidos:
-            for p in partidos:
-                if len(picks_fallback) >= 3:
-                    break
-                partido_nom = p.get('partido', '')
-                if any(x['partido'] == partido_nom for x in picks_fallback):
-                    continue
-                cuotas = p.get('cuotas_superficie', [])
-                if cuotas:
-                    c_val = float(normalizar_cuota_decimal(cuotas[0]))
-                    picks_fallback.append({
-                        "categoria": p.get('categoria', 'Fútbol Global'),
-                        "partido": partido_nom,
-                        "local": p.get('local', partido_nom.split(' vs ')[0]),
-                        "horario": p.get('horario', 'Hoy'),
-                        "pick": f"{p.get('local', partido_nom.split(' vs ')[0])} Gana o Empata (1X)" if c_val < 1.60 else f"{p.get('local', partido_nom.split(' vs ')[0])} Gana Directo",
-                        "cuota": f"{max(1.35, c_val):.2f}",
-                        "confianza": "91%",
-                        "razonamiento": "Consenso Quant: Selección calculada de alta probabilidad matemática y valor esperado positivo.",
-                        "es_parlay": False,
-                        "tiene_valor": True,
-                        "odds_mercado": f"{max(1.25, c_val - 0.05):.2f}"
-                    })
-
-        # C) Construir Parlay Combinado Dinámico de HOY
-        if len(parlay_candidatos) >= 2:
-            p1 = parlay_candidatos[0]
-            p2 = parlay_candidatos[1]
-            cuota_parlay = float(p1['cuota']) * float(p2['cuota'])
-            loc1 = p1.get('local') or p1['partido'].split(' vs ')[0]
-            loc2 = p2.get('local') or p2['partido'].split(' vs ')[0]
-            picks_fallback.append({
-                "categoria": "Parlay Seguro",
-                "partido": f"{p1['partido']} + {p2['partido']}",
-                "horario": f"{p1.get('horario', 'Hoy')} / {p2.get('horario', 'Hoy')}",
-                "pick": f"{loc1} ({p1['pick']}) & {loc2} ({p2['pick']})",
-                "cuota": f"{cuota_parlay:.2f}",
-                "confianza": "93%",
-                "razonamiento": "Combinada matemática de alta correlación positiva y riesgo controlado.",
-                "es_parlay": True,
-                "tiene_valor": True,
-                "odds_mercado": f"{max(1.80, cuota_parlay - 0.10):.2f}"
-            })
-
-        print(f"\n   🏆 CARTERA APROBADA ({len(picks_fallback)} selecciones de alta credibilidad desde Playdoit):")
-        for p in picks_fallback:
-            valor = " 💎 VALOR" if p.get('tiene_valor') else ""
-            parlay = " 🔗 PARLAY" if p.get('es_parlay') else ""
-            horario = f" [{p.get('horario')}]" if p.get('horario') else ""
-            print(f"      → [{p.get('categoria')}]{horario} {p.get('partido')} | {p.get('pick')} @ {p.get('cuota')}{valor}{parlay}")
-            
-        return picks_fallback
 
 # ============================================================
 #  FASE 7: GUARDADO Y NOTIFICACIONES
 # ============================================================
-def fase7_guardar_y_notificar(picks):
+def _prepare_persisted_pick_rows(picks, *, generated_date):
+    if not picks or len(picks) > 6:
+        raise ValueError("La publicación requiere entre uno y seis picks.")
+    if any(type(pick.get('es_parlay')) is not bool for pick in picks):
+        raise ValueError("Cada pick requiere es_parlay booleano explícito.")
+    visible_picks = assign_visibility(picks)
+    clean_picks = []
+    for pick in visible_picks:
+        prepared = dict(pick)
+        prepared['fecha_generacion'] = generated_date
+        event_date = prepared.get('fecha_evento')
+        try:
+            if not isinstance(event_date, str):
+                raise ValueError("missing verified event date")
+            date.fromisoformat(event_date)
+        except (TypeError, ValueError):
+            event_date = scheduled_event_date(
+                prepared.get('horario'), generated_date
+            )
+        prepared['fecha_evento'] = event_date
+        prepared['estado'] = 'pendiente'
+        prepared['liga'] = prepared.get('liga') or prepared.get(
+            'categoria', 'Fútbol Internacional'
+        )
+        prepared.setdefault('ganancia_simulada', 0)
+        persisted = {
+            key: value
+            for key, value in prepared.items()
+            if key in PERSISTED_PICK_COLUMNS
+        }
+        identity_source = dict(prepared)
+        identity_source.pop('physical_event_key', None)
+        persisted['physical_event_key'] = physical_event_key(identity_source)
+        if persisted.get('visibility') == 'public':
+            persisted.pop('razonamiento', None)
+        clean_picks.append(persisted)
+    return clean_picks
+
+
+def _residential_event_watch_rows(events):
+    if isinstance(events, (str, bytes)) or not isinstance(events, Sequence):
+        raise ValueError("residential events must be a sequence")
+    watched: dict[tuple[str, str], dict[str, str]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        source = event.get("source")
+        if not isinstance(source, str) or source.casefold() != "playdoit":
+            continue
+        event_id = event.get("source_event_id")
+        sport = event.get("sport")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("playdoit event watch requires source_event_id")
+        if not isinstance(sport, str) or not sport.strip():
+            raise ValueError("playdoit event watch requires sport")
+        timestamps = {}
+        for source_field, target_field in (
+            ("observed_at", "source_observed_at"),
+            ("starts_at", "source_starts_at"),
+        ):
+            value = event.get(source_field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"playdoit event watch requires {source_field}")
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                raise ValueError("playdoit event watch timestamp is invalid") from None
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError("playdoit event watch timestamp must be aware")
+            timestamps[target_field] = parsed.astimezone(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+        if timestamps["source_starts_at"] <= timestamps["source_observed_at"]:
+            raise ValueError("playdoit event watch timestamps are invalid")
+        prepared = {
+            "source": source.strip(),
+            "source_event_id": event_id.strip(),
+            "sport": sport.strip(),
+            **timestamps,
+        }
+        identity = (prepared["source"].casefold(), prepared["source_event_id"])
+        existing = watched.get(identity)
+        if existing is not None and existing != prepared:
+            raise ValueError("playdoit event watch contains conflicting duplicate")
+        watched[identity] = prepared
+    return tuple(watched.values())
+
+
+def fase7_guardar_y_notificar(
+    picks,
+    *,
+    repository=None,
+    settings=None,
+    transport=None,
+    run_key,
+    clock: Callable[[], datetime] | None = None,
+    deliver: bool = True,
+    write_public: bool = True,
+):
+    """Publish one atomic batch, then deliver each Telegram destination independently."""
     print("\n" + "="*60)
     print("💾  FASE 7: GUARDANDO Y NOTIFICANDO")
     print("="*60)
-    
+
+    if type(deliver) is not bool or type(write_public) is not bool:
+        raise ValueError("delivery and public projection flags must be boolean")
     if not picks:
         print("   ❌ No hay picks para guardar.")
-        return
-    
-    hoy = date.today().isoformat()
-    
-    # Agregar metadatos
-    base_id = int(time.time())
-    columnas_validas = {
-        'id', 'categoria', 'partido', 'pick', 'cuota', 'confianza', 'razonamiento',
-        'marcador', 'estado', 'es_parlay', 'liga', 'mercado', 'riesgo',
-        'resultado_apuesta', 'ganancia_simulada', 'fecha_generacion', 'odds_mercado', 'tiene_valor'
+        return None, {}
+    if len(picks) > 6:
+        raise ValueError("La publicación permite como máximo seis picks.")
+
+    active_settings = settings or load_settings(dry_run=False)
+    if repository is None:
+        require_publish_backend()
+        repository = SupabaseBatchRepository(supabase)
+
+    hoy = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
+    picks = _prepare_persisted_pick_rows(picks, generated_date=hoy)
+    free_picks = public_payload(picks)
+    expected_free = expected_public_pick_count(len(picks))
+    free_events = {
+        (
+            str(pick.get('source', '')).strip().casefold(),
+            str(pick.get('source_event_id', '')).strip(),
+        )
+        for pick in free_picks
     }
-    
-    clean_picks = []
-    for idx, pick in enumerate(picks):
-        pick['id'] = base_id + idx
-        pick['fecha_generacion'] = hoy
-        pick['estado'] = 'pendiente'
-        pick['liga'] = pick.get('categoria', 'Fútbol Internacional')
-        if 'ganancia_simulada' not in pick:
-            pick['ganancia_simulada'] = 0
-        clean_item = {k: v for k, v in pick.items() if k in columnas_validas}
-        clean_picks.append(clean_item)
-    
-    if supabase:
+    if (
+        len(free_picks) != expected_free
+        or len(free_events) != len(free_picks)
+        or any(pick.get('es_parlay') is not False for pick in free_picks)
+    ):
+        raise ValueError(
+            "La publicación no cumple la política de picks públicos."
+        )
+
+    active_run_key = str(run_key or "").strip()
+    if not active_run_key:
+        raise RuntimeError(
+            "No hay una clave estable de corrida; configura SCRAPER_RUN_KEY."
+        )
+
+    try:
+        active_clock = clock or _utc_now
+        publication = AuditedBatchPublisher(
+            repository=repository,
+            run_key=active_run_key,
+            public_path=active_settings.public_picks_path,
+            clock=active_clock,
+        ).publish(
+            picks,
+            dry_run=False,
+            write_public=write_public,
+        )
+    except Exception:
+        raise PersistenceFailure("scraper batch persistence failed") from None
+    print(f"   ✅ Lote {publication.batch_id} publicado atómicamente.")
+    deliveries = {}
+    if deliver:
+        deliveries = _deliver_persisted_publication(
+            publication,
+            repository,
+            active_settings,
+            transport=transport,
+            clock=active_clock,
+        )
+    return publication, deliveries
+
+
+def _deliver_persisted_publication(
+    publication,
+    repository,
+    settings,
+    *,
+    transport=None,
+    clock: Callable[[], datetime] | None = None,
+):
+    """Deliver only destinations absent from the persisted success ledger."""
+    try:
+        reference_at = (clock or _utc_now)()
+        if publication.portfolio_date is None:
+            revalidate_persisted_picks(
+                publication.picks,
+                reference_at=reference_at,
+            )
+        else:
+            revalidate_daily_portfolio(
+                publication.picks,
+                reference_at=reference_at,
+            )
+        delivery_source = publication.delivery_picks or publication.picks
+        validated_picks = revalidate_delivery_picks(
+            delivery_source,
+            reference_at=reference_at,
+        )
+    except (RuntimeError, TypeError, ValueError):
         try:
-            print(f"   💾 Subiendo {len(clean_picks)} picks frescos a Supabase...")
-            # Limpiar pendientes anteriores
-            try:
-                supabase.table("picks").delete().eq("estado", "pendiente").execute()
-            except Exception:
-                pass
-            supabase.table("picks").insert(clean_picks).execute()
-            print("   ✅ Picks subidos exitosamente a Supabase.")
-        except Exception as e:
-            print(f"   ⚠️ Error subiendo a Supabase: {e}")
+            Path(settings.public_picks_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise PersistenceFailure("stale persisted picks") from None
+    delivery_picks = [dict(row) for row in validated_picks]
+
+    destinations = [
+        TelegramDestination("admin", settings.telegram_admin_id, "all")
+        if settings.telegram_admin_id
+        else None,
+        TelegramDestination("vip", settings.telegram_vip_id, "all")
+        if settings.telegram_vip_id
+        else None,
+        TelegramDestination("free", settings.telegram_free_id, "public")
+        if settings.telegram_free_id
+        else None,
+    ]
+    active_destinations = [destination for destination in destinations if destination]
+
+    if not active_destinations:
+        print("   ℹ️ No hay destinos de Telegram configurados.")
+        return {}
+
+    completed = frozenset(
+        name
+        for name, status in publication.delivery_status.items()
+        if status is True
+        or (isinstance(status, dict) and status.get('success') is True)
+    )
+    pending_destinations = [
+        destination
+        for destination in active_destinations
+        if destination.name not in completed
+    ]
+    if not pending_destinations:
+        return {
+            destination.name: DeliveryResult(success=True, skipped=True)
+            for destination in active_destinations
+        }
+
+    if transport is None and not settings.telegram_token:
+        print("   ❌ Falta el token de Telegram; se registraron las entregas como fallidas.")
+        deliveries = {
+            destination.name: (
+                DeliveryResult(success=True, skipped=True)
+                if destination.name in completed
+                else DeliveryResult(
+                    success=False,
+                    error="missing_telegram_token",
+                )
+            )
+            for destination in active_destinations
+        }
     else:
-        print("   ⚠️ No hay conexión a Supabase, guardando solo en local.")
-        
-    _guardar_local(picks)
-    _enviar_telegram(picks)
+        if transport is None:
+            transport = TelegramHttpTransport(settings.telegram_token)
+        deliveries = deliver_batch(
+            delivery_picks,
+            active_destinations,
+            transport,
+            completed=completed,
+        )
 
-def _guardar_local(picks):
-    try:
-        ruta = os.path.join(os.path.dirname(__file__), '..', 'frontend', 'public', 'picks.json')
-        os.makedirs(os.path.dirname(ruta), exist_ok=True)
-        with open(ruta, 'w', encoding='utf-8') as f:
-            json.dump(picks, f, indent=2, ensure_ascii=False)
-        print(f"   📁 Picks guardados en local: {ruta}")
-    except Exception as e:
-        print(f"   ⚠️ Error guardando local: {e}")
-
-def _enviar_telegram(picks):
-    try:
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        vip_channel_id = os.getenv("TELEGRAM_VIP_CHANNEL_ID") or "-1003845930328"
-        free_channel_id = os.getenv("TELEGRAM_FREE_CHANNEL_ID") or "-1004387927424"
-        
-        if not token or not chat_id:
-            print("   ⚠️ No hay credenciales de Telegram configuradas.")
-            return
-
-        # 1. Enviar Resumen Oficial a Telegram Privado (Carlos)
-        msg_privado = "🌮 *REY TACO PICKS - CARTERA OFICIAL PLAYDOIT* 👑\n\n"
-        for p in picks:
-            parlay = " 🔗 *PARLAY*" if p.get('es_parlay') else ""
-            valor = " 💎 *VALOR*" if p.get('tiene_valor') else ""
-            horario = f" 🕒 `{p.get('horario')}`" if p.get('horario') else ""
-            razon = f"\n   🧠 _¿Por qué?_ {p.get('razonamiento')}" if p.get('razonamiento') else ""
-            msg_privado += f"• *[{p.get('categoria')}]{parlay}{valor}*\n  🏟️ {p.get('partido')}{horario}\n  👉 *Pick:* `{p.get('pick')}` @ *{p.get('cuota')}*\n  📊 Confianza: *{p.get('confianza', '90%')}*{razon}\n\n"
-        
-        msg_privado += "🌐 *Ver en Web:* https://reytacopicks.com"
-        
-        reply_markup = {
-            "inline_keyboard": [
-                [{"text": "🌐 Ver en Rey Taco Picks Web", "url": "https://reytacopicks.com"}],
-                [{"text": "📲 Apostar en Playdoit", "url": "https://www.playdoit.mx/es/"}]
-            ]
-        }
-        
-        _post_telegram(token, chat_id, msg_privado, reply_markup)
-        print("   📱 ✅ Telegram (privado Carlos) enviado.")
-
-        # 2. Enviar a Canal VIP
-        if vip_channel_id:
-            msg_vip = "👑 *CARTERA EXCLUSIVA VIP - REY TACO PICKS* 🌮\n\n"
-            for p in picks:
-                parlay = " 🔗 *PARLAY VIP*" if p.get('es_parlay') else ""
-                horario = f" 🕒 `{p.get('horario')}`" if p.get('horario') else ""
-                razon = f"\n   🧠 _Análisis:_ {p.get('razonamiento')}" if p.get('razonamiento') else ""
-                msg_vip += f"💎 *[{p.get('categoria')}]{parlay}*\n🏟️ {p.get('partido')}{horario}\n🎯 *Pick:* `{p.get('pick')}` @ *{p.get('cuota')}*{razon}\n\n"
-            
-            msg_vip += "🚀 *Apostar en Playdoit:* https://www.playdoit.mx/es/\n🌐 *Plataforma:* https://reytacopicks.com"
-            _post_telegram(token, vip_channel_id, msg_vip, reply_markup)
-            print("   👑 ✅ Telegram (Canal VIP) enviado.")
-
-        # 3. Enviar al Canal FREE (Picks Directos)
-        if free_channel_id:
-            for i, p in enumerate(picks[:2]):
-                msg_free = f"📢 *PICK GRATUITO #{i+1} DEL DÍA* 🌮👑\n\n"
-                msg_free += f"🏟️ *Partido:* {p.get('partido')}\n"
-                if p.get('horario'): msg_free += f"🕒 *Horario:* `{p.get('horario')}`\n"
-                msg_free += f"🎯 *Pick:* `{p.get('pick')}`\n"
-                msg_free += f"💰 *Cuota:* `{p.get('cuota')}`\n"
-                msg_free += f"📊 *Confianza:* {p.get('confianza', '90%')}\n\n"
-                if p.get('razonamiento'):
-                    msg_free += f"🧠 *Análisis:* {p.get('razonamiento')}\n\n"
-                msg_free += "🔒 _Accede a todos los picks y al Parlay IA en:_\n👉 https://reytacopicks.com"
-                
-                _post_telegram(token, free_channel_id, msg_free, reply_markup)
-                print(f"   📢 ✅ Telegram (Canal FREE - Pick #{i+1}) enviado: {p.get('partido')}")
-                time.sleep(1)
-
-    except Exception as e:
-        print(f"   ⚠️ Error en envío a Telegram: {e}")
-
-def _post_telegram(token, chat_id, text, reply_markup=None):
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True
-        }
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-            
-        data = json.dumps(payload).encode('utf-8')
-        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+    if publication.run_id is None:
+        raise PersistenceFailure("scraper batch persistence failed")
+    record_failures = []
+    for destination, result in deliveries.items():
+        if result.skipped:
+            continue
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.getcode() == 200
+            repository.record_delivery(
+                publication.run_id,
+                destination,
+                result.success,
+                result.error,
+            )
         except Exception:
-            # Fallback seguro sin Markdown si fallan caracteres especiales
-            payload.pop("parse_mode", None)
-            data2 = json.dumps(payload).encode('utf-8')
-            req2 = urllib.request.Request(url, data=data2, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req2, timeout=10) as resp2:
-                return resp2.getcode() == 200
-    except Exception as e:
-        print(f"      ❌ Falló post a {chat_id}: {e}")
+            record_failures.append(destination)
+            print(f"   ❌ No se pudo registrar la entrega Telegram {destination}.")
+            continue
+        outcome = "✅" if result.success else "❌"
+        print(f"   {outcome} Entrega Telegram {destination}.")
+
+    if record_failures:
+        raise DeliveryFailure(
+            "No se pudieron registrar entregas de Telegram: "
+            + ", ".join(record_failures)
+        )
+
+    return deliveries
+
+# ============================================================
+#  MAIN: SAFE COMMAND BOUNDARY AND LEGACY PIPELINE ADAPTER
+# ============================================================
+class ExitCode(IntEnum):
+    SUCCESS = 0
+    CONFIGURATION = 2
+    NO_EVENTS = 3
+    NO_CANDIDATES = 4
+    PERSISTENCE = 5
+    DELIVERY = 6
+    SOURCE = 7
+    UNEXPECTED = 10
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenPick(Mapping[str, object]):
+    """Immutable scalar mapping that remains pickle/asdict serializable."""
+
+    _items: tuple[tuple[str, object], ...]
+
+    def __getitem__(self, key: str) -> object:
+        for item_key, value in self._items:
+            if item_key == key:
+                return value
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (key for key, _value in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+_UNSET_PIPELINE_PICKS = object()
+
+
+@dataclass(frozen=True, init=False)
+class PipelineResult:
+    event_count: int
+    pick_count: int
+    persisted: bool
+    failed_deliveries: tuple[str, ...]
+    picks: tuple[FrozenPick, ...]
+
+    def __init__(
+        self,
+        event_count: int,
+        pick_count: int,
+        persisted: bool,
+        failed_deliveries: Sequence[str],
+        picks: object = _UNSET_PIPELINE_PICKS,
+    ) -> None:
+        provided_picks = picks is not _UNSET_PIPELINE_PICKS
+        frozen_picks = () if not provided_picks else _freeze_pipeline_picks(picks)
+        _check_pipeline_result_fields(
+            event_count,
+            pick_count,
+            persisted,
+            failed_deliveries,
+        )
+        if provided_picks and pick_count != len(frozen_picks):
+            raise ValueError("invalid pipeline result")
+        object.__setattr__(self, "event_count", event_count)
+        object.__setattr__(self, "pick_count", pick_count)
+        object.__setattr__(self, "persisted", persisted)
+        object.__setattr__(self, "failed_deliveries", tuple(failed_deliveries))
+        object.__setattr__(self, "picks", frozen_picks)
+
+
+def run_structured_pipeline(
+    events,
+    ranker,
+    publisher,
+    *,
+    dry_run,
+    reference_at=None,
+):
+    """Rank and publish only facts copied from normalized sportsbook evidence."""
+
+    try:
+        normalized_events = list(events)
+    except Exception:
+        return PipelineResult(0, 0, False, ())
+    event_count = len(normalized_events)
+    if type(dry_run) is not bool:
+        return PipelineResult(event_count, 0, False, ())
+
+    try:
+        candidates = build_candidates(normalized_events)
+    except Exception:
+        return PipelineResult(event_count, 0, False, ())
+    if not candidates:
+        return PipelineResult(event_count, 0, False, ())
+
+    try:
+        reference = (
+            datetime.now(timezone.utc)
+            if reference_at is None
+            else reference_at
+        )
+        if (
+            not isinstance(reference, datetime)
+            or reference.tzinfo is None
+            or reference.utcoffset() is None
+        ):
+            return PipelineResult(event_count, 0, False, ())
+        candidates = [
+            candidate
+            for candidate in candidates
+            if (
+                candidate.starts_at.astimezone(timezone.utc)
+                > reference.astimezone(timezone.utc)
+            )
+        ]
+        if not candidates:
+            return PipelineResult(event_count, 0, False, ())
+    except Exception:
+        return PipelineResult(event_count, 0, False, ())
+
+    try:
+        raw_ranking = ranker(tuple(candidates))
+    except Exception:
+        return PipelineResult(event_count, 0, False, ())
+    ranked = select_daily_portfolio(
+        validate_ai_ranking(raw_ranking, candidates)
+    )
+    if not ranked:
+        return PipelineResult(event_count, 0, False, ())
+
+    try:
+        source_backed_rows = []
+        for ranked_pick in ranked:
+            evidence = evidence_for_candidate(
+                ranked_pick.candidate,
+                candidates,
+                reference_at=reference,
+            )
+            if evidence.source_count == 0:
+                return PipelineResult(event_count, 0, False, ())
+            score = score_evidence(evidence)
+            row = _source_backed_pick_row(ranked_pick, score, reference)
+            if not _valid_source_audit_row(row, reference_at=reference):
+                return PipelineResult(event_count, 0, False, ())
+            source_backed_rows.append(row)
+        visible_rows = assign_visibility(source_backed_rows)
+        for visible_row in visible_rows:
+            if visible_row.get("visibility") == "public":
+                visible_row.pop("razonamiento", None)
+        visible_rows = [
+            {
+                key: value
+                for key, value in visible_row.items()
+                if key in PERSISTED_PICK_COLUMNS
+            }
+            for visible_row in visible_rows
+        ]
+    except Exception:
+        return PipelineResult(event_count, 0, False, ())
+
+    if not _valid_visible_source_rows(visible_rows, reference_at=reference):
+        return PipelineResult(event_count, 0, False, ())
+
+    frozen_rows = _freeze_pipeline_picks(visible_rows)
+    publisher_rows = [dict(row) for row in frozen_rows]
+    try:
+        publication = publisher.publish(publisher_rows, dry_run=dry_run)
+    except Exception:
+        return PipelineResult(
+            event_count,
+            len(frozen_rows),
+            False,
+            (),
+            frozen_rows,
+        )
+
+    try:
+        persisted = _publication_was_persisted(publication, dry_run=dry_run)
+    except Exception:
+        persisted = False
+    return PipelineResult(
+        event_count,
+        len(frozen_rows),
+        persisted,
+        (),
+        frozen_rows,
+    )
+
+
+def _source_market_audit_key(candidate: CandidatePick) -> str:
+    identity = [
+        candidate.bookmaker_key,
+        candidate.market_key,
+        candidate.period,
+        _canonical_line(candidate.line),
+    ]
+    if candidate.source_market_id is not None:
+        identity.append(candidate.source_market_id)
+        identity.append({
+            "scope": candidate.market_scope,
+            "participant_id": candidate.participant_id,
+            "team_id": candidate.team_id,
+            "competitor_id": candidate.competitor_id,
+            "offer_kind": candidate.offer_kind,
+            "lineup_confirmed": candidate.lineup_confirmed,
+        })
+    return "market:v1:" + json.dumps(
+        identity,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _source_backed_pick_row(
+    ranked_pick: RankedPick,
+    evidence_score: EvidenceScore,
+    reference_at: datetime,
+) -> dict[str, object]:
+    candidate = ranked_pick.candidate
+    row = _legacy_ranked_pick_projection(ranked_pick, evidence_score)
+    row.update(
+        {
+            "source": candidate.source,
+            "source_event_id": candidate.source_event_id,
+            "source_market_key": _source_market_audit_key(candidate),
+            "source_selection_key": (
+                candidate.source_selection_id or candidate.selection_key
+            ),
+            "source_observed_at": candidate.observed_at.astimezone(
+                timezone.utc
+            ).isoformat().replace("+00:00", "Z"),
+            "source_starts_at": candidate.starts_at.astimezone(
+                timezone.utc
+            ).isoformat().replace("+00:00", "Z"),
+            "fecha_generacion": reference_at.astimezone(
+                ZoneInfo("America/Mexico_City")
+            ).date().isoformat(),
+            "fecha_evento": candidate.starts_at.astimezone(
+                ZoneInfo("America/Mexico_City")
+            ).date().isoformat(),
+            "estado": "pendiente",
+            "ganancia_simulada": 0,
+        }
+    )
+    return row
+
+
+def _valid_source_audit_row(
+    row: object,
+    *,
+    reference_at: datetime | None = None,
+) -> bool:
+    if not isinstance(row, Mapping):
         return False
-
-def _enviar_reporte_estado():
-    try:
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        
-        if not token or not chat_id:
-            return
-
-        activos = []
-        if supabase:
-            try:
-                res = supabase.table("picks").select("*").eq("estado", "pendiente").order("id", desc=True).limit(10).execute()
-                activos = res.data or []
-            except Exception:
-                pass
-
-        hora_actual = time.strftime('%I:%M %p CDMX')
-        msg = f"👑 REY TACO PICKS • REPORTE OPERATIVO PRIVADO ({hora_actual}) 👑\n\n"
-        msg += "🟢 Escáner de Playdoit completado con éxito.\n"
-        msg += f"📊 {len(activos)} jugadas +EV activas en cartera sin cambios bruscos de líneas.\n\n"
-
-        for p in activos[:6]:
-            valor = " 💎" if p.get('tiene_valor') else ""
-            parlay = "🔗 " if p.get('es_parlay') else "🎯 "
-            msg += f"{parlay}{p.get('partido')} ➔ {p.get('pick')} @ Cuota {p.get('cuota')}{valor}\n"
-
-        msg += f"\n🌐 Dashboard y cuotas en tiempo real:\n👉 https://reytacopicks.com"
-
-        url_tg = f"https://api.telegram.org/bot{token}/sendMessage"
-        keyboard = {
-            "inline_keyboard": [
-                [
-                    {"text": "📲 Apostar en Playdoit", "url": "https://www.playdoit.mx/es/"},
-                    {"text": "🌐 Entrar a reytacopicks.com", "url": "https://reytacopicks.com/"}
-                ]
-            ]
-        }
-
-        data = json.dumps({"chat_id": chat_id, "text": msg, "reply_markup": keyboard}).encode('utf-8')
-        req = urllib.request.Request(url_tg, data=data, headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req) as resp:
-            print("   📱 ✅ Reporte de monitoreo enviado EXCLUSIVAMENTE al chat privado de Carlos.")
-    except Exception as e:
-        print(f"   ⚠️ Error enviando reporte de estado privado: {e}")
-
-# ============================================================
-#  FASE 7: GUARDADO Y NOTIFICACIONES
-# ============================================================
-def fase7_guardar_y_notificar(picks):
-    print("\n" + "="*60)
-    print("💾  FASE 7: GUARDANDO Y NOTIFICANDO")
-    print("="*60)
-    
-    if not picks:
-        print("   ℹ️ No hay nuevos picks en esta corrida. Enviando reporte de estado y monitoreo a Telegram...")
-        _enviar_reporte_estado()
-        return
-    
-    hoy = date.today().isoformat()
-    
-    # Agregar metadatos
-    base_id = int(time.time())
-    for idx, pick in enumerate(picks):
-        pick['id'] = base_id + idx
-        pick['fecha_generacion'] = hoy
-        pick['estado'] = 'pendiente'
-        if 'ganancia_simulada' not in pick:
-            pick['ganancia_simulada'] = 0
-    
-    ALLOWED_COLUMNS = {
-        'id', 'categoria', 'partido', 'pick', 'cuota', 'confianza', 
-        'razonamiento', 'es_parlay', 'tiene_valor', 'estado', 
-        'fecha_generacion', 'odds_mercado', 'ganancia_simulada'
+    text_limits = {
+        "source": 100,
+        "source_event_id": 500,
+        "source_market_key": 1000,
+        "source_selection_key": 500,
+        "source_observed_at": 100,
+        "source_starts_at": 100,
     }
-    clean_picks = [{k: v for k, v in p.items() if k in ALLOWED_COLUMNS} for p in picks]
-    
-    if supabase:
+    for field, maximum_length in text_limits.items():
+        value = row.get(field)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.strip()) > maximum_length
+        ):
+            return False
+    observed_at = row.get("source_observed_at")
+    starts_at = row.get("source_starts_at")
+    utc_pattern = re.compile(
+        r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+        r"(?:[.][0-9]{1,6})?(?:Z|[+]00:00)$"
+    )
+    if (
+        not isinstance(observed_at, str)
+        or not isinstance(starts_at, str)
+        or utc_pattern.fullmatch(observed_at) is None
+        or utc_pattern.fullmatch(starts_at) is None
+    ):
+        return False
+    try:
+        parsed_observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        parsed_starts_at = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+        reference = _utc_now() if reference_at is None else reference_at
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if (
+        parsed_observed_at.utcoffset() != timedelta(0)
+        or parsed_starts_at.utcoffset() != timedelta(0)
+        or reference.tzinfo is None
+        or reference.utcoffset() is None
+        or parsed_observed_at > reference.astimezone(timezone.utc)
+        or parsed_starts_at <= parsed_observed_at
+        or parsed_starts_at <= reference.astimezone(timezone.utc)
+    ):
+        return False
+    price = row.get("cuota")
+    maximum_price = 50.0
+    source_market_key = row.get("source_market_key")
+    if (
+        isinstance(source_market_key, str)
+        and source_market_key.startswith("market:v1:")
+        and isinstance(row.get("source"), str)
+        and str(row["source"]).casefold() == "playdoit"
+    ):
         try:
-            print(f"   💾 Subiendo {len(clean_picks)} picks frescos a Supabase...")
-            supabase.table("picks").insert(clean_picks).execute()
-            print("   ✅ Picks subidos exitosamente.")
-        except Exception as e:
-            print(f"   ⚠️ Error en Supabase insert: {e}")
-        _guardar_local(picks)
-    else:
-        _guardar_local(picks)
-    
-    # Telegram
-    _enviar_telegram(picks)
+            market_identity = json.loads(
+                source_market_key.removeprefix("market:v1:")
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            market_identity = None
+        if (
+            isinstance(market_identity, list)
+            and len(market_identity) == 6
+            and market_identity[0] == "playdoit"
+            and isinstance(market_identity[1], str)
+            and isinstance(market_identity[2], str)
+            and market_identity[2].strip()
+            and market_identity[3] is None
+            and isinstance(market_identity[4], str)
+            and market_identity[4].strip()
+            and market_identity[1]
+            == f"playdoit_market:{market_identity[4]}".casefold()
+            and isinstance(market_identity[5], dict)
+            and set(market_identity[5]) == {
+                "scope",
+                "participant_id",
+                "team_id",
+                "competitor_id",
+                "offer_kind",
+                "lineup_confirmed",
+            }
+            and isinstance(market_identity[5].get("scope"), str)
+            and isinstance(market_identity[5].get("offer_kind"), str)
+            and isinstance(
+                market_identity[5].get("lineup_confirmed"), bool
+            )
+            and all(
+                value is None or (
+                    isinstance(value, str) and bool(value.strip())
+                )
+                for value in (
+                    market_identity[5].get("participant_id"),
+                    market_identity[5].get("team_id"),
+                    market_identity[5].get("competitor_id"),
+                )
+            )
+            and (
+                (
+                    market_identity[5].get("participant_id") is None
+                    and str(market_identity[5].get("scope")).casefold()
+                    not in {"player", "participant", "player_prop"}
+                )
+                or market_identity[5].get("lineup_confirmed") is True
+            )
+        ):
+            maximum_price = 1000.0
+    return (
+        type(row.get("tiene_valor")) is bool
+        and isinstance(row.get("confianza"), str)
+        and isinstance(row.get("riesgo"), str)
+        and isinstance(price, (int, float))
+        and not isinstance(price, bool)
+        and math.isfinite(float(price))
+        and 1.01 <= float(price) <= maximum_price
+    )
 
-def _guardar_local(picks):
-    output_path = os.path.join("..", "frontend", "public", "picks.json")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(picks, f, indent=4, ensure_ascii=False)
-    print(f"   📁 Picks guardados en local: {output_path}")
 
-def formatear_pick_canal(p, numero=1, total=1):
-    valor = " 💎 VALOR +EV" if p.get('tiene_valor') else ""
-    es_parlay = p.get('es_parlay')
-    categoria = p.get('categoria', 'Deportes')
-    partido = p.get('partido', '')
-    pick_text = p.get('pick', '')
-    cuota = p.get('cuota', '')
-    confianza = p.get('confianza', '')
-    razonamiento = p.get('razonamiento', '')
-    odds_mkt = f" (Mercado: {p.get('odds_mercado')})" if p.get('odds_mercado') else ""
-    horario_str = f"🕒 Horario: {p.get('horario', 'Hoy')}\n" if p.get('horario') else "🕒 Horario: Hoy (CDMX)\n"
-    
-    if es_parlay:
-        header = f"👑 REY TACO PICKS 👑\n🔗 COMBINADA / PARLAY DESTACADO [{numero}/{total}]"
-    elif "esquina" in categoria.lower() or "córner" in categoria.lower():
-        header = f"👑 REY TACO PICKS 👑\n⛳ ANÁLISIS DE TIROS DE ESQUINA [{numero}/{total}]"
-    elif "béisbol" in categoria.lower() or "mlb" in categoria.lower():
-        header = f"👑 REY TACO PICKS 👑\n⚾ ANÁLISIS MLB / BÉISBOL [{numero}/{total}]"
-    elif "americano" in categoria.lower() or "nfl" in categoria.lower():
-        header = f"👑 REY TACO PICKS 👑\n🏈 ANÁLISIS NFL / AMERICANO [{numero}/{total}]"
-    else:
-        header = f"👑 REY TACO PICKS 👑\n⚽ ANÁLISIS DEL DÍA [{numero}/{total}]"
-        
-    msg = f"{header}\n\n"
-    msg += f"🏟️ Evento: {partido}\n"
-    msg += horario_str
-    msg += f"🎯 Selección: {pick_text}\n"
-    msg += f"📊 Cuota: {cuota}{odds_mkt}{valor}\n"
-    msg += f"🔥 Confianza: {confianza}\n\n"
-    
-    if razonamiento:
-        msg += f"🧠 Análisis Alpha (IA):\n{razonamiento}\n\n"
-        
-    msg += "🌐 Desbloquea la cartera completa y calculadora en vivo:\n👉 https://reytacopicks.com"
-    return msg
+def _valid_visible_source_rows(
+    rows: object,
+    *,
+    reference_at: datetime | None = None,
+) -> bool:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 6:
+        return False
+    if not all(
+        _valid_source_audit_row(row, reference_at=reference_at)
+        for row in rows
+    ):
+        return False
+    public_rows = [row for row in rows if row.get("visibility") == "public"]
+    public_events = {
+        (
+            str(row.get("source", "")).strip().casefold(),
+            str(row.get("source_event_id", "")).strip(),
+        )
+        for row in public_rows
+    }
+    return (
+        len(public_rows) == expected_public_pick_count(len(rows))
+        and len(public_events) == len(public_rows)
+        and all(row.get("es_parlay") is False for row in public_rows)
+        and all(row.get("razonamiento") is None for row in public_rows)
+        and all(row.get("visibility") in {"public", "premium"} for row in rows)
+    )
 
-def _enviar_telegram(picks):
+
+def _freeze_pipeline_picks(picks: object) -> tuple[FrozenPick, ...]:
+    if isinstance(picks, (str, bytes)) or not isinstance(picks, Sequence):
+        raise ValueError("invalid pipeline picks")
+    frozen = []
+    for pick in picks:
+        if not isinstance(pick, Mapping):
+            raise ValueError("invalid pipeline picks")
+        copied = {}
+        for key, value in pick.items():
+            if not isinstance(key, str) or not isinstance(
+                value,
+                (str, int, float, bool, type(None)),
+            ):
+                raise ValueError("invalid pipeline picks")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("invalid pipeline picks")
+            copied[key] = value
+        frozen.append(FrozenPick(tuple(copied.items())))
+    return tuple(frozen)
+
+
+def _publication_was_persisted(publication: object, *, dry_run: bool) -> bool:
+    if type(dry_run) is not bool:
+        return False
     try:
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        vip_channel_id = os.getenv("TELEGRAM_VIP_CHANNEL_ID") or os.getenv("TELEGRAM_CHANNEL_ID")
-        free_channel_id = os.getenv("TELEGRAM_FREE_CHANNEL_ID")
-        
-        if not token:
-            return
+        response_dry_run = getattr(publication, "dry_run")
+        created = getattr(publication, "created")
+        run_id = getattr(publication, "run_id")
+        batch_id = getattr(publication, "batch_id")
+    except Exception:
+        return False
+    if type(response_dry_run) is not bool or response_dry_run is not dry_run:
+        return False
+    if type(created) is not bool:
+        return False
+    if dry_run:
+        return False
+    return (
+        isinstance(run_id, str)
+        and bool(run_id.strip())
+        and isinstance(batch_id, str)
+        and bool(batch_id.strip())
+    )
 
-        # 1. Enviar el reporte COMPLETO con todos los picks a Carlos (Privado)
-        mensaje_completo = "👑 REY TACO PICKS VIP (CARTERA OFICIAL) 👑\n\n"
-        for p in picks:
-            valor = " 💎VALOR +EV" if p.get('tiene_valor') else ""
-            parlay = "🔗 PARLAY: " if p.get('es_parlay') else ""
-            horario = f"  🕒 {p.get('horario', 'Hoy')}\n" if p.get('horario') else ""
-            razonamiento = f"  🧠 ¿Por qué este pick?: {p.get('razonamiento', 'Ventaja estadística +EV confirmada.')}\n" if p.get('razonamiento') else ""
-            
-            mensaje_completo += f"{parlay}[{p.get('categoria', 'Mercado')}]\n"
-            mensaje_completo += f"  🏟️ {p.get('partido', '')}\n"
-            mensaje_completo += horario
-            mensaje_completo += f"  🎯 Pick: {p.get('pick', '')} @ {p.get('cuota', '')}{valor}\n"
-            mensaje_completo += f"  🔥 Confianza: {p.get('confianza', '85%')}\n"
-            mensaje_completo += razonamiento + "\n"
-        
-        mensaje_completo += "🌐 Cartera completa en vivo: https://reytacopicks.com"
 
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
+def _check_pipeline_result_fields(
+    event_count,
+    pick_count,
+    persisted,
+    failed_deliveries,
+):
+    if type(event_count) is not int or event_count < 0:
+        raise ValueError("invalid pipeline result")
+    if type(pick_count) is not int or pick_count < 0:
+        raise ValueError("invalid pipeline result")
+    if type(persisted) is not bool:
+        raise ValueError("invalid pipeline result")
+    if isinstance(failed_deliveries, (str, bytes)) or not isinstance(
+        failed_deliveries, Sequence
+    ):
+        raise ValueError("invalid pipeline result")
+    if any(
+        type(name) is not str
+        or re.fullmatch(r"[a-z][a-z0-9_-]{0,49}", name) is None
+        for name in failed_deliveries
+    ):
+        raise ValueError("invalid pipeline result")
+    if event_count == 0 and pick_count != 0:
+        raise ValueError("invalid pipeline result")
+    if pick_count == 0 and (persisted or failed_deliveries):
+        raise ValueError("invalid pipeline result")
+    if failed_deliveries and not persisted:
+        raise ValueError("invalid pipeline result")
 
-        keyboard_vip = {
-            "inline_keyboard": [
-                [
-                    {"text": "📲 Apostar en Playdoit", "url": "https://www.playdoit.mx/es/"},
-                    {"text": "🌐 Dashboard en Vivo", "url": "https://reytacopicks.com/"}
-                ]
-            ]
-        }
 
-        keyboard_free = {
-            "inline_keyboard": [
-                [
-                    {"text": "👑 Pase VIP ($299 MXN)", "url": "https://wa.me/525639331102?text=Hola,%20quiero%20el%20Pase%20VIP%20de%20Rey%20Taco%20Picks"},
-                    {"text": "📲 Apostar en Playdoit", "url": "https://www.playdoit.mx/es/"}
-                ],
-                [
-                    {"text": "🌐 Ver Todos los Picks en la Web", "url": "https://reytacopicks.com/"}
-                ]
-            ]
-        }
-
-        # Envío a Carlos
-        if chat_id:
-            data = json.dumps({"chat_id": chat_id, "text": mensaje_completo, "reply_markup": keyboard_vip}).encode('utf-8')
-            req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req) as resp:
-                if resp.getcode() == 200:
-                    print("   📱 ✅ Telegram (privado Carlos) enviado con botones interactivos.")
-
-        # 2. Envío INMEDIATO al CANAL VIP
-        if vip_channel_id:
-            data_vip = json.dumps({"chat_id": vip_channel_id, "text": mensaje_completo, "reply_markup": keyboard_vip}).encode('utf-8')
-            req_vip = urllib.request.Request(url, data=data_vip, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req_vip) as resp_vip:
-                if resp_vip.getcode() == 200:
-                    print("   👑 ✅ Telegram (Canal VIP) enviado con botones interactivos.")
-
-        # 3. Envío al CANAL FREE (Pick Estrella Inmediato + Cola Espaciada)
-        if free_channel_id and picks:
-            # A) Pick #1 Gratuito
-            pick_1_msg = formatear_pick_canal(picks[0], numero=1, total=len(picks))
-            data_free = json.dumps({"chat_id": free_channel_id, "text": pick_1_msg, "reply_markup": keyboard_free}).encode('utf-8')
-            req_free = urllib.request.Request(url, data=data_free, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req_free) as resp_free:
-                if resp_free.getcode() == 200:
-                    print(f"   📢 ✅ Telegram (Canal FREE - Pick #1) enviado con botones: {picks[0].get('partido')}")
-
-            # B) Programar los picks restantes espaciados cada 75 min para el Canal Free
-            queue_file = os.path.join(os.path.dirname(__file__), "channel_queue.json")
-            queue = []
-            now = time.time()
-            intervalo_segundos = 75 * 60
-            
-            for i, p in enumerate(picks[1:], 2):
-                prog_time = now + ((i - 1) * intervalo_segundos)
-                queue.append({
-                    "pick_id": p.get('id'),
-                    "partido": p.get('partido'),
-                    "timestamp_programado": prog_time,
-                    "fecha_legible": time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(prog_time)),
-                    "mensaje": formatear_pick_canal(p, numero=i, total=len(picks)),
-                    "reply_markup": keyboard_free,
-                    "enviado": False
-                })
-                
-            with open(queue_file, "w", encoding="utf-8") as f:
-                json.dump(queue, f, indent=2, ensure_ascii=False)
-            print(f"   ⏳ {len(queue)} picks programados en cola para publicarse espaciados en Canal FREE.")
-
-    except Exception as e:
-        print(f"   📱 ❌ Error Telegram: {e}")
-
-# ============================================================
-#  MAIN: ORQUESTADOR DE FASES
-# ============================================================
-def main():
-    print("\n" + "="*60)
-    print("🌮  REY TACO PICKS BOT v5.0  🌮")
-    print("   Arquitectura: Escáner → Mercado → Filtro → Inmersión → Memoria → IA → Picks")
-    print("="*60)
-    
-    driver = None
+def _validated_pipeline_result(result, *, dry_run):
     try:
-        driver = get_chrome_driver()
-        
-        # Fase 1: Radar
-        partidos = fase1_escaneo_superficie(driver)
-        if not partidos:
-            print("\n❌ No se encontraron partidos. Abortando.")
-            return
-        
-        # Fase 2: Cuotas del mercado global
-        market_odds = fase2_comparacion_mercado(partidos)
-        
-        # Fase 3: Filtro Inteligente
-        objetivos = fase3_filtro_inteligente(partidos)
-        
-        # Fase 4: Inmersión Quirúrgica
-        datos_profundos = fase4_inmersion(driver, objetivos, partidos)
-        
-        # Fase 5: Memoria Histórica
-        memoria = fase5_memoria_historica()
-        
-        # Fase 6: Análisis Final
-        picks = fase6_analisis_final(datos_profundos, memoria, market_odds, partidos)
-        
-        # Fase 7: Guardar y Notificar
-        fase7_guardar_y_notificar(picks)
-        
-        print("\n" + "="*60)
-        print("✅  MISIÓN COMPLETADA. Revisa tu página web.")
-        print("="*60)
-        
-    except Exception as e:
-        print(f"\n❌ Error general: {e}")
+        event_count = result.event_count
+        pick_count = result.pick_count
+        persisted = result.persisted
+        failed_deliveries = result.failed_deliveries
+    except AttributeError:
+        raise ValueError("invalid pipeline result") from None
+
+    _check_pipeline_result_fields(
+        event_count,
+        pick_count,
+        persisted,
+        failed_deliveries,
+    )
+    if dry_run and (persisted or failed_deliveries):
+        raise ValueError("invalid pipeline result")
+    return PipelineResult(
+        event_count,
+        pick_count,
+        persisted,
+        tuple(failed_deliveries),
+    )
+
+
+def _schema_status_data(data):
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    return data if isinstance(data, dict) else None
+
+
+def _schema_boolean_data(data):
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    return data is True
+
+
+def probe_secure_schema(client):
+    """Fail closed using a read-only RPC supplied by the scraper migration."""
+    try:
+        response = client.rpc("scraper_schema_status", {}).execute()
+        status = _schema_status_data(response.data)
+    except Exception:
+        status = None
+    if (
+        status is None
+        or type(status.get("version")) is not int
+        or status.get("version") != 2
+        or status.get("public_picks") is not True
+        or status.get("resume_pick_batch") is not True
+        or status.get("source_audit") is not True
+    ):
+        raise ConfigError("secure Supabase scraper migration is not applied")
+    if status.get("publish_pick_batch") is not True:
+        try:
+            response = client.rpc("six_pick_publish_schema_status", {}).execute()
+            six_pick_publish_ok = _schema_boolean_data(response.data)
+        except Exception:
+            six_pick_publish_ok = False
+        if not six_pick_publish_ok:
+            raise ConfigError("secure Supabase scraper migration is not applied")
+    try:
+        response = client.rpc("picks_policy_allowlist_status", {}).execute()
+        policy_allowlist_ok = _schema_boolean_data(response.data)
+    except Exception:
+        policy_allowlist_ok = False
+    if not policy_allowlist_ok:
+        raise ConfigError("secure Supabase scraper migration is not applied")
+
+
+def probe_daily_portfolio_schema(client):
+    """Require the complete private daily ledger before enabling daily mode."""
+    try:
+        response = client.rpc("daily_pick_schema_status", {}).execute()
+        ready = _schema_boolean_data(response.data)
+    except Exception:
+        ready = False
+    if not ready:
+        raise ConfigError("secure Supabase daily portfolio migration is not applied")
+
+
+def _cleanup_chrome_driver(driver):
+    """Quit once and disable undetected_chromedriver's destructor double-quit.
+
+    On Windows, the upstream Chrome.__del__ calls ``quit`` again after manual
+    cleanup and can raise ``WinError 6``. Instance replacement is deliberately
+    limited to that concrete upstream class; ordinary drivers keep their normal
+    method and the first cleanup failure still propagates.
+    """
+    driver_type = type(driver)
+    is_undetected_chrome = driver_type.__name__ == "Chrome" and (
+        driver_type.__module__ == "undetected_chromedriver"
+        or driver_type.__module__.startswith("undetected_chromedriver.")
+    )
+    try:
+        driver.quit()
     finally:
-        if driver:
+        if is_undetected_chrome:
+            driver.quit = lambda: None
+
+
+class LegacyPipeline:
+    """Injectable adapter around the existing collection and publication phases."""
+
+    def __init__(
+        self,
+        settings,
+        *,
+        repository=None,
+        history_client=None,
+        driver_factory=None,
+        clock: Callable[[], datetime] | None = None,
+        lineup_resolver=None,
+    ):
+        self.settings = settings
+        self.repository = repository
+        self.history_client = history_client
+        self.driver_factory = driver_factory or get_chrome_driver
+        self.clock = clock or _utc_now
+        self.lineup_resolver = lineup_resolver
+
+    def run(self, *, collect_only=False, deliver_only=False):
+        if type(collect_only) is not bool or type(deliver_only) is not bool:
+            raise ValueError("runtime mode flags must be boolean")
+        if collect_only and deliver_only:
+            raise ValueError("runtime modes are mutually exclusive")
+        if self.settings.dry_run and (collect_only or deliver_only):
+            raise ValueError("dry-run cannot use production runtime modes")
+
+        print("\n" + "=" * 60)
+        print("🌮  REY TACO PICKS BOT v5.0  🌮")
+        print(
+            "   Arquitectura: Escáner → Mercado → Filtro → "
+            "Inmersión → Memoria → IA → Picks"
+        )
+        print("=" * 60)
+        print(f"dry_run={str(self.settings.dry_run).lower()}")
+
+        daily_mode = self.settings.daily_portfolio_enabled
+        portfolio_date = self.settings.daily_portfolio_date if daily_mode else None
+        if daily_mode and not self.settings.dry_run and not portfolio_date:
+            raise ConfigError("daily portfolio date is not configured")
+
+        if not self.settings.dry_run and daily_mode and deliver_only:
             try:
-                driver.quit()
-            except:
-                pass
+                daily_publisher = DailyPortfolioPublisher(
+                    repository=self.repository,
+                    run_key=self.settings.run_key,
+                    public_path=self.settings.public_picks_path,
+                    clock=self.clock,
+                )
+                publication = daily_publisher.resume(write_public=True)
+                if publication is None:
+                    assert portfolio_date is not None
+                    publication = daily_publisher.release(
+                        portfolio_date=portfolio_date,
+                        write_public=True,
+                    )
+            except Exception:
+                raise PersistenceFailure(
+                    "daily portfolio persistence failed"
+                ) from None
+            if publication is None:
+                return PipelineResult(0, 0, False, ())
+            deliveries = _deliver_persisted_publication(
+                publication,
+                self.repository,
+                self.settings,
+                clock=self.clock,
+            )
+            failed = tuple(
+                sorted(
+                    name
+                    for name, result in deliveries.items()
+                    if not result.success
+                )
+            )
+            persisted_rows = tuple(dict(row) for row in publication.picks)
+            return PipelineResult(
+                len(persisted_rows),
+                len(persisted_rows),
+                True,
+                failed,
+                persisted_rows,
+            )
+
+        if not self.settings.dry_run and not daily_mode:
+            try:
+                publication = AuditedBatchPublisher(
+                    repository=self.repository,
+                    run_key=self.settings.run_key,
+                    public_path=self.settings.public_picks_path,
+                    clock=self.clock,
+                ).resume(
+                    dry_run=False,
+                    write_public=not (collect_only or deliver_only),
+                )
+            except Exception:
+                raise PersistenceFailure("scraper batch persistence failed") from None
+            if publication is not None:
+                if collect_only:
+                    print("collect_only=resumed")
+                    deliveries = {}
+                else:
+                    print("resume_only=true")
+                    deliveries = _deliver_persisted_publication(
+                        publication,
+                        self.repository,
+                        self.settings,
+                        clock=self.clock,
+                    )
+                failed = tuple(
+                    sorted(
+                        name
+                        for name, result in deliveries.items()
+                        if not result.success
+                    )
+                )
+                persisted_rows = tuple(dict(row) for row in publication.picks)
+                return PipelineResult(
+                    len(persisted_rows),
+                    len(persisted_rows),
+                    True,
+                    failed,
+                    persisted_rows,
+                )
+
+            if deliver_only:
+                return PipelineResult(0, 0, False, ())
+
+        driver = self.driver_factory()
+        try:
+            partidos = fase1_escaneo_superficie(
+                driver,
+                odds_api_key=self.settings.odds_api_key,
+                lineup_resolver=self.lineup_resolver,
+            )
+            if not partidos:
+                return PipelineResult(0, 0, False, ())
+
+            if not self.settings.dry_run and daily_mode:
+                try:
+                    watched_events = _residential_event_watch_rows(partidos)
+                    if watched_events:
+                        self.repository.record_residential_events(watched_events)
+                except Exception:
+                    raise PersistenceFailure(
+                        "residential event watch persistence failed"
+                    ) from None
+
+            market_odds = fase2_comparacion_mercado(
+                partidos, odds_api_key=self.settings.odds_api_key
+            )
+            objetivos = fase3_filtro_inteligente(
+                partidos, groq_api_key=self.settings.groq_api_key
+            )
+            datos_profundos = fase4_inmersion(driver, objetivos, partidos)
+            memoria = fase5_memoria_historica(self.history_client)
+            picks = fase6_analisis_final(
+                datos_profundos,
+                memoria,
+                market_odds,
+                partidos,
+                groq_api_key=self.settings.groq_api_key,
+            )
+            if not picks:
+                return PipelineResult(len(partidos), 0, False, ())
+
+            if self.settings.dry_run:
+                print(
+                    f"dry_run=true events={len(partidos)} candidates={len(picks)} "
+                    "persistence=skipped telegram=skipped"
+                )
+                return PipelineResult(len(partidos), len(picks), False, ())
+
+            if daily_mode:
+                assert portfolio_date is not None
+                prepared_picks = _prepare_persisted_pick_rows(
+                    picks,
+                    generated_date=portfolio_date,
+                )
+                try:
+                    daily_publisher = DailyPortfolioPublisher(
+                        repository=self.repository,
+                        run_key=self.settings.run_key,
+                        public_path=self.settings.public_picks_path,
+                        clock=self.clock,
+                    )
+                    stage = daily_publisher.stage(
+                        prepared_picks,
+                        portfolio_date=portfolio_date,
+                    )
+                except Exception:
+                    raise PersistenceFailure(
+                        "daily portfolio persistence failed"
+                    ) from None
+                print(
+                    f"   ✅ Borrador diario {stage.portfolio_date} "
+                    f"revisión {stage.revision}."
+                )
+                if collect_only:
+                    return PipelineResult(
+                        len(partidos),
+                        len(prepared_picks),
+                        True,
+                        (),
+                        prepared_picks,
+                    )
+                try:
+                    publication = daily_publisher.release(
+                        portfolio_date=portfolio_date,
+                        write_public=True,
+                    )
+                except Exception:
+                    raise PersistenceFailure(
+                        "daily portfolio persistence failed"
+                    ) from None
+                if publication is None:
+                    return PipelineResult(
+                        len(partidos),
+                        len(prepared_picks),
+                        True,
+                        (),
+                        prepared_picks,
+                    )
+                deliveries = _deliver_persisted_publication(
+                    publication,
+                    self.repository,
+                    self.settings,
+                    clock=self.clock,
+                )
+                failed = tuple(
+                    sorted(
+                        name
+                        for name, result in deliveries.items()
+                        if not result.success
+                    )
+                )
+                persisted_rows = tuple(dict(row) for row in publication.picks)
+                return PipelineResult(
+                    len(partidos),
+                    len(persisted_rows),
+                    True,
+                    failed,
+                    persisted_rows,
+                )
+
+            publication, deliveries = fase7_guardar_y_notificar(
+                picks,
+                repository=self.repository,
+                settings=self.settings,
+                run_key=self.settings.run_key,
+                clock=self.clock,
+                deliver=not collect_only,
+                write_public=not collect_only,
+            )
+            failed = tuple(
+                sorted(
+                    name
+                    for name, result in deliveries.items()
+                    if not result.success
+                )
+            )
+            persisted = bool(publication and publication.run_id)
+            return PipelineResult(len(partidos), len(picks), persisted, failed)
+        finally:
+            _cleanup_chrome_driver(driver)
             print("🔒 Navegador cerrado.")
 
+
+def build_pipeline(
+    settings: ScraperSettings,
+    *,
+    client_factory=None,
+    schema_probe=None,
+    daily_schema_probe=None,
+    driver_factory=None,
+):
+    """Build production dependencies, probing secure schema before Chrome."""
+    if settings.dry_run:
+        return LegacyPipeline(
+            settings,
+            driver_factory=driver_factory,
+            lineup_resolver=None,
+        )
+
+    active_client_factory = client_factory or create_client
+    active_probe = schema_probe or probe_secure_schema
+    try:
+        client: Any = active_client_factory(
+            settings.supabase_url, settings.service_role_key
+        )
+    except Exception:
+        raise ConfigError("could not initialize secure Supabase scraper client") from None
+    active_probe(client)
+    if settings.daily_portfolio_enabled:
+        (daily_schema_probe or probe_daily_portfolio_schema)(client)
+    lineup_resolver = None
+    if settings.api_football_key:
+        lineup_resolver = LineupResolver(ApiFootballClient(
+            settings.api_football_key,
+            store=SupabaseLineupStore(client),
+        ))
+    return LegacyPipeline(
+        settings,
+        repository=SupabaseBatchRepository(client),
+        history_client=client,
+        driver_factory=driver_factory,
+        lineup_resolver=lineup_resolver,
+    )
+
+
+def parse_args(argv=None):
+    parser = ArgumentParser(description="Rey Taco Picks scraper")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--dry-run", action="store_true")
+    modes.add_argument("--collect-only", action="store_true")
+    modes.add_argument("--deliver-only", action="store_true")
+    return parser.parse_args(argv)
+
+
+def run_main(argv=None, *, values=None, pipeline=None):
+    args = parse_args(argv)
+    try:
+        settings_values = {} if args.dry_run and values is None else values
+        settings = load_settings(settings_values, dry_run=args.dry_run)
+        active_pipeline = pipeline or build_pipeline(settings)
+        if args.collect_only:
+            raw_result = active_pipeline.run(collect_only=True)
+        elif args.deliver_only:
+            raw_result = active_pipeline.run(deliver_only=True)
+        else:
+            raw_result = active_pipeline.run()
+        result = _validated_pipeline_result(raw_result, dry_run=settings.dry_run)
+        if (
+            args.deliver_only
+            and result.event_count == 0
+            and result.pick_count == 0
+            and not result.persisted
+            and not result.failed_deliveries
+        ):
+            print("deliver_only=no_batch")
+            return ExitCode.SUCCESS
+        if result.event_count == 0:
+            return ExitCode.NO_EVENTS
+        if result.pick_count == 0:
+            return ExitCode.NO_CANDIDATES
+        if not settings.dry_run and not result.persisted:
+            return ExitCode.PERSISTENCE
+        if result.failed_deliveries:
+            return ExitCode.DELIVERY
+        return ExitCode.SUCCESS
+    except ConfigError as error:
+        print(f"configuration_error={_safe_configuration_error(error)}")
+        return ExitCode.CONFIGURATION
+    except PersistenceFailure:
+        print("persistence_error=PersistenceFailure")
+        return ExitCode.PERSISTENCE
+    except DeliveryFailure:
+        print("delivery_error=DeliveryFailure")
+        return ExitCode.DELIVERY
+    except PlaydoitSourceError as error:
+        print(f"source_error={error.code}")
+        return ExitCode.SOURCE
+    except Exception as error:
+        print(f"unexpected_error={type(error).__name__}")
+        return ExitCode.UNEXPECTED
+
+
+def _safe_configuration_error(error):
+    message = str(error)
+    if message.startswith("Required scraper configuration missing:"):
+        return message
+    if message in {
+        "secure Supabase scraper migration is not applied",
+        "could not initialize secure Supabase scraper client",
+    }:
+        return message
+    return "invalid scraper configuration"
+
+
+def main():
+    return run_main()
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_main())

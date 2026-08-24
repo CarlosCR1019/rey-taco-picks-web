@@ -1,0 +1,301 @@
+name: Rey Taco Database Migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply pending migrations after the mandatory dry-run
+        required: true
+        default: false
+        type: boolean
+      synchronize_password:
+        description: Reset the database password to the configured GitHub secret
+        required: true
+        default: false
+        type: boolean
+      reconcile_existing_history:
+        description: Record the verified pre-existing baseline in migration history
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: rey-taco-database-migrations
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate administrative configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN"
+          test -n "$SUPABASE_DB_PASSWORD"
+          test -n "$SUPABASE_PROJECT_REF"
+
+      - name: Synchronize database password
+        if: ${{ inputs.synchronize_password == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$(jq --null-input --compact-output \
+            --arg password "$SUPABASE_DB_PASSWORD" '{password: $password}')"
+          response="$(curl --fail --silent --show-error \
+            --request PATCH \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --data "$payload" \
+            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/database/password")"
+          jq --exit-status '.message | type == "string"' <<< "$response" >/dev/null
+          sleep 20
+
+      - name: Pin Supabase CLI
+        shell: bash
+        run: npx --yes supabase@2.115.0 --version
+
+      - name: Resolve exact Supabase session pooler
+        shell: bash
+        run: |
+          set -euo pipefail
+          pooler_url="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/config/database/pooler" \
+            | jq --exit-status --raw-output \
+              'map(select(.database_type == "PRIMARY"))
+              | if length == 1
+                then (.[0].connection_string // .[0].connectionString)
+                else error("Expected exactly one primary Supavisor target")
+                end')"
+          resolved="$(POOLER_URL="$pooler_url" python - <<'PY'
+          import json
+          import os
+          from urllib.parse import quote, unquote, urlunsplit
+
+          raw = os.environ["POOLER_URL"]
+          try:
+              scheme, remainder = raw.split("://", 1)
+              userinfo, target = remainder.rsplit("@", 1)
+              raw_username, separator, _placeholder = userinfo.partition(":")
+              host_port, path_and_query = target.split("/", 1)
+              host, port_separator, raw_port = host_port.rpartition(":")
+          except ValueError as exc:
+              raise SystemExit("Supabase returned a malformed pooler target") from exc
+
+          username = unquote(raw_username)
+          path = "/" + path_and_query.split("?", 1)[0]
+          project_ref = os.environ["SUPABASE_PROJECT_REF"]
+          if (
+              scheme not in {"postgres", "postgresql"}
+              or not separator
+              or not port_separator
+              or not raw_port.isdigit()
+              or not host.endswith(".pooler.supabase.com")
+              or username != f"postgres.{project_ref}"
+              or path != "/postgres"
+          ):
+              raise SystemExit("Supabase returned an unexpected pooler target")
+          password = quote(os.environ["SUPABASE_DB_PASSWORD"], safe="")
+          authority = f"{username}:{password}@{host}:5432"
+          db_url = urlunsplit(("postgresql", authority, path, "sslmode=require", ""))
+          print(json.dumps({"url": db_url, "host": host, "user": username}))
+          PY
+          )"
+          db_url="$(jq --exit-status --raw-output '.url' <<< "$resolved")"
+          db_host="$(jq --exit-status --raw-output '.host' <<< "$resolved")"
+          db_user="$(jq --exit-status --raw-output '.user' <<< "$resolved")"
+          encoded_password="$(python - <<'PY'
+          import os
+          from urllib.parse import quote
+          print(quote(os.environ["SUPABASE_DB_PASSWORD"], safe=""))
+          PY
+          )"
+          echo "::add-mask::$encoded_password"
+          echo "::add-mask::$db_url"
+          printf 'SUPABASE_DB_URL=%s\n' "$db_url" >> "$GITHUB_ENV"
+          printf 'SUPABASE_DB_HOST=%s\n' "$db_host" >> "$GITHUB_ENV"
+          printf 'SUPABASE_DB_USER=%s\n' "$db_user" >> "$GITHUB_ENV"
+
+      - name: Verify native PostgreSQL connection
+        shell: bash
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$SUPABASE_DB_PASSWORD" psql \
+            --host="$SUPABASE_DB_HOST" \
+            --port=5432 \
+            --username="$SUPABASE_DB_USER" \
+            --dbname=postgres \
+            --no-align --tuples-only \
+            --command="select 'database_connection=ok';"
+
+      - name: Inspect remote migration markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$SUPABASE_DB_PASSWORD" psql \
+            --host="$SUPABASE_DB_HOST" \
+            --port=5432 \
+            --username="$SUPABASE_DB_USER" \
+            --dbname=postgres \
+            --no-align --tuples-only \
+            --set=ON_ERROR_STOP=1 <<'SQL'
+          with markers(version, present) as (
+            values
+              ('20260820210000',
+                to_regclass('public.profiles') is not null
+                and to_regclass('public.picks') is not null),
+              ('20260820220000',
+                to_regprocedure('public.is_active_subscriber(uuid)') is not null),
+              ('20260820233000',
+                to_regprocedure(
+                  'public.record_scraper_delivery(uuid,text,boolean,text)'
+                ) is not null),
+              ('20260820234500',
+                to_regprocedure('public.scraper_schema_status()') is not null),
+              ('20260821010000',
+                to_regprocedure('public.get_meta_social_batch(text)') is not null),
+              ('20260821020000',
+                to_regprocedure(
+                  'public.claim_meta_social_destination(uuid,text,uuid,timestamptz)'
+                ) is not null),
+              ('20260822010000',
+                to_regprocedure('public.picks_policy_allowlist_status()') is not null),
+              ('20260823090000',
+                to_regprocedure('public.get_api_football_cache(text)') is not null),
+              ('20260823100000',
+                to_regprocedure('public.enforce_two_public_pending_picks()') is not null),
+              ('20260823110000',
+                to_regprocedure('public.daily_pick_schema_status()') is not null),
+              ('20260823120000',
+                to_regprocedure(
+                  'public.claim_residential_collection_lease(text,text,integer)'
+                ) is not null),
+              ('20260823130000',
+                to_regprocedure(
+                  'public.residential_adaptive_work_status(date)'
+                ) is not null),
+              ('20260824100000',
+                exists (
+                  select 1
+                  from pg_constraint
+                  where conname =
+                    'api_football_request_budget_requests_used_check'
+                    and pg_get_constraintdef(oid) like '%80%'
+                ))
+          )
+          select 'MIGRATION_MARKER|' || version || '|' || present::text
+          from markers
+          order by version;
+
+          do $migration_history$
+          declare
+            installed_versions text;
+          begin
+            if to_regclass(
+              'supabase_migrations.schema_migrations'
+            ) is null then
+              raise notice 'MIGRATION_HISTORY|absent';
+            else
+              execute
+                'select string_agg(version::text, '','' order by version) '
+                'from supabase_migrations.schema_migrations'
+                into installed_versions;
+              raise notice 'MIGRATION_HISTORY|%',
+                coalesce(installed_versions, 'empty');
+            end if;
+          end
+          $migration_history$;
+          SQL
+
+      - name: Validate pre-existing baseline
+        if: ${{ inputs.reconcile_existing_history == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$SUPABASE_DB_PASSWORD" psql \
+            --host="$SUPABASE_DB_HOST" \
+            --port=5432 \
+            --username="$SUPABASE_DB_USER" \
+            --dbname=postgres \
+            --set=ON_ERROR_STOP=1 <<'SQL'
+          do $baseline$
+          begin
+            if to_regclass('public.profiles') is null
+               or to_regclass('public.picks') is null
+               or to_regprocedure(
+                 'public.is_active_subscriber(uuid)'
+               ) is null
+               or to_regprocedure(
+                 'public.record_scraper_delivery(uuid,text,boolean,text)'
+               ) is null
+               or to_regprocedure(
+                 'public.scraper_schema_status()'
+               ) is null
+               or to_regprocedure(
+                 'public.get_meta_social_batch(text)'
+               ) is null
+               or to_regprocedure(
+                 'public.claim_meta_social_destination(uuid,text,uuid,timestamptz)'
+               ) is null
+               or to_regprocedure(
+                 'public.picks_policy_allowlist_status()'
+               ) is null then
+              raise exception 'pre-existing migration baseline is incomplete';
+            end if;
+            raise notice 'preexisting_baseline=verified';
+          end
+          $baseline$;
+          SQL
+
+      - name: Reconcile pre-existing migration history
+        if: ${{ inputs.reconcile_existing_history == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes supabase@2.115.0 migration repair \
+            --db-url "$SUPABASE_DB_URL" \
+            --status applied \
+            20260820210000 \
+            20260820220000 \
+            20260820233000 \
+            20260820234500 \
+            20260821010000 \
+            20260821020000 \
+            20260822010000
+
+      - name: Preview pending migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes supabase@2.115.0 db push \
+            --db-url "$SUPABASE_DB_URL" --dry-run
+
+      - name: Apply pending migrations
+        if: ${{ inputs.apply == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes supabase@2.115.0 db push \
+            --db-url "$SUPABASE_DB_URL"
+
+      - name: Verify remote migration history
+        if: ${{ inputs.apply == true }}
+        shell: bash
+        run: |
+          npx --yes supabase@2.115.0 db push \
+            --db-url "$SUPABASE_DB_URL" --dry-run

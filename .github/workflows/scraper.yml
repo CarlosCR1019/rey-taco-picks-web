@@ -1,95 +1,54 @@
-name: Rey Taco Picks Bot (Cloud AI)
+name: Rey Taco Results Verifier
 
 on:
   schedule:
-    # Horarios México (CDMX UTC-6):
-    # - 10:00 AM CDMX (16:00 UTC): Cartelera Diaria Completa (Champions, Europa League, Liga MX, MLB)
-    # - 04:00 PM CDMX (22:00 UTC): Actualización Vespertina (Liga MX, MLB Noche, NFL)
-    # - 11:00 PM CDMX (05:00 UTC): Cierre Diario (Auditoría ESPN) + Cartelera KBO (Corea de madrugada)
-    - cron: '0 16 * * *'   # 10:00 AM México
-    - cron: '0 22 * * *'   # 04:00 PM México
-    - cron: '0 5 * * *'    # 11:00 PM México
-  workflow_dispatch:        # Permite ejecutarlo manualmente desde GitHub 24/7
+    # 07:00, 13:00, 19:00 and 23:00 America/Mexico_City (UTC-6).
+    - cron: '0 13 * * *'
+    - cron: '0 19 * * *'
+    - cron: '0 1 * * *'
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: rey-taco-results-verifier
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   verificar:
-    # Si es la ejecución de las 11:00 PM, auditar y calificar los partidos del día
-    if: github.event.schedule == '0 5 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r backend/requirements.txt
+        run: python -m pip install -r backend/requirements.txt
 
       - name: Verify Results
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           TELEGRAM_VIP_CHANNEL_ID: ${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}
           TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
-        run: |
-          cd backend
-          python verificar_resultados.py
-
-  scraper:
-    # Se ejecuta a las 10:00 AM, 4:00 PM y 11:00 PM (para KBO y madrugada)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    # A las 11:00 PM, esperar a que termine la verificación antes de publicar los nuevos picks
-    if: always()
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Chrome
-        uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: 'stable'
-
-      - name: Install dependencies
-        run: |
-          pip install -r backend/requirements.txt
-          
-      - name: Run Scraper (Multi-Sport & KBO)
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          TELEGRAM_VIP_CHANNEL_ID: ${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}
-          TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
-        run: |
-          cd backend
-          python scraper.py
-
-      - name: Auto-Post Social Media Banner (Facebook & Instagram)
-        if: always()
-        env:
-          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+          META_SYSTEM_USER_ACCESS_TOKEN: ${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-        run: |
-          cd backend
-          python social_poster.py
+          SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
+          RESULT_REPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && 'auto' || github.event.schedule == '0 1 * * *' && 'evening' || 'final_only' }}
+        run: python backend/verificar_resultados.py

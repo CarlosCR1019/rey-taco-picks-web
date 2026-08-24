@@ -38,6 +38,9 @@ RESULT_BUDGET_SQL = (
 SIX_PICK_SCHEMA_STATUS_SQL = (
     SQL.parent / "20260824110000_six_pick_schema_status.sql"
 )
+DAILY_RELEASE_PGCRYPTO_PATH_SQL = (
+    SQL.parent / "20260824120000_daily_release_pgcrypto_path.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -96,6 +99,23 @@ def function_signature_pattern(signature: str) -> str:
 
 
 class SupabaseContractTests(unittest.TestCase):
+    def test_daily_release_resolves_pgcrypto_from_a_guarded_search_path(self):
+        self.assertTrue(DAILY_RELEASE_PGCRYPTO_PATH_SQL.exists())
+        text = " ".join(
+            DAILY_RELEASE_PGCRYPTO_PATH_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn("to_regprocedure('extensions.digest(text,text)')", text)
+        self.assertIn(
+            "alter function public.release_daily_pick_portfolio(text, date) "
+            "set search_path = pg_catalog, extensions, public, pg_temp",
+            text,
+        )
+
     def test_six_pick_schema_status_verifies_wrapper_and_legacy_implementation(self):
         self.assertTrue(SIX_PICK_SCHEMA_STATUS_SQL.exists())
         text = " ".join(

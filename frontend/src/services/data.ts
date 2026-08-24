@@ -42,16 +42,18 @@ export function normalizePick(value: Record<string, unknown>): PickRow {
   };
 }
 
-export function chooseFreePick(rows: Array<Record<string, unknown>>): PickRow[] {
-  const row = rows.find(value => value.estado === 'pendiente' && !value.es_parlay);
-  return row ? [{ ...normalizePick(row), visibility: 'public' }] : [];
+export function choosePublicPicks(rows: Array<Record<string, unknown>>): PickRow[] {
+  return rows
+    .filter(value => value.estado === 'pendiente' && !value.es_parlay)
+    .slice(0, 2)
+    .map(value => ({ ...normalizePick(value), visibility: 'public' }));
 }
 
 export const PUBLIC_PICK_FIELDS = 'id,categoria,partido,pick,cuota,confianza,fecha_generacion,fecha_evento,horario,estado,es_parlay,visibility';
 export const LEGACY_PUBLIC_PICK_FIELDS = 'id,categoria,partido,pick,cuota,confianza,fecha_generacion,estado,es_parlay';
 
 export async function loadPublicPicks(client: SupabaseClient): Promise<PickRow[]> {
-  const response = await client.from('public_picks').select(PUBLIC_PICK_FIELDS).eq('estado', 'pendiente').order('id', { ascending: false }).limit(1);
+  const response = await client.from('public_picks').select(PUBLIC_PICK_FIELDS).eq('estado', 'pendiente').order('id', { ascending: false }).limit(2);
   if (!response.error) return (response.data ?? []).map(normalizePick);
 
   return loadLocalPublicPicks();
@@ -61,7 +63,7 @@ export async function loadLocalPublicPicks(): Promise<PickRow[]> {
   const fallback = await fetch('/picks.json', { cache: 'no-store' });
   if (!fallback.ok) return [];
   const rows = await fallback.json() as Array<Record<string, unknown>>;
-  return chooseFreePick(rows);
+  return choosePublicPicks(rows);
 }
 
 export async function loadHistory(client: SupabaseClient): Promise<PickRow[]> {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
-  chooseFreePick,
+  choosePublicPicks,
   escapeHtml,
   LEGACY_PUBLIC_PICK_FIELDS,
   loadHistory,
@@ -19,8 +19,30 @@ const rows = [
 describe('public pick data', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('chooses exactly one pending, non-parlay selection', () => {
-    expect(chooseFreePick(rows)).toEqual([expect.objectContaining({ id: 2 })]);
+  it('chooses exactly two pending, non-parlay public selections', () => {
+    expect(choosePublicPicks(rows)).toEqual([
+      expect.objectContaining({ id: 2, visibility: 'public' }),
+      expect.objectContaining({ id: 3, visibility: 'public' }),
+    ]);
+  });
+
+  it('requests two current public rows from Supabase', async () => {
+    const limits: number[] = [];
+    const response = { data: rows.slice(1), error: null };
+    const builder = {
+      eq: () => builder,
+      order: () => builder,
+      limit: (value: number) => {
+        limits.push(value);
+        return Promise.resolve(response);
+      },
+    };
+    const client = {
+      from: () => ({ select: () => builder }),
+    } as unknown as SupabaseClient;
+
+    expect(await loadPublicPicks(client)).toHaveLength(2);
+    expect(limits).toEqual([2]);
   });
 
   it('normalizes missing values without inventing results', () => {

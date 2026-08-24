@@ -138,6 +138,85 @@ jobs:
             --no-align --tuples-only \
             --command="select 'database_connection=ok';"
 
+      - name: Inspect remote migration markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$SUPABASE_DB_PASSWORD" psql \
+            --host="$SUPABASE_DB_HOST" \
+            --port=5432 \
+            --username="$SUPABASE_DB_USER" \
+            --dbname=postgres \
+            --no-align --tuples-only \
+            --set=ON_ERROR_STOP=1 <<'SQL'
+          with markers(version, present) as (
+            values
+              ('20260820210000',
+                to_regclass('public.profiles') is not null
+                and to_regclass('public.picks') is not null),
+              ('20260820220000',
+                to_regprocedure('public.is_active_subscriber(uuid)') is not null),
+              ('20260820233000',
+                to_regprocedure(
+                  'public.record_scraper_delivery(uuid,text,boolean,text)'
+                ) is not null),
+              ('20260820234500',
+                to_regprocedure('public.scraper_schema_status()') is not null),
+              ('20260821010000',
+                to_regprocedure('public.get_meta_social_batch(text)') is not null),
+              ('20260821020000',
+                to_regprocedure(
+                  'public.claim_meta_social_destination(uuid,text,uuid,timestamptz)'
+                ) is not null),
+              ('20260822010000',
+                to_regprocedure('public.picks_policy_allowlist_status()') is not null),
+              ('20260823090000',
+                to_regprocedure('public.get_api_football_cache(text)') is not null),
+              ('20260823100000',
+                to_regprocedure('public.enforce_two_public_pending_picks()') is not null),
+              ('20260823110000',
+                to_regprocedure('public.daily_pick_schema_status()') is not null),
+              ('20260823120000',
+                to_regprocedure(
+                  'public.claim_residential_collection_lease(text,text,integer)'
+                ) is not null),
+              ('20260823130000',
+                to_regprocedure(
+                  'public.residential_adaptive_work_status(date)'
+                ) is not null),
+              ('20260824100000',
+                exists (
+                  select 1
+                  from pg_constraint
+                  where conname =
+                    'api_football_request_budget_requests_used_check'
+                    and pg_get_constraintdef(oid) like '%80%'
+                ))
+          )
+          select 'MIGRATION_MARKER|' || version || '|' || present::text
+          from markers
+          order by version;
+
+          do $migration_history$
+          declare
+            installed_versions text;
+          begin
+            if to_regclass(
+              'supabase_migrations.schema_migrations'
+            ) is null then
+              raise notice 'MIGRATION_HISTORY|absent';
+            else
+              execute
+                'select string_agg(version::text, '','' order by version) '
+                'from supabase_migrations.schema_migrations'
+                into installed_versions;
+              raise notice 'MIGRATION_HISTORY|%',
+                coalesce(installed_versions, 'empty');
+            end if;
+          end
+          $migration_history$;
+          SQL
+
       - name: Preview pending migrations
         shell: bash
         run: |

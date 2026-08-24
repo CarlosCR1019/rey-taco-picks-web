@@ -78,6 +78,25 @@ def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
     assert '--host="$SUPABASE_DB_HOST"' in native_probe["run"]
     assert '--username="$SUPABASE_DB_USER"' in native_probe["run"]
     assert "select 'database_connection=ok'" in native_probe["run"]
+    marker_probe = steps["Inspect remote migration markers"]["run"]
+    for version in (
+        "20260820210000",
+        "20260820220000",
+        "20260820233000",
+        "20260820234500",
+        "20260821010000",
+        "20260821020000",
+        "20260822010000",
+        "20260823090000",
+        "20260823100000",
+        "20260823110000",
+        "20260823120000",
+        "20260823130000",
+        "20260824100000",
+    ):
+        assert version in marker_probe
+    assert "to_regprocedure" in marker_probe
+    assert "supabase_migrations.schema_migrations" in marker_probe
     assert "SUPABASE_DB_URL" in steps["Preview pending migrations"]["run"]
     assert steps["Apply pending migrations"]["if"] == (
         "${{ inputs.apply == true }}"

@@ -82,7 +82,11 @@ def build_manual_result_updates(pending_picks: list[dict], evidence: list[dict])
         ]
         decision = grade_pending_pick(selected, audited_result)
         if not decision or decision.get("estado") not in {"ganado", "perdido", "void"}:
-            raise ValueError("manual evidence could not produce a final audited result")
+            raise ValueError(
+                "manual evidence could not produce a final audited result for "
+                f"{selected.get('partido')} | market={selected.get('source_market_key')} "
+                f"| selection={selected.get('pick')}"
+            )
         seen_ids.add(selected["id"])
         updates.append((selected["id"], decision))
     return updates

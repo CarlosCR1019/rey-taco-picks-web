@@ -77,7 +77,8 @@ jobs:
                 then (.[0].connection_string // .[0].connectionString)
                 else error("Expected exactly one primary Supavisor target")
                 end')"
-          db_url="$(POOLER_URL="$pooler_url" python - <<'PY'
+          resolved="$(POOLER_URL="$pooler_url" python - <<'PY'
+          import json
           import os
           from urllib.parse import quote, unquote, urlunsplit
 
@@ -106,9 +107,13 @@ jobs:
               raise SystemExit("Supabase returned an unexpected pooler target")
           password = quote(os.environ["SUPABASE_DB_PASSWORD"], safe="")
           authority = f"{username}:{password}@{host}:5432"
-          print(urlunsplit(("postgresql", authority, path, "sslmode=require", "")))
+          db_url = urlunsplit(("postgresql", authority, path, "sslmode=require", ""))
+          print(json.dumps({"url": db_url, "host": host, "user": username}))
           PY
           )"
+          db_url="$(jq --exit-status --raw-output '.url' <<< "$resolved")"
+          db_host="$(jq --exit-status --raw-output '.host' <<< "$resolved")"
+          db_user="$(jq --exit-status --raw-output '.user' <<< "$resolved")"
           encoded_password="$(python - <<'PY'
           import os
           from urllib.parse import quote
@@ -118,6 +123,20 @@ jobs:
           echo "::add-mask::$encoded_password"
           echo "::add-mask::$db_url"
           printf 'SUPABASE_DB_URL=%s\n' "$db_url" >> "$GITHUB_ENV"
+          printf 'SUPABASE_DB_HOST=%s\n' "$db_host" >> "$GITHUB_ENV"
+          printf 'SUPABASE_DB_USER=%s\n' "$db_user" >> "$GITHUB_ENV"
+
+      - name: Verify native PostgreSQL connection
+        shell: bash
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$SUPABASE_DB_PASSWORD" psql \
+            --host="$SUPABASE_DB_HOST" \
+            --port=5432 \
+            --username="$SUPABASE_DB_USER" \
+            --dbname=postgres \
+            --no-align --tuples-only \
+            --command="select 'database_connection=ok';"
 
       - name: Preview pending migrations
         shell: bash

@@ -71,6 +71,13 @@ def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
     assert ".pooler.supabase.com" in pooler
     assert 'echo "::add-mask::$encoded_password"' in pooler
     assert 'echo "::add-mask::$db_url"' in pooler
+    assert "SUPABASE_DB_HOST=" in pooler
+    assert "SUPABASE_DB_USER=" in pooler
+    native_probe = steps["Verify native PostgreSQL connection"]
+    assert 'PGPASSWORD="$SUPABASE_DB_PASSWORD" psql' in native_probe["run"]
+    assert '--host="$SUPABASE_DB_HOST"' in native_probe["run"]
+    assert '--username="$SUPABASE_DB_USER"' in native_probe["run"]
+    assert "select 'database_connection=ok'" in native_probe["run"]
     assert "SUPABASE_DB_URL" in steps["Preview pending migrations"]["run"]
     assert steps["Apply pending migrations"]["if"] == (
         "${{ inputs.apply == true }}"

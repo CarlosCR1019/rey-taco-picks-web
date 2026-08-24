@@ -146,7 +146,13 @@ def build_vip_teaser_story(
 
 
 def _require_final_report(report: ResultReport, *, error: str) -> None:
-    if report.kind != "final" or not report.terminal or len(report.rows) != 6:
+    if (
+        not isinstance(report, ResultReport)
+        or not report.eligible
+        or report.kind != "final"
+        or not report.terminal
+        or len(report.rows) != 6
+    ):
         raise ValueError(error)
 
 

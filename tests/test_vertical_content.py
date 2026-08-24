@@ -8,6 +8,7 @@ import pytest
 from backend.result_reporting import build_result_report
 from backend.vertical_content import (
     VerticalCard,
+    VerticalRow,
     build_daily_reel_package,
     build_final_results_story,
     build_public_pick_story,
@@ -115,6 +116,7 @@ def test_all_public_builders_return_immutable_audited_packages():
     assert isinstance(reel_cta, VerticalCard)
     assert reel.kind == "daily_results_reel"
     assert "18+ · Apuesta con responsabilidad" in reel.caption
+    assert re.fullmatch(r"[0-9a-f]{64}", reel.digest)
     assert all(re.fullmatch(r"[0-9a-f]{64}", card.digest) for card in (
         public,
         teaser,
@@ -125,6 +127,11 @@ def test_all_public_builders_return_immutable_audited_packages():
     ))
     with pytest.raises(FrozenInstanceError):
         public.headline = "mutated"
+    with pytest.raises(FrozenInstanceError):
+        public.rows[0].event = "mutated"
+    assert isinstance(public.rows[0], VerticalRow)
+    with pytest.raises(FrozenInstanceError):
+        reel.caption = "mutated"
 
 
 def test_digests_are_deterministic_and_sensitive_to_relevant_inputs():
@@ -230,3 +237,41 @@ def test_final_builders_reject_terminal_reports_with_fewer_than_six_rows(builder
 
     with pytest.raises(ValueError, match=re.escape(message)):
         builder(malformed)
+
+
+@pytest.mark.parametrize(
+    ("builder", "message"),
+    [
+        (build_final_results_story, "vertical result story requires a final six-pick report"),
+        (lambda report: build_verified_result_story(report, pick_id=1),
+         "vertical result story requires a final six-pick report"),
+        (lambda report: build_ticket_evidence_card(
+            report, evidence_id="ticket-1", media_digest=MEDIA_DIGEST
+        ), "ticket evidence requires a final report"),
+        (build_reel_cta_story, "reel CTA requires a final report"),
+        (build_daily_reel_package, "vertical result story requires a final six-pick report"),
+    ],
+)
+def test_final_builders_reject_ineligible_final_reports(builder, message):
+    ineligible = replace(final_report(), eligible=False)
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        builder(ineligible)
+
+
+@pytest.mark.parametrize(
+    ("builder", "message"),
+    [
+        (build_final_results_story, "vertical result story requires a final six-pick report"),
+        (lambda report: build_verified_result_story(report, pick_id=1),
+         "vertical result story requires a final six-pick report"),
+        (lambda report: build_ticket_evidence_card(
+            report, evidence_id="ticket-1", media_digest=MEDIA_DIGEST
+        ), "ticket evidence requires a final report"),
+        (build_reel_cta_story, "reel CTA requires a final report"),
+        (build_daily_reel_package, "vertical result story requires a final six-pick report"),
+    ],
+)
+def test_final_builders_reject_wrong_report_types(builder, message):
+    with pytest.raises(ValueError, match=re.escape(message)):
+        builder(object())

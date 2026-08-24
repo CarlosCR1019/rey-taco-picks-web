@@ -55,7 +55,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes supabase@2.115.0 migration list --linked
+          npx --yes supabase@2.115.0 migration list --linked \
+            --password "$SUPABASE_DB_PASSWORD"
           npx --yes supabase@2.115.0 db push --linked --dry-run \
             --password "$SUPABASE_DB_PASSWORD"
 
@@ -70,4 +71,6 @@ jobs:
       - name: Verify remote migration history
         if: ${{ inputs.apply == true }}
         shell: bash
-        run: npx --yes supabase@2.115.0 migration list --linked
+        run: |
+          npx --yes supabase@2.115.0 migration list --linked \
+            --password "$SUPABASE_DB_PASSWORD"

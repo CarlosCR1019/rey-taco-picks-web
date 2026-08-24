@@ -48,8 +48,14 @@ def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
 
     steps = {step["name"]: step for step in job["steps"]}
     assert "--dry-run" in steps["Preview pending migrations"]["run"]
+    assert steps["Preview pending migrations"]["run"].count(
+        '--password "$SUPABASE_DB_PASSWORD"'
+    ) == 2
     assert steps["Apply pending migrations"]["if"] == (
         "${{ inputs.apply == true }}"
+    )
+    assert '--password "$SUPABASE_DB_PASSWORD"' in (
+        steps["Verify remote migration history"]["run"]
     )
     text = MIGRATION_WORKFLOW.read_text(encoding="utf-8")
     assert "--include-all" not in text

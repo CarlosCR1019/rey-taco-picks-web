@@ -13,6 +13,11 @@ on:
         required: true
         default: false
         type: boolean
+      reconcile_existing_history:
+        description: Record the verified pre-existing baseline in migration history
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: rey-taco-database-migrations
@@ -216,6 +221,62 @@ jobs:
           end
           $migration_history$;
           SQL
+
+      - name: Validate pre-existing baseline
+        if: ${{ inputs.reconcile_existing_history == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PGPASSWORD="$SUPABASE_DB_PASSWORD" psql \
+            --host="$SUPABASE_DB_HOST" \
+            --port=5432 \
+            --username="$SUPABASE_DB_USER" \
+            --dbname=postgres \
+            --set=ON_ERROR_STOP=1 <<'SQL'
+          do $baseline$
+          begin
+            if to_regclass('public.profiles') is null
+               or to_regclass('public.picks') is null
+               or to_regprocedure(
+                 'public.is_active_subscriber(uuid)'
+               ) is null
+               or to_regprocedure(
+                 'public.record_scraper_delivery(uuid,text,boolean,text)'
+               ) is null
+               or to_regprocedure(
+                 'public.scraper_schema_status()'
+               ) is null
+               or to_regprocedure(
+                 'public.get_meta_social_batch(text)'
+               ) is null
+               or to_regprocedure(
+                 'public.claim_meta_social_destination(uuid,text,uuid,timestamptz)'
+               ) is null
+               or to_regprocedure(
+                 'public.picks_policy_allowlist_status()'
+               ) is null then
+              raise exception 'pre-existing migration baseline is incomplete';
+            end if;
+            raise notice 'preexisting_baseline=verified';
+          end
+          $baseline$;
+          SQL
+
+      - name: Reconcile pre-existing migration history
+        if: ${{ inputs.reconcile_existing_history == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes supabase@2.115.0 migration repair \
+            --db-url "$SUPABASE_DB_URL" \
+            --status applied \
+            20260820210000 \
+            20260820220000 \
+            20260820233000 \
+            20260820234500 \
+            20260821010000 \
+            20260821020000 \
+            20260822010000
 
       - name: Preview pending migrations
         shell: bash

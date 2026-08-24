@@ -42,6 +42,12 @@ def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
         "default": "false",
         "type": "boolean",
     }
+    assert dispatch["inputs"]["reconcile_existing_history"] == {
+        "description": "Record the verified pre-existing baseline in migration history",
+        "required": "true",
+        "default": "false",
+        "type": "boolean",
+    }
     assert workflow["permissions"] == {"contents": "read"}
     job = workflow["jobs"]["migrate"]
     assert job["runs-on"] == "ubuntu-latest"
@@ -97,6 +103,27 @@ def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
         assert version in marker_probe
     assert "to_regprocedure" in marker_probe
     assert "supabase_migrations.schema_migrations" in marker_probe
+    baseline_validation = steps["Validate pre-existing baseline"]
+    assert baseline_validation["if"] == (
+        "${{ inputs.reconcile_existing_history == true }}"
+    )
+    assert "preexisting_baseline=verified" in baseline_validation["run"]
+    baseline_repair = steps["Reconcile pre-existing migration history"]
+    assert baseline_repair["if"] == (
+        "${{ inputs.reconcile_existing_history == true }}"
+    )
+    assert "migration repair" in baseline_repair["run"]
+    assert "--status applied" in baseline_repair["run"]
+    for version in (
+        "20260820210000",
+        "20260820220000",
+        "20260820233000",
+        "20260820234500",
+        "20260821010000",
+        "20260821020000",
+        "20260822010000",
+    ):
+        assert version in baseline_repair["run"]
     assert "SUPABASE_DB_URL" in steps["Preview pending migrations"]["run"]
     assert steps["Apply pending migrations"]["if"] == (
         "${{ inputs.apply == true }}"

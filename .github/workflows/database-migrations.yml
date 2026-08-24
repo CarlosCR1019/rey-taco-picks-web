@@ -43,32 +43,62 @@ jobs:
         shell: bash
         run: npx --yes supabase@2.115.0 --version
 
-      - name: Link exact Supabase project
+      - name: Resolve exact Supabase session pooler
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes supabase@2.115.0 link \
-            --project-ref "$SUPABASE_PROJECT_REF" \
-            --password "$SUPABASE_DB_PASSWORD"
+          pooler_url="$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/config/database/pgbouncer" \
+            | jq --exit-status --raw-output '.connection_string')"
+          db_url="$(POOLER_URL="$pooler_url" python - <<'PY'
+          import os
+          from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+          parsed = urlsplit(os.environ["POOLER_URL"])
+          host = parsed.hostname or ""
+          username = unquote(parsed.username or "")
+          project_ref = os.environ["SUPABASE_PROJECT_REF"]
+          if (
+              parsed.scheme not in {"postgres", "postgresql"}
+              or not host.endswith(".pooler.supabase.com")
+              or username != f"postgres.{project_ref}"
+              or parsed.path != "/postgres"
+          ):
+              raise SystemExit("Supabase returned an unexpected pooler target")
+          password = quote(os.environ["SUPABASE_DB_PASSWORD"], safe="")
+          authority = f"{username}:{password}@{host}:5432"
+          print(urlunsplit(("postgresql", authority, parsed.path, "sslmode=require", "")))
+          PY
+          )"
+          encoded_password="$(python - <<'PY'
+          import os
+          from urllib.parse import quote
+          print(quote(os.environ["SUPABASE_DB_PASSWORD"], safe=""))
+          PY
+          )"
+          echo "::add-mask::$encoded_password"
+          echo "::add-mask::$db_url"
+          printf 'SUPABASE_DB_URL=%s\n' "$db_url" >> "$GITHUB_ENV"
 
       - name: Preview pending migrations
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes supabase@2.115.0 db push --linked --dry-run \
-            --password "$SUPABASE_DB_PASSWORD"
+          npx --yes supabase@2.115.0 db push \
+            --db-url "$SUPABASE_DB_URL" --dry-run
 
       - name: Apply pending migrations
         if: ${{ inputs.apply == true }}
         shell: bash
         run: |
           set -euo pipefail
-          npx --yes supabase@2.115.0 db push --linked \
-            --password "$SUPABASE_DB_PASSWORD"
+          npx --yes supabase@2.115.0 db push \
+            --db-url "$SUPABASE_DB_URL"
 
       - name: Verify remote migration history
         if: ${{ inputs.apply == true }}
         shell: bash
         run: |
-          npx --yes supabase@2.115.0 db push --linked --dry-run \
-            --password "$SUPABASE_DB_PASSWORD"
+          npx --yes supabase@2.115.0 db push \
+            --db-url "$SUPABASE_DB_URL" --dry-run

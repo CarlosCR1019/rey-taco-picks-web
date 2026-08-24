@@ -65,6 +65,11 @@ from backend.pick_selection import (
     score_evidence,
     validate_ai_ranking,
 )
+from backend.lineup_source import (
+    ApiFootballClient,
+    LineupResolver,
+    SupabaseLineupStore,
+)
 from backend.scraper_config import ConfigError, ScraperSettings, load_settings
 from backend.telegram_publisher import DeliveryResult, TelegramDestination, TelegramHttpTransport, deliver_batch
 
@@ -694,6 +699,7 @@ def extract_events_from_page(
     fallback_league=None,
     fallback_sport=None,
     detail_cache=None,
+    lineup_resolver=None,
 ):
     """Extract and normalize Playdoit records before legacy phase projection."""
 
@@ -719,13 +725,21 @@ def extract_events_from_page(
         )
         enriched.append(record)
     return [
-        _legacy_odds_projection(event)
+        _legacy_odds_projection(event, lineup_resolver=lineup_resolver)
         for event in normalize_playdoit_events(enriched, observed)
         if event.markets
     ]
 
-def _legacy_odds_projection(event):
+def _legacy_odds_projection(event, *, lineup_resolver=None):
     """Project a normalized event for legacy phases during the migration."""
+
+    if lineup_resolver is not None:
+        try:
+            event = lineup_resolver.resolve(event)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            pass
 
     h2h = next((market for market in event.markets if market.key == "h2h"), None)
     named_h2h = {}
@@ -834,7 +848,9 @@ def obtener_eventos_odds_api(odds_api_key=None, *, observed_at=None):
 # ============================================================
 #  FASE 1: ESCÁNER RADAR DE SUPERFICIE
 # ============================================================
-def fase1_escaneo_superficie(driver, *, odds_api_key=None):
+def fase1_escaneo_superficie(
+    driver, *, odds_api_key=None, lineup_resolver=None
+):
     print("\n" + "="*60)
     print("🕵️  FASE 1: ESCÁNER RADAR DE SUPERFICIE (Solo Hoy y Mañana)")
     print("="*60)
@@ -863,6 +879,7 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
                 driver,
                 observed_at=observed_playdoit,
                 detail_cache=detail_cache,
+                lineup_resolver=lineup_resolver,
             )
             if eventos_iniciales:
                 break
@@ -897,6 +914,7 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
                         fallback_league=cat,
                         fallback_sport=_sport_for_category(cat),
                         detail_cache=detail_cache,
+                        lineup_resolver=lineup_resolver,
                     )
                     if eventos: break
                     time.sleep(2.0)
@@ -928,6 +946,27 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
         f"totals:{coverage['totals']} "
         f"spreads:{coverage['spreads']} "
         f"source_markets:{coverage['source_markets']}"
+    )
+    lineup_stats = (
+        getattr(lineup_resolver, "stats", None)
+        if lineup_resolver is not None
+        else None
+    )
+    if not isinstance(lineup_stats, Mapping):
+        lineup_stats = {
+            "events_checked": 0,
+            "confirmed_markets": 0,
+            "excluded_player_markets": 0,
+            "requests_used": 0,
+        }
+    lineup_state = "enabled" if lineup_resolver is not None else "disabled"
+    print(
+        f"   lineup_api={lineup_state} "
+        f"requests:{lineup_stats['requests_used']} "
+        f"events_checked:{lineup_stats['events_checked']} "
+        f"confirmed_markets:{lineup_stats['confirmed_markets']} "
+        "excluded_player_markets:"
+        f"{lineup_stats['excluded_player_markets']}"
     )
     if len(partidos_data) < 4:
         print(f"\n   🌐 Cartelera en Playdoit reducida ({len(partidos_data)}). Conectando satélite The Odds API...")
@@ -2406,12 +2445,14 @@ class LegacyPipeline:
         history_client=None,
         driver_factory=None,
         clock: Callable[[], datetime] | None = None,
+        lineup_resolver=None,
     ):
         self.settings = settings
         self.repository = repository
         self.history_client = history_client
         self.driver_factory = driver_factory or get_chrome_driver
         self.clock = clock or _utc_now
+        self.lineup_resolver = lineup_resolver
 
     def run(self, *, collect_only=False, deliver_only=False):
         if type(collect_only) is not bool or type(deliver_only) is not bool:
@@ -2477,7 +2518,9 @@ class LegacyPipeline:
         driver = self.driver_factory()
         try:
             partidos = fase1_escaneo_superficie(
-                driver, odds_api_key=self.settings.odds_api_key
+                driver,
+                odds_api_key=self.settings.odds_api_key,
+                lineup_resolver=self.lineup_resolver,
             )
             if not partidos:
                 return PipelineResult(0, 0, False, ())
@@ -2539,7 +2582,11 @@ def build_pipeline(
 ):
     """Build production dependencies, probing secure schema before Chrome."""
     if settings.dry_run:
-        return LegacyPipeline(settings, driver_factory=driver_factory)
+        return LegacyPipeline(
+            settings,
+            driver_factory=driver_factory,
+            lineup_resolver=None,
+        )
 
     active_client_factory = client_factory or create_client
     active_probe = schema_probe or probe_secure_schema
@@ -2550,11 +2597,18 @@ def build_pipeline(
     except Exception:
         raise ConfigError("could not initialize secure Supabase scraper client") from None
     active_probe(client)
+    lineup_resolver = None
+    if settings.api_football_key:
+        lineup_resolver = LineupResolver(ApiFootballClient(
+            settings.api_football_key,
+            store=SupabaseLineupStore(client),
+        ))
     return LegacyPipeline(
         settings,
         repository=SupabaseBatchRepository(client),
         history_client=client,
         driver_factory=driver_factory,
+        lineup_resolver=lineup_resolver,
     )
 
 

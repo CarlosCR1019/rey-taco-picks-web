@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -13,6 +13,8 @@ import backend.scraper as scraper
 from backend.pick_publisher import PERSISTED_PICK_COLUMNS
 from backend.scraper import ExitCode, LegacyPipeline, PipelineResult, run_main
 from backend.scraper_config import ScraperSettings
+from backend.scraper_domain import Event, Market, Outcome
+from backend.lineup_source import LineupResolver
 
 
 SCRAPER_SOURCE = Path(scraper.__file__)
@@ -51,6 +53,7 @@ def settings(tmp_path, *, dry_run: bool) -> ScraperSettings:
         service_role_key="" if dry_run else "service-role-secret",
         groq_api_key="groq",
         odds_api_key="odds",
+        api_football_key="",
         telegram_token="telegram",
         telegram_admin_id="admin",
         telegram_vip_id="vip",
@@ -87,6 +90,59 @@ def test_verified_market_coverage_counts_each_event_once_per_market(event_fixtur
         "spreads": 0,
         "source_markets": 0,
     }
+
+
+def test_playdoit_projection_resolves_lineup_before_building_candidates():
+    observed = datetime(2026, 8, 23, 18, tzinfo=timezone.utc)
+    prop = Market(
+        "playdoit_market:shots-1",
+        "source_unspecified",
+        None,
+        (
+            Outcome(
+                "playdoit_odd:shots-over",
+                "Más de 0.5",
+                1.8,
+                source_id="shots-over",
+                competitor_id="player-7",
+            ),
+        ),
+        bookmaker_key="playdoit",
+        name="Remates a Puerta - Cole Palmer",
+        source_id="shots-1",
+        scope="player",
+        participant_id="player-7",
+        offer_kind="standard",
+        source_selection_ids=("shots-over",),
+    )
+    event = Event(
+        source="playdoit",
+        source_event_id="event-1",
+        sport="soccer",
+        league="Premier League",
+        home_team="Fulham",
+        away_team="Chelsea",
+        starts_at=observed + timedelta(minutes=55),
+        observed_at=observed,
+        markets=(prop,),
+    )
+
+    class Resolver:
+        def resolve(self, received):
+            return replace(
+                received,
+                markets=(
+                    replace(received.markets[0], lineup_confirmed=True),
+                ),
+            )
+
+    record = scraper._legacy_odds_projection(
+        event, lineup_resolver=Resolver()
+    )
+
+    candidates = record[scraper._VERIFIED_CANDIDATES_FIELD]
+    assert len(candidates) == 1
+    assert candidates[0].lineup_confirmed is True
 
 
 def test_verified_market_coverage_counts_generic_source_markets():
@@ -487,6 +543,29 @@ def test_schema_probe_is_read_only_and_builds_pipeline_before_chrome(tmp_path):
         ("picks_policy_allowlist_status", {}),
     ]
     assert driver_calls == []
+
+
+def test_build_pipeline_configures_shared_lineup_resolver_when_key_exists(
+    tmp_path,
+):
+    client = FakeSupabase({
+        "public_picks": True,
+        "publish_pick_batch": True,
+        "resume_pick_batch": True,
+        "source_audit": True,
+        "version": 2,
+    })
+    configured = replace(
+        settings(tmp_path, dry_run=False),
+        api_football_key="lineup-secret",
+    )
+
+    pipeline = scraper.build_pipeline(
+        configured,
+        client_factory=lambda _url, _key: client,
+    )
+
+    assert isinstance(pipeline.lineup_resolver, LineupResolver)
 
 
 def test_schema_probe_rejects_an_unsafe_policy_allowlist_before_chrome(tmp_path):

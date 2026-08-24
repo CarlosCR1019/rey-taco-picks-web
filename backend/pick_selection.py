@@ -409,7 +409,9 @@ def _candidate_from_evidence(event: Event, market_index: int, outcome_index: int
         offer_kind=market.offer_kind,
         offer_description=market.offer_description,
         source_market_selection_ids=market.source_selection_ids,
-        lineup_confirmed=market.lineup_confirmed,
+        lineup_confirmed=(
+            market.lineup_confirmed or outcome.lineup_confirmed
+        ),
     )
 
 
@@ -485,15 +487,20 @@ def build_candidates(events: Iterable[Event]) -> list[CandidatePick]:
                         or market.scope is None
                         or market.offer_kind is None
                         or market.source_selection_ids is None
-                        or (
-                            _market_requires_confirmed_lineup(market)
-                            and not market.lineup_confirmed
-                        )
                     )
                 )
             ):
                 continue
             for outcome_index, _outcome in enumerate(market.outcomes):
+                if (
+                    generic_market
+                    and _market_requires_confirmed_lineup(market)
+                    and not (
+                        market.lineup_confirmed
+                        or _outcome.lineup_confirmed
+                    )
+                ):
+                    continue
                 if (
                     generic_market and _outcome.source_id is None
                 ) or (

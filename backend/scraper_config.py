@@ -30,6 +30,7 @@ class ScraperSettings:
     telegram_free_id: str
     public_picks_path: Path
     queue_path: Path
+    api_football_key: str = ""
 
 
 def _clean(value: str | None) -> str:
@@ -84,6 +85,7 @@ def load_settings(
         service_role_key=service_role_key,
         groq_api_key=_clean(source.get("GROQ_API_KEY")),
         odds_api_key=_clean(source.get("ODDS_API_KEY")),
+        api_football_key=_clean(source.get("API_FOOTBALL_KEY")),
         telegram_token=_clean(source.get("TELEGRAM_BOT_TOKEN")),
         telegram_admin_id=_clean(source.get("TELEGRAM_ADMIN_ID"))
         or _clean(source.get("TELEGRAM_CHAT_ID")),

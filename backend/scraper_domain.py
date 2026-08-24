@@ -63,6 +63,7 @@ class Outcome:
     price: float
     source_id: str | None = None
     competitor_id: str | None = None
+    lineup_confirmed: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _canonical_key(self.key, "key"))
@@ -79,6 +80,8 @@ class Outcome:
                 "competitor_id",
                 _required_text(self.competitor_id, "competitor_id"),
             )
+        if not isinstance(self.lineup_confirmed, bool):
+            raise TypeError("lineup_confirmed must be a bool")
         price = _finite_float(self.price, "price")
         maximum_price = 1000.0 if self.source_id is not None else 50.0
         if not 1.01 <= price <= maximum_price:

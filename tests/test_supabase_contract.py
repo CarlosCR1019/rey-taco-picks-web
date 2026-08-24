@@ -17,6 +17,9 @@ BASE_SCHEMA_SQL = SQL.parent / "20260820210000_base_profiles_picks.sql"
 LEGACY_POLICY_HARDENING_SQL = (
     SQL.parent / "20260822010000_harden_legacy_pick_policies.sql"
 )
+LINEUP_BUDGET_SQL = (
+    SQL.parent / "20260823090000_api_football_lineup_budget.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -75,6 +78,58 @@ def function_signature_pattern(signature: str) -> str:
 
 
 class SupabaseContractTests(unittest.TestCase):
+    def test_api_football_budget_and_cache_are_service_role_only(self):
+        self.assertTrue(LINEUP_BUDGET_SQL.exists())
+        text = " ".join(
+            LINEUP_BUDGET_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "create table if not exists public.api_football_request_budget",
+            text,
+        )
+        self.assertIn("quota_day date primary key", text)
+        self.assertIn("requests_used between 0 and 40", text)
+        self.assertIn(
+            "create table if not exists public.api_football_cache", text
+        )
+        self.assertGreaterEqual(
+            text.count("enable row level security"), 2
+        )
+        self.assertIn(
+            "create or replace function public.claim_api_football_request",
+            text,
+        )
+        self.assertIn("for update", text)
+        self.assertIn("least(requested_limit, 40)", text)
+        self.assertIn(
+            "server_quota_day := (now() at time zone 'utc')::date", text
+        )
+        self.assertIn(
+            "if requested_quota_day <> server_quota_day then return false",
+            text,
+        )
+        self.assertIn(
+            "create or replace function public.get_api_football_cache", text
+        )
+        self.assertIn(
+            "create or replace function public.put_api_football_cache", text
+        )
+        self.assertIn("security definer", text)
+        self.assertIn("set search_path = pg_catalog, public", text)
+        self.assertIn(
+            "revoke all on table public.api_football_request_budget from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.api_football_cache from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.claim_api_football_request(date, integer) to service_role",
+            text,
+        )
     def test_legacy_pick_policies_are_replaced_by_a_strict_allowlist(self):
         self.assertTrue(
             LEGACY_POLICY_HARDENING_SQL.exists(),

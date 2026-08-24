@@ -61,6 +61,16 @@ def test_dry_run_allows_missing_supabase_write_credentials():
     assert settings.service_role_key == ""
 
 
+def test_api_football_key_is_optional_and_trimmed():
+    missing = load_settings({}, dry_run=True)
+    configured = load_settings(
+        {"API_FOOTBALL_KEY": " lineup-secret "}, dry_run=True
+    )
+
+    assert missing.api_football_key == ""
+    assert configured.api_football_key == "lineup-secret"
+
+
 def test_injected_mapping_does_not_read_dotenv(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "ambient-url")
     settings = load_settings({"SUPABASE_URL": "injected-url"}, dry_run=True)

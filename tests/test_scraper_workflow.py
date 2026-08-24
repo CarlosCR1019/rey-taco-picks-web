@@ -468,6 +468,23 @@ def test_cloud_only_ten_oclock_release_reuses_stale_gate_before_delivery():
 
     assert gate["id"] == "cloud_window"
     assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert gate["env"]["GITHUB_EVENT_NAME"] == "${{ github.event_name }}"
+    assert gate["env"]["COLLECTED_PORTFOLIO_DATE"] == (
+        "${{ needs.collect_primary.outputs.portfolio_date || "
+        "needs.collect_recovery.outputs.portfolio_date }}"
+    )
+    manual_branch = gate["run"].index(
+        '$env:GITHUB_EVENT_NAME -eq "workflow_dispatch"'
+    )
+    remote_lookup = gate["run"].index(
+        "actions/runs/$env:GITHUB_RUN_ID"
+    )
+    assert manual_branch < remote_lookup
+    assert (
+        '"portfolio_date=$env:COLLECTED_PORTFOLIO_DATE" '
+        '>> $env:GITHUB_OUTPUT'
+    ) in gate["run"]
+    assert '"eligible=true" >> $env:GITHUB_OUTPUT' in gate["run"]
     assert "actions/runs/$env:GITHUB_RUN_ID" in gate["run"]
     assert "backend.adaptive_schedule" in gate["run"]
     assert "backend.daily_portfolio --created-at" in gate["run"]

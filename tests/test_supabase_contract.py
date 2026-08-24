@@ -47,6 +47,9 @@ RESULT_REPORT_DELIVERY_SQL = (
 SETTLED_ROUND_ROLLOVER_SQL = (
     SQL.parent / "20260824160000_settled_daily_round_rollover.sql"
 )
+RESULT_REPORT_RECEIPT_LENGTH_SQL = (
+    SQL.parent / "20260824170000_result_report_receipt_length.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -1953,6 +1956,29 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("attempt_id = requested_attempt_id", complete)
         self.assertIn("report_digest = requested_report_digest", complete)
         self.assertIn("state = 'in_progress'", complete)
+
+    def test_result_report_receipts_allow_256_safe_characters_without_invalid_regex(self):
+        self.assertTrue(RESULT_REPORT_RECEIPT_LENGTH_SQL.exists())
+        text = " ".join(
+            RESULT_REPORT_RECEIPT_LENGTH_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertIn(
+            "char_length(requested_receipt) not between 1 and 256",
+            text,
+        )
+        self.assertIn("requested_receipt !~ '^[a-za-z0-9_:-]+$'", text)
+        self.assertNotIn("{1,256}", text)
+        self.assertIn(
+            "revoke all on function public.complete_result_report_delivery(uuid, text, text, text, uuid, boolean, text, text) from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.complete_result_report_delivery(uuid, text, text, text, uuid, boolean, text, text) to service_role",
+            text,
+        )
 
     def test_settled_daily_round_rollover_requires_verified_final_results(self):
         self.assertTrue(SETTLED_ROUND_ROLLOVER_SQL.exists())

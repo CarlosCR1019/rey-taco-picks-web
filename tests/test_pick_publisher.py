@@ -9,6 +9,7 @@ from backend.pick_publisher import (
     PERSISTED_PICK_COLUMNS,
     SupabaseBatchRepository,
     publish_batch,
+    revalidate_persisted_picks,
     source_hash_for,
 )
 
@@ -82,6 +83,28 @@ def persisted_picks(rows=None):
             stored["razonamiento"] = None
         persisted.append(stored)
     return persisted
+
+
+def six_persisted_picks(public_indices=(0, 1)):
+    rows = []
+    for index in range(6):
+        rows.append(
+            {
+                "pick": f"Pick {index}",
+                "cuota": 1.80 + index / 100,
+                "visibility": (
+                    "public" if index in public_indices else "premium"
+                ),
+                "es_parlay": False,
+                "source": "playdoit",
+                "source_event_id": f"event-{index}",
+                "source_market_key": "h2h|full_time|",
+                "source_selection_key": "home",
+                "source_observed_at": "2026-08-20T20:00:00Z",
+                "source_starts_at": f"2099-08-2{index + 1}T01:00:00Z",
+            }
+        )
+    return persisted_picks(rows)
 
 
 def publish_response(rows, *, created=True, delivery_status=None):
@@ -543,6 +566,43 @@ def test_supabase_repository_rejects_invalid_publish_response(response_data):
 
     with pytest.raises(RuntimeError, match="publish_pick_batch"):
         repository.publish("run-1", "hash-1", picks())
+
+
+def test_persisted_public_policy_accepts_two_free_picks_in_six_row_batch():
+    rows = six_persisted_picks()
+
+    validated = revalidate_persisted_picks(rows)
+
+    assert len(validated) == 6
+    assert sum(row["visibility"] == "public" for row in validated) == 2
+
+
+@pytest.mark.parametrize("public_indices", [(0,), (0, 1, 2)])
+def test_persisted_public_policy_rejects_wrong_free_count_for_six(
+    public_indices,
+):
+    with pytest.raises(RuntimeError, match="public policy"):
+        revalidate_persisted_picks(six_persisted_picks(public_indices))
+
+
+def test_persisted_public_policy_rejects_more_than_six_rows():
+    rows = six_persisted_picks()
+    seventh = dict(rows[-1])
+    seventh["id"] = 7
+    seventh["source_event_id"] = "event-7"
+    seventh["source_starts_at"] = "2099-08-28T01:00:00Z"
+    rows.append(seventh)
+
+    with pytest.raises(RuntimeError, match="public policy"):
+        revalidate_persisted_picks(rows)
+
+
+def test_persisted_public_policy_rejects_duplicate_free_match():
+    rows = six_persisted_picks()
+    rows[1]["source_event_id"] = rows[0]["source_event_id"]
+
+    with pytest.raises(RuntimeError, match="public policy"):
+        revalidate_persisted_picks(rows)
 
 
 @pytest.mark.parametrize("bad_picks, run_key", [([], "run-1"), (picks(), "")])

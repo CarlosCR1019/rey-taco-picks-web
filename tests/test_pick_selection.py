@@ -16,6 +16,7 @@ from backend.pick_selection import (
     build_same_day_parlay,
     evidence_for_candidate,
     score_evidence,
+    select_daily_portfolio,
     validate_ai_ranking,
 )
 from backend.scraper_domain import Event, Market, Outcome
@@ -1610,3 +1611,79 @@ def test_ranked_pick_is_frozen_and_slotted(event_fixture):
     with pytest.raises(FrozenInstanceError):
         ranked.rationale = "Otra explicación"  # type: ignore[misc]
     assert not hasattr(ranked, "__dict__")
+
+
+def test_daily_portfolio_preserves_rank_order_and_caps_at_six():
+    candidates = [
+        build_candidates([
+            event_with(
+                source_event_id=f"portfolio-{index}",
+                home_team=f"Home {index}",
+                away_team=f"Away {index}",
+                starts_at=OBSERVED + timedelta(hours=8, minutes=index),
+            )
+        ])[0]
+        for index in range(7)
+    ]
+    ranked = [
+        RankedPick(candidate, f"Respaldo suficiente para selección {index}.")
+        for index, candidate in enumerate(candidates)
+    ]
+
+    selected = select_daily_portfolio(ranked)
+
+    assert [row.candidate for row in selected] == candidates[:6]
+
+
+def test_daily_portfolio_keeps_only_highest_ranked_pick_per_physical_match():
+    starts_at = OBSERVED + timedelta(hours=8)
+    first = build_candidates([
+        event_with(
+            source="playdoit",
+            source_event_id="portfolio-playdoit",
+            home_team="Club América",
+            away_team="Tigres UANL",
+            starts_at=starts_at,
+        )
+    ])[0]
+    same_match_other_source = build_candidates([
+        event_with(
+            source="the_odds_api",
+            source_event_id="portfolio-odds-api",
+            home_team=" club  america ",
+            away_team="TIGRES UANL",
+            starts_at=starts_at + timedelta(minutes=1),
+            markets=(
+                Market(
+                    "totals",
+                    "full_game",
+                    2.5,
+                    (
+                        Outcome("over", "Más de 2.5", 1.91),
+                        Outcome("under", "Menos de 2.5", 1.91),
+                    ),
+                    bookmaker_key="the_odds_api",
+                ),
+            ),
+        )
+    ])[0]
+    unrelated = build_candidates([
+        event_with(
+            source_event_id="portfolio-unrelated",
+            home_team="Monterrey",
+            away_team="Pumas",
+            starts_at=starts_at + timedelta(hours=2),
+        )
+    ])[0]
+    ranked = [
+        RankedPick(first, "La primera selección tiene el mejor respaldo."),
+        RankedPick(
+            same_match_other_source,
+            "El mismo partido aparece después con otro mercado.",
+        ),
+        RankedPick(unrelated, "Este partido independiente conserva su lugar."),
+    ]
+
+    selected = select_daily_portfolio(ranked)
+
+    assert [row.candidate for row in selected] == [first, unrelated]

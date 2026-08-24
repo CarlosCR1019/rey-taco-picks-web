@@ -177,6 +177,22 @@ def single_pick(selection):
     ]
 
 
+def six_distinct_picks():
+    rows = []
+    for index in range(6):
+        row = dict(single_pick(f"Pick {index}")[0])
+        row.update(
+            {
+                "partido": f"Home {index} vs Away {index}",
+                "source_event_id": f"event-{index}",
+                "source_selection_key": f"selection-{index}",
+                "source_starts_at": f"2099-08-2{index + 1}T01:00:00Z",
+            }
+        )
+        rows.append(row)
+    return rows
+
+
 def stored_rows(picks):
     result = []
     for index, pick in enumerate(picks, start=1):
@@ -212,6 +228,28 @@ class ReplayRepository(FakeRepository):
     def record_delivery(self, run_id, destination, success, error=""):
         super().record_delivery(run_id, destination, success, error)
         self.delivery_status[destination] = {"success": success, "error": error}
+
+
+def test_phase7_accepts_six_picks_with_two_distinct_public_rows(tmp_path):
+    from backend.scraper import fase7_guardar_y_notificar
+
+    repository = FakeRepository()
+
+    publication, deliveries = fase7_guardar_y_notificar(
+        six_distinct_picks(),
+        repository=repository,
+        settings=scraper_settings(tmp_path),
+        run_key="six-pick-run",
+        deliver=False,
+    )
+
+    persisted = repository.published[0][2]
+    public = [row for row in persisted if row["visibility"] == "public"]
+    assert publication.run_id == "run-1"
+    assert deliveries == {}
+    assert len(public) == 2
+    assert len({row["source_event_id"] for row in public}) == 2
+    assert all(row["es_parlay"] is False for row in public)
 
 
 def test_same_run_retry_uses_persisted_rows_and_only_missing_deliveries(tmp_path):

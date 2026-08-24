@@ -12,7 +12,7 @@ import re
 from tempfile import NamedTemporaryFile
 from typing import Callable, Mapping, Protocol, Sequence, TypedDict
 
-from backend.publishing_policy import public_payload
+from backend.publishing_policy import expected_public_pick_count, public_payload
 
 
 PERSISTED_PICK_COLUMNS = frozenset(
@@ -361,9 +361,12 @@ def _validated_persisted_picks(
         value = [dict(row) for row in value]
     if not isinstance(value, list) or not value:
         raise RuntimeError("publish_pick_batch returned invalid persisted picks")
+    if len(value) > 6:
+        raise RuntimeError("publish_pick_batch returned invalid public policy")
 
     normalized: list[PersistedPick] = []
     public_count = 0
+    public_events: set[tuple[str, str]] = set()
     for raw_row in value:
         row = _string_keyed_dict(raw_row)
         if row is None or set(row) != RETURNED_PICK_COLUMNS:
@@ -405,12 +408,21 @@ def _validated_persisted_picks(
             public_count += 1
             if row["es_parlay"] is not False or row["razonamiento"] is not None:
                 raise RuntimeError("publish_pick_batch returned unsafe public pick")
+            public_event = (
+                str(row["source"]).strip().casefold(),
+                str(row["source_event_id"]).strip(),
+            )
+            if public_event in public_events:
+                raise RuntimeError(
+                    "publish_pick_batch returned invalid public policy"
+                )
+            public_events.add(public_event)
 
         normalized.append(
             PersistedPick(tuple((key, row[key]) for key in sorted(row)))
         )
 
-    if public_count != 1:
+    if public_count != expected_public_pick_count(len(normalized)):
         raise RuntimeError("publish_pick_batch returned invalid public policy")
     return tuple(normalized)
 

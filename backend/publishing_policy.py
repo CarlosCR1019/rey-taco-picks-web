@@ -3,14 +3,49 @@ from datetime import date, timedelta
 import re
 
 
+def expected_public_pick_count(total):
+    """Return the exact free-pick count for a bounded daily batch."""
+    if type(total) is not int or total < 1 or total > 6:
+        return 0
+    return 2 if total == 6 else 1
+
+
+def _physical_event_identity(pick, index):
+    source = pick.get("source")
+    source_event_id = pick.get("source_event_id")
+    if (
+        isinstance(source, str)
+        and source.strip()
+        and isinstance(source_event_id, str)
+        and source_event_id.strip()
+    ):
+        return ("source", source.strip().casefold(), source_event_id.strip())
+
+    partido = pick.get("partido")
+    if isinstance(partido, str) and partido.strip():
+        return ("partido", " ".join(partido.casefold().split()))
+
+    pick_id = pick.get("id")
+    if isinstance(pick_id, (str, int)) and not isinstance(pick_id, bool):
+        return ("id", str(pick_id))
+    return ("row", index)
+
+
 def assign_visibility(picks):
-    """Return picks with one useful free selection and every other pick premium."""
+    """Apply the exact free allocation without repeating a physical match."""
     result = deepcopy(picks)
-    public_assigned = False
-    for pick in result:
-        is_public = not public_assigned and not bool(pick.get("es_parlay"))
-        pick["visibility"] = "public" if is_public else "premium"
-        public_assigned = public_assigned or is_public
+    public_target = expected_public_pick_count(len(result))
+    public_events = set()
+    for index, pick in enumerate(result):
+        pick["visibility"] = "premium"
+        event_identity = _physical_event_identity(pick, index)
+        if (
+            len(public_events) < public_target
+            and not bool(pick.get("es_parlay"))
+            and event_identity not in public_events
+        ):
+            pick["visibility"] = "public"
+            public_events.add(event_identity)
     return result
 
 

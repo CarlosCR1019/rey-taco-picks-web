@@ -4,6 +4,7 @@ import unittest
 from backend.publishing_policy import (
     assign_visibility,
     event_labels_share_date,
+    expected_public_pick_count,
     public_payload,
     scheduled_event_date,
 )
@@ -25,6 +26,73 @@ class PublishingPolicyTests(unittest.TestCase):
             {"id": 2, "es_parlay": False, "pick": "VIP"},
         ])
         self.assertEqual([row["pick"] for row in public_payload(rows)], ["Gratis"])
+
+    def test_public_count_is_one_through_five_and_two_for_six(self):
+        self.assertEqual(expected_public_pick_count(0), 0)
+        for total in range(1, 6):
+            self.assertEqual(expected_public_pick_count(total), 1)
+            rows = [
+                {
+                    "id": index,
+                    "es_parlay": False,
+                    "source": "playdoit",
+                    "source_event_id": f"event-{index}",
+                }
+                for index in range(total)
+            ]
+            self.assertEqual(
+                sum(
+                    row["visibility"] == "public"
+                    for row in assign_visibility(rows)
+                ),
+                1,
+            )
+        self.assertEqual(expected_public_pick_count(6), 2)
+
+    def test_six_picks_expose_two_non_parlays_from_distinct_matches(self):
+        rows = [
+            {
+                "id": index,
+                "es_parlay": index == 1,
+                "pick": f"Pick {index}",
+                "source": "playdoit",
+                "source_event_id": (
+                    "event-a" if index in {1, 2, 3} else f"event-{index}"
+                ),
+            }
+            for index in range(1, 7)
+        ]
+
+        marked = assign_visibility(rows)
+        public = [row for row in marked if row["visibility"] == "public"]
+
+        self.assertEqual([row["id"] for row in public], [2, 4])
+        self.assertTrue(all(row["es_parlay"] is False for row in public))
+        self.assertEqual(
+            len({(row["source"], row["source_event_id"]) for row in public}),
+            2,
+        )
+        self.assertTrue(
+            all(
+                row["visibility"] == "premium"
+                for row in marked
+                if row["id"] not in {2, 4}
+            )
+        )
+
+    def test_assign_visibility_does_not_mutate_input(self):
+        rows = [
+            {
+                "id": 1,
+                "es_parlay": False,
+                "source": "playdoit",
+                "source_event_id": "event-a",
+            }
+        ]
+
+        assign_visibility(rows)
+
+        self.assertNotIn("visibility", rows[0])
 
     def test_free_telegram_channel_never_queues_the_premium_batch(self):
         scraper = (Path(__file__).resolve().parents[1] / "backend" / "scraper.py").read_text(encoding="utf-8")

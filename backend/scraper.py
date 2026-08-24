@@ -29,7 +29,12 @@ from backend.playdoit_browser import (
     gate_interactive_driver,
     resolve_browser_mode,
 )
-from backend.publishing_policy import assign_visibility, public_payload, scheduled_event_date
+from backend.publishing_policy import (
+    assign_visibility,
+    expected_public_pick_count,
+    public_payload,
+    scheduled_event_date,
+)
 from backend.odds_source import (
     OddsSourceError,
     SUPPORTED_MARKETS,
@@ -63,6 +68,7 @@ from backend.pick_selection import (
     build_candidates,
     evidence_for_candidate,
     score_evidence,
+    select_daily_portfolio,
     validate_ai_ranking,
 )
 from backend.lineup_source import (
@@ -1396,6 +1402,9 @@ def _render_candidate_ranking_prompt(candidates) -> str:
 Ordena los candidatos verificados de mayor a menor utilidad editorial.
 Los hechos del catálogo son de SOLO LECTURA: no cambies partido, mercado,
 selección, horario, fuente, casa de apuestas ni cuota.
+El objetivo editorial es 4 picks fuertes; normalmente elige de 3 a 5 y nunca
+más de 6. Si no hay suficientes oportunidades sólidas, devuelve menos o cero:
+no fuerces picks débiles. No repitas el mismo partido con mercados distintos.
 
 CATÁLOGO VERIFICADO:
 {catalog_json}
@@ -1640,6 +1649,7 @@ def _fase6_candidate_ranking(
         ]
     except (AttributeError, TypeError, ValueError, OverflowError):
         return []
+    ranked = select_daily_portfolio(ranked)
     picks = []
     for row in ranked:
         evidence = evidence_for_candidate(
@@ -1702,6 +1712,8 @@ def fase7_guardar_y_notificar(
     if not picks:
         print("   ❌ No hay picks para guardar.")
         return None, {}
+    if len(picks) > 6:
+        raise ValueError("La publicación permite como máximo seis picks.")
 
     active_settings = settings or load_settings(dry_run=False)
     if repository is None:
@@ -1745,8 +1757,22 @@ def fase7_guardar_y_notificar(
 
     picks = persisted_picks
     free_picks = public_payload(picks)
-    if len(free_picks) != 1 or free_picks[0].get('es_parlay'):
-        raise ValueError("La publicación requiere exactamente un pick público no parlay.")
+    expected_free = expected_public_pick_count(len(picks))
+    free_events = {
+        (
+            str(pick.get('source', '')).strip().casefold(),
+            str(pick.get('source_event_id', '')).strip(),
+        )
+        for pick in free_picks
+    }
+    if (
+        len(free_picks) != expected_free
+        or len(free_events) != len(free_picks)
+        or any(pick.get('es_parlay') is not False for pick in free_picks)
+    ):
+        raise ValueError(
+            "La publicación no cumple la política de picks públicos."
+        )
 
     active_run_key = str(run_key or "").strip()
     if not active_run_key:
@@ -2011,7 +2037,9 @@ def run_structured_pipeline(
         raw_ranking = ranker(tuple(candidates))
     except Exception:
         return PipelineResult(event_count, 0, False, ())
-    ranked = validate_ai_ranking(raw_ranking, candidates)
+    ranked = select_daily_portfolio(
+        validate_ai_ranking(raw_ranking, candidates)
+    )
     if not ranked:
         return PipelineResult(event_count, 0, False, ())
 
@@ -2261,7 +2289,7 @@ def _valid_visible_source_rows(
     *,
     reference_at: datetime | None = None,
 ) -> bool:
-    if not isinstance(rows, list) or not rows:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 6:
         return False
     if not all(
         _valid_source_audit_row(row, reference_at=reference_at)
@@ -2269,9 +2297,18 @@ def _valid_visible_source_rows(
     ):
         return False
     public_rows = [row for row in rows if row.get("visibility") == "public"]
+    public_events = {
+        (
+            str(row.get("source", "")).strip().casefold(),
+            str(row.get("source_event_id", "")).strip(),
+        )
+        for row in public_rows
+    }
     return (
-        len(public_rows) == 1
-        and public_rows[0].get("es_parlay") is False
+        len(public_rows) == expected_public_pick_count(len(rows))
+        and len(public_events) == len(public_rows)
+        and all(row.get("es_parlay") is False for row in public_rows)
+        and all(row.get("razonamiento") is None for row in public_rows)
         and all(row.get("visibility") in {"public", "premium"} for row in rows)
     )
 

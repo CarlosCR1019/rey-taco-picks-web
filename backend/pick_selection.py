@@ -30,6 +30,7 @@ SUPPORTED_SELECTIONS = {
 MEXICO = ZoneInfo("America/Mexico_City")
 # Bound model-controlled output before persistence and notification fan-out.
 MAX_AI_RANKED_PICKS = 12
+MAX_DAILY_PICKS = 6
 EVIDENCE_LABEL_LIMITED = "Datos limitados"
 EVIDENCE_LABEL_HIGH = "Respaldo alto"
 EVIDENCE_START_TOLERANCE = timedelta(minutes=5)
@@ -866,6 +867,31 @@ class RankedPick:
         if len(rationale) < 10:
             raise ValueError("rationale must contain at least 10 characters")
         object.__setattr__(self, "rationale", rationale[:500])
+
+
+def select_daily_portfolio(ranked: object) -> list[RankedPick]:
+    """Keep the highest-ranked pick from at most six physical events."""
+
+    if isinstance(ranked, (str, bytes)) or not isinstance(ranked, Iterable):
+        return []
+    try:
+        rows = list(ranked)
+    except Exception:
+        return []
+    if not all(isinstance(row, RankedPick) for row in rows):
+        return []
+
+    selected: list[RankedPick] = []
+    for row in rows:
+        if any(
+            _same_physical_event(row.candidate, existing.candidate)
+            for existing in selected
+        ):
+            continue
+        selected.append(row)
+        if len(selected) == MAX_DAILY_PICKS:
+            break
+    return selected
 
 
 def validate_ai_ranking(

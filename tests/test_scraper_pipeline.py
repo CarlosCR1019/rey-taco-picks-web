@@ -15,6 +15,7 @@ from backend.pick_publisher import (
 )
 from backend.pick_selection import build_candidates
 from backend.scraper import PipelineResult, run_structured_pipeline
+from backend.scraper_domain import Market, Outcome
 
 
 REFERENCE_AT = datetime(2026, 8, 20, 16, 5, tzinfo=timezone.utc)
@@ -490,3 +491,121 @@ def test_structured_pipeline_real_adapter_reaches_rpc_with_only_db_columns(
         "home_team",
         "away_team",
     }.isdisjoint(requested[0])
+
+
+def test_structured_pipeline_daily_portfolio_caps_distinct_matches_at_six(
+    event_fixture,
+):
+    events = [
+        replace(
+            event_fixture,
+            source_event_id=f"portfolio-{index}",
+            home_team=f"Home {index}",
+            away_team=f"Away {index}",
+            starts_at=event_fixture.starts_at + timedelta(minutes=index),
+            markets=(
+                Market(
+                    "h2h",
+                    "full_game",
+                    None,
+                    (
+                        Outcome("home", f"Home {index}", 1.82),
+                        Outcome("away", f"Away {index}", 2.04),
+                    ),
+                    bookmaker_key="playdoit",
+                ),
+            ),
+        )
+        for index in range(7)
+    ]
+    publisher = FakePublisher()
+
+    result = run_structured_pipeline(
+        events,
+        lambda candidates: [
+            {
+                "candidate_id": candidate.candidate_id,
+                "rationale": "Selección independiente con respaldo suficiente.",
+            }
+            for candidate in candidates
+            if candidate.selection_key == "home"
+        ],
+        publisher,
+        dry_run=False,
+        reference_at=REFERENCE_AT,
+    )
+
+    assert result.pick_count == 6
+    assert len(publisher.calls[0][0]) == 6
+    public_rows = [
+        row for row in result.picks if row["visibility"] == "public"
+    ]
+    assert len(public_rows) == 2
+    assert len({row["source_event_id"] for row in public_rows}) == 2
+    assert [row["source_event_id"] for row in result.picks] == [
+        f"portfolio-{index}" for index in range(6)
+    ]
+
+
+def test_structured_pipeline_daily_portfolio_keeps_one_pick_per_physical_match(
+    event_fixture,
+):
+    same_match_total = replace(
+        event_fixture,
+        source="the_odds_api",
+        source_event_id="same-match-total",
+        starts_at=event_fixture.starts_at + timedelta(minutes=1),
+        markets=(
+            Market(
+                "totals",
+                "full_game",
+                2.5,
+                (
+                    Outcome("over", "Más de 2.5", 1.91),
+                    Outcome("under", "Menos de 2.5", 1.91),
+                ),
+                bookmaker_key="the_odds_api",
+            ),
+        ),
+    )
+    unrelated = replace(
+        event_fixture,
+        source_event_id="unrelated-match",
+        home_team="Monterrey",
+        away_team="Pumas",
+        starts_at=event_fixture.starts_at + timedelta(hours=2),
+        markets=(
+            Market(
+                "h2h",
+                "full_game",
+                None,
+                (
+                    Outcome("home", "Monterrey", 1.80),
+                    Outcome("away", "Pumas", 2.10),
+                ),
+                bookmaker_key="playdoit",
+            ),
+        ),
+    )
+    publisher = FakePublisher()
+
+    result = run_structured_pipeline(
+        [event_fixture, same_match_total, unrelated],
+        lambda candidates: [
+            {
+                "candidate_id": candidate.candidate_id,
+                "rationale": "Selección con respaldo suficiente para el portafolio.",
+            }
+            for candidate in candidates
+            if candidate.selection_key in {"home", "over"}
+        ],
+        publisher,
+        dry_run=False,
+        reference_at=REFERENCE_AT,
+    )
+
+    assert result.pick_count == 2
+    assert [row["source_event_id"] for row in result.picks] == [
+        event_fixture.source_event_id,
+        unrelated.source_event_id,
+    ]

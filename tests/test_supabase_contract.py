@@ -20,6 +20,9 @@ LEGACY_POLICY_HARDENING_SQL = (
 LINEUP_BUDGET_SQL = (
     SQL.parent / "20260823090000_api_football_lineup_budget.sql"
 )
+SIX_PICK_PORTFOLIO_SQL = (
+    SQL.parent / "20260823100000_six_pick_portfolio_policy.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -78,6 +81,80 @@ def function_signature_pattern(signature: str) -> str:
 
 
 class SupabaseContractTests(unittest.TestCase):
+    def test_six_pick_portfolio_migration_replaces_exact_one_policy_safely(self):
+        self.assertTrue(SIX_PICK_PORTFOLIO_SQL.exists())
+        text = " ".join(
+            SIX_PICK_PORTFOLIO_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        signature = (
+            "public.publish_pick_batch( requested_run_key text, "
+            "requested_source_hash text, requested_picks jsonb ) returns jsonb"
+        )
+        body = function_body(SIX_PICK_PORTFOLIO_SQL, signature)
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "drop index if exists public.picks_one_public_pending_idx", text
+        )
+        self.assertIn(
+            "alter function public.publish_pick_batch(text, text, jsonb) "
+            "rename to publish_pick_batch_one_public_v2",
+            text,
+        )
+        self.assertIn("jsonb_array_length(requested_picks) not between 1 and 6", body)
+        self.assertIn(
+            "case when jsonb_array_length(requested_picks) = 6 then 2 else 1 end",
+            body,
+        )
+        self.assertIn("public_pick_count <> expected_public_count", body)
+        self.assertIn("public_parlay_count <> 0", body)
+        self.assertIn("count(distinct jsonb_build_array", body)
+        self.assertIn("public.publish_pick_batch_one_public_v2(", body)
+        self.assertIn("returned_match_count <> requested_pick_count", body)
+        self.assertIn("persisted_run.source_hash = requested_source_hash", body)
+        self.assertIn("persisted run source hash does not match request", body)
+        self.assertIn("legacy_result->>'created' = 'false'", body)
+        self.assertIn(
+            "returned_requested_public_count <> expected_public_count", body
+        )
+        self.assertIn("return legacy_result", body)
+        self.assertIn("set visibility = 'public', razonamiento = null", body)
+        self.assertIn("jsonb_set(legacy_result, '{picks}'", body)
+
+        self.assertIn(
+            "create or replace function public.enforce_two_public_pending_picks()",
+            text,
+        )
+        trigger_body = function_body(
+            SIX_PICK_PORTFOLIO_SQL,
+            "public.enforce_two_public_pending_picks() returns trigger",
+        )
+        self.assertIn("pg_advisory_xact_lock(20260820233000)", trigger_body)
+        self.assertIn("persisted_row.batch_id = new.batch_id", trigger_body)
+        self.assertIn("persisted_row.active is true", trigger_body)
+        self.assertIn("new.active is not true", trigger_body)
+        self.assertIn("public_pick_count > 2", trigger_body)
+        self.assertIn("raise exception 'at most two public pending picks are allowed'", trigger_body)
+        self.assertIn(
+            "create constraint trigger picks_at_most_two_public_pending", text
+        )
+        self.assertIn("after insert or update on public.picks", text)
+        self.assertIn("deferrable initially immediate", text)
+
+        self.assertIn(
+            "revoke all on function public.publish_pick_batch(text, text, jsonb) "
+            "from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.publish_pick_batch(text, text, jsonb) "
+            "to service_role",
+            text,
+        )
+
     def test_api_football_budget_and_cache_are_service_role_only(self):
         self.assertTrue(LINEUP_BUDGET_SQL.exists())
         text = " ".join(

@@ -149,6 +149,25 @@ class ResultDomainTests(unittest.TestCase):
             "ganado",
         )
 
+    def test_h2h_team_match_ignores_shared_reserve_suffix(self):
+        event = EventResult(
+            "BG Tampines Rovers Reserve",
+            "Hougang United FC Reserve",
+            2,
+            0,
+            True,
+        )
+        h2h = MarketIdentity("playdoit", "h2h", "full_game", None)
+
+        self.assertEqual(
+            grade_pick(
+                "BG Tampines Rovers Reserve",
+                event,
+                market_identity=h2h,
+            ),
+            "ganado",
+        )
+
     def test_detailed_team_and_event_stats_grade_only_when_present(self):
         detailed = EventResult(
             "Fulham",

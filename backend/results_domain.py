@@ -23,6 +23,8 @@ _TEAM_STOP_WORDS = {
     "club",
     "deportivo",
     "fc",
+    "reserve",
+    "reserves",
     "sc",
 }
 

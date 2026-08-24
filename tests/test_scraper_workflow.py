@@ -7,6 +7,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 COLLECTOR_WORKFLOW = ROOT / ".github" / "workflows" / "collector.yml"
 VERIFIER_WORKFLOW = ROOT / ".github" / "workflows" / "scraper.yml"
+MIGRATION_WORKFLOW = ROOT / ".github" / "workflows" / "database-migrations.yml"
 SERVICE_ROLE_EXPRESSION = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
 RUN_KEY_EXPRESSION = "residential:${{ github.run_id }}"
 RESIDENTIAL_RUNNER = ["self-hosted", "Windows", "X64", "playdoit-residential"]
@@ -21,6 +22,38 @@ def _workflow(path: Path) -> dict:
 
 def _step(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
+
+
+def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
+    workflow = _workflow(MIGRATION_WORKFLOW)
+    triggers = workflow["on"]
+
+    assert set(triggers) == {"workflow_dispatch"}
+    dispatch = triggers["workflow_dispatch"]
+    assert dispatch["inputs"]["apply"] == {
+        "description": "Apply pending migrations after the mandatory dry-run",
+        "required": "true",
+        "default": "false",
+        "type": "boolean",
+    }
+    assert workflow["permissions"] == {"contents": "read"}
+    job = workflow["jobs"]["migrate"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["timeout-minutes"] == "10"
+    assert set(job["env"]) == {
+        "SUPABASE_ACCESS_TOKEN",
+        "SUPABASE_DB_PASSWORD",
+        "SUPABASE_PROJECT_REF",
+    }
+
+    steps = {step["name"]: step for step in job["steps"]}
+    assert "--dry-run" in steps["Preview pending migrations"]["run"]
+    assert steps["Apply pending migrations"]["if"] == (
+        "${{ inputs.apply == true }}"
+    )
+    text = MIGRATION_WORKFLOW.read_text(encoding="utf-8")
+    assert "--include-all" not in text
+    assert "service_role" not in text.casefold()
 
 
 def test_collector_jobs_use_only_residential_windows_runners():

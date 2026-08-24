@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 import json
 from hashlib import sha256
 from typing import Literal
+from unicodedata import category as unicode_category
+import re
 
 from backend.result_reporting import ResultReport
 from backend.social_repository import MetaSocialBatch
@@ -42,6 +44,7 @@ class VerticalCard:
     cta: str
     digest: str
     template_version: int = 1
+    provenance: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +76,7 @@ def _card(
     subtitle: str,
     rows: tuple[VerticalRow, ...],
     cta: str,
+    provenance: tuple[str, ...] = (),
 ) -> VerticalCard:
     template_version = 1
     payload = {
@@ -84,6 +88,7 @@ def _card(
         "rows": [asdict(row) for row in rows],
         "cta": cta,
         "template_version": template_version,
+        "provenance": list(provenance),
     }
     return VerticalCard(
         kind=kind,
@@ -95,6 +100,7 @@ def _card(
         cta=cta,
         digest=_canonical_digest(payload),
         template_version=template_version,
+        provenance=provenance,
     )
 
 
@@ -140,13 +146,15 @@ def build_vip_teaser_story(
 
 
 def _require_final_report(report: ResultReport, *, error: str) -> None:
-    if report.kind != "final" or not report.terminal:
+    if report.kind != "final" or not report.terminal or len(report.rows) != 6:
         raise ValueError(error)
 
 
 def build_final_results_story(report: ResultReport) -> VerticalCard:
-    if report.kind != "final" or not report.terminal or len(report.rows) != 6:
-        raise ValueError("vertical result story requires a final six-pick report")
+    _require_final_report(
+        report,
+        error="vertical result story requires a final six-pick report",
+    )
     rows = tuple(
         VerticalRow(
             pick_id=int(row["id"]),
@@ -174,6 +182,8 @@ def build_verified_result_story(report: ResultReport, *, pick_id: int) -> Vertic
     rows = tuple(row for row in summary.rows if row.pick_id == pick_id)
     if len(rows) != 1:
         raise ValueError("verified result story requires one known pick")
+    if rows[0].state != "ganado":
+        raise ValueError("verified result story requires a winning pick")
     return _card(
         kind="verified_result_story",
         batch_id=report.batch_id,
@@ -192,11 +202,10 @@ def build_ticket_evidence_card(
     media_digest: str,
 ) -> VerticalCard:
     _require_final_report(report, error="ticket evidence requires a final report")
+    normalized_evidence_id = _normalize_evidence_id(evidence_id)
     if (
-        not isinstance(evidence_id, str)
-        or not evidence_id.strip()
-        or not isinstance(media_digest, str)
-        or len(media_digest) != 64
+        not isinstance(media_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", media_digest) is None
     ):
         raise ValueError("ticket evidence identity is invalid")
     return _card(
@@ -204,10 +213,22 @@ def build_ticket_evidence_card(
         batch_id=report.batch_id,
         portfolio_date=report.portfolio_date,
         headline="EVIDENCIA ORIGINAL",
-        subtitle=f"Ticket {evidence_id} · {media_digest[:12]}",
+        subtitle=f"Ticket {normalized_evidence_id} · {media_digest[:12]}",
         rows=(),
         cta="Resultados completos · reytacopicks.com",
+        provenance=(media_digest,),
     )
+
+
+def _normalize_evidence_id(evidence_id: str) -> str:
+    if not isinstance(evidence_id, str):
+        raise ValueError("ticket evidence identity is invalid")
+    if any(unicode_category(char).startswith("C") for char in evidence_id):
+        raise ValueError("ticket evidence identity is invalid")
+    normalized = evidence_id.strip()
+    if not normalized or len(normalized) > 128:
+        raise ValueError("ticket evidence identity is invalid")
+    return normalized
 
 
 def build_reel_cta_story(report: ResultReport) -> VerticalCard:

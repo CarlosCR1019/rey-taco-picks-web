@@ -49,26 +49,43 @@ jobs:
           set -euo pipefail
           pooler_url="$(curl --fail --silent --show-error \
             --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
-            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/config/database/pgbouncer" \
-            | jq --exit-status --raw-output '.connection_string')"
+            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/config/database/pooler" \
+            | jq --exit-status --raw-output \
+              'map(select(.database_type == "PRIMARY"))
+              | if length == 1
+                then (.[0].connection_string // .[0].connectionString)
+                else error("Expected exactly one primary Supavisor target")
+                end')"
           db_url="$(POOLER_URL="$pooler_url" python - <<'PY'
           import os
-          from urllib.parse import quote, unquote, urlsplit, urlunsplit
+          from urllib.parse import quote, unquote, urlunsplit
 
-          parsed = urlsplit(os.environ["POOLER_URL"])
-          host = parsed.hostname or ""
-          username = unquote(parsed.username or "")
+          raw = os.environ["POOLER_URL"]
+          try:
+              scheme, remainder = raw.split("://", 1)
+              userinfo, target = remainder.rsplit("@", 1)
+              raw_username, separator, _placeholder = userinfo.partition(":")
+              host_port, path_and_query = target.split("/", 1)
+              host, port_separator, raw_port = host_port.rpartition(":")
+          except ValueError as exc:
+              raise SystemExit("Supabase returned a malformed pooler target") from exc
+
+          username = unquote(raw_username)
+          path = "/" + path_and_query.split("?", 1)[0]
           project_ref = os.environ["SUPABASE_PROJECT_REF"]
           if (
-              parsed.scheme not in {"postgres", "postgresql"}
+              scheme not in {"postgres", "postgresql"}
+              or not separator
+              or not port_separator
+              or not raw_port.isdigit()
               or not host.endswith(".pooler.supabase.com")
               or username != f"postgres.{project_ref}"
-              or parsed.path != "/postgres"
+              or path != "/postgres"
           ):
               raise SystemExit("Supabase returned an unexpected pooler target")
           password = quote(os.environ["SUPABASE_DB_PASSWORD"], safe="")
           authority = f"{username}:{password}@{host}:5432"
-          print(urlunsplit(("postgresql", authority, parsed.path, "sslmode=require", "")))
+          print(urlunsplit(("postgresql", authority, path, "sslmode=require", "")))
           PY
           )"
           encoded_password="$(python - <<'PY'

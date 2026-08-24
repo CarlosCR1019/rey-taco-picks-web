@@ -49,7 +49,12 @@ def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
     steps = {step["name"]: step for step in job["steps"]}
     assert "--dry-run" in steps["Preview pending migrations"]["run"]
     pooler = steps["Resolve exact Supabase session pooler"]["run"]
-    assert "api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF" in pooler
+    assert (
+        "api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/config/database/pooler"
+        in pooler
+    )
+    assert "/config/database/pgbouncer" not in pooler
+    assert 'map(select(.database_type == "PRIMARY"))' in pooler
     assert ".pooler.supabase.com" in pooler
     assert 'echo "::add-mask::$encoded_password"' in pooler
     assert 'echo "::add-mask::$db_url"' in pooler

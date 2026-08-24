@@ -29,6 +29,9 @@ DAILY_PORTFOLIO_SQL = (
 COLLECTION_LEASE_SQL = (
     SQL.parent / "20260823120000_residential_collection_lease.sql"
 )
+ADAPTIVE_CHECKS_SQL = (
+    SQL.parent / "20260823130000_adaptive_residential_checks.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -1727,6 +1730,70 @@ class SupabaseContractTests(unittest.TestCase):
             "revoke all on function public.release_residential_collection_lease(text, text) from public, anon, authenticated",
             text,
         )
+
+    def test_adaptive_event_watch_is_private_and_source_audited(self):
+        text = " ".join(
+            ADAPTIVE_CHECKS_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        self.assertIn("create table public.residential_event_watch", text)
+        self.assertIn("source_event_id text not null", text)
+        self.assertIn("source_starts_at timestamptz not null", text)
+        self.assertIn("last_checked_at timestamptz not null", text)
+        self.assertIn("unique (source, source_event_id)", text)
+        self.assertIn(
+            "alter table public.residential_event_watch enable row level security",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.residential_event_watch from public, anon, authenticated, service_role",
+            text,
+        )
+
+        record_signature = (
+            "public.record_residential_event_watch( requested_events jsonb "
+            ") returns integer"
+        )
+        record = function_body(ADAPTIVE_CHECKS_SQL, record_signature)
+        self.assertIn("jsonb_array_length(requested_events) not between 1 and 5000", record)
+        self.assertIn("source_observed_at", record)
+        self.assertIn("source_starts_at", record)
+        self.assertIn("on conflict (source, source_event_id) do update", record)
+        self.assertIn("last_checked_at = excluded.last_checked_at", record)
+        self.assertIn("delete from public.residential_event_watch", record)
+
+    def test_adaptive_status_uses_lineup_quote_and_recovery_windows(self):
+        signature = (
+            "public.residential_adaptive_work_status( "
+            "requested_portfolio_date date ) returns jsonb"
+        )
+        body = function_body(ADAPTIVE_CHECKS_SQL, signature)
+        self.assertIn("interval '15 minutes'", body)
+        self.assertIn("interval '70 minutes'", body)
+        self.assertIn("interval '20 minutes'", body)
+        self.assertIn("daily_pick_entries", body)
+        self.assertIn("released_revision is null", body)
+        self.assertIn("source_observed_at", body)
+        self.assertIn("scraper_runs", body)
+        self.assertIn("'needs_collection'", body)
+        self.assertIn("'lineup_due'", body)
+        self.assertIn("'quote_due'", body)
+        self.assertIn("'recoverable_due'", body)
+
+        text = " ".join(
+            ADAPTIVE_CHECKS_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        for signature_text in (
+            "public.record_residential_event_watch(jsonb)",
+            "public.residential_adaptive_work_status(date)",
+        ):
+            self.assertIn(
+                f"revoke all on function {signature_text} from public, anon, authenticated",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature_text} to service_role",
+                text,
+            )
 
 
 if __name__ == "__main__":

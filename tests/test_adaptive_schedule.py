@@ -2,7 +2,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from backend.adaptive_schedule import run_cli, scheduled_run_is_eligible
+from backend.adaptive_schedule import (
+    collection_plan,
+    run_cli,
+    scheduled_run_is_eligible,
+)
 
 
 NOW = datetime(2026, 8, 23, 18, 0, tzinfo=timezone.utc)
@@ -115,3 +119,68 @@ def test_gate_cli_missing_arguments_has_only_bounded_invalid_output(capsys):
     assert code == 2
     assert captured.out.strip() == "collection_window=invalid"
     assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("created_at", "schedule", "mode", "release"),
+    [
+        ("2026-08-23T14:07:00Z", "7 * * * *", "full", False),
+        ("2026-08-23T18:07:00Z", "7 * * * *", "full", False),
+        ("2026-08-23T22:07:00Z", "7 * * * *", "full", True),
+        ("2026-08-24T02:07:00Z", "7 * * * *", "full", False),
+        ("2026-08-24T05:07:00Z", "7 * * * *", "full", True),
+        ("2026-08-23T14:37:00Z", "37 * * * *", "adaptive", False),
+        ("2026-08-23T15:07:00Z", "7 * * * *", "adaptive", False),
+        ("2026-08-23T16:00:00Z", "0 16 * * *", "cloud", True),
+    ],
+)
+def test_collection_plan_preserves_full_and_release_windows(
+    created_at, schedule, mode, release
+):
+    plan = collection_plan(
+        created_at,
+        event_name="schedule",
+        event_schedule=schedule,
+    )
+
+    assert plan.scan_mode == mode
+    assert plan.release_eligible is release
+
+
+def test_manual_plan_is_full_and_release_eligible():
+    plan = collection_plan(
+        None,
+        event_name="workflow_dispatch",
+        event_schedule=None,
+    )
+    assert plan.scan_mode == "full"
+    assert plan.release_eligible is True
+
+
+@pytest.mark.parametrize("schedule", [None, "", "0 14 * * *", "7,37 * * * *"])
+def test_scheduled_plan_rejects_unknown_cron_identity(schedule):
+    with pytest.raises((TypeError, ValueError)):
+        collection_plan(
+            "2026-08-23T14:07:00Z",
+            event_name="schedule",
+            event_schedule=schedule,
+        )
+
+
+def test_plan_cli_emits_bounded_github_outputs(capsys):
+    code = run_cli(
+        [
+            "--event-name", "schedule",
+            "--created-at", "2026-08-23T22:07:00Z",
+            "--schedule", "7 * * * *",
+            "--plan",
+        ],
+        clock=lambda: datetime(2026, 8, 23, 22, 10, tzinfo=timezone.utc),
+    )
+
+    assert code == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "collection_window=eligible",
+        "scan_mode=full",
+        "release_eligible=true",
+    ]

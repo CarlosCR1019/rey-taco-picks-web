@@ -4,10 +4,28 @@ from __future__ import annotations
 
 from argparse import ArgumentParser
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 
 SUPPORTED_EVENTS = frozenset({"schedule", "workflow_dispatch"})
+SUPPORTED_SCHEDULES = frozenset({"7 * * * *", "37 * * * *", "0 16 * * *"})
+MEXICO_CITY = ZoneInfo("America/Mexico_City")
+FULL_SCAN_HOURS = frozenset({8, 12, 16, 20, 23})
+RELEASE_HOURS = frozenset({16, 23})
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionPlan:
+    scan_mode: str
+    release_eligible: bool
+
+    def __post_init__(self) -> None:
+        if self.scan_mode not in {"full", "adaptive", "cloud"}:
+            raise ValueError("invalid scan mode")
+        if type(self.release_eligible) is not bool:
+            raise TypeError("release_eligible must be boolean")
 
 
 class _BoundedArgumentParser(ArgumentParser):
@@ -63,6 +81,33 @@ def scheduled_run_is_eligible(
     return timedelta(0) <= age <= timedelta(minutes=max_age_minutes)
 
 
+def collection_plan(
+    created_at: object,
+    *,
+    event_name: str,
+    event_schedule: object,
+) -> CollectionPlan:
+    """Return the exact work class for one trusted GitHub trigger."""
+
+    if event_name not in SUPPORTED_EVENTS:
+        raise ValueError("unsupported GitHub event")
+    if event_name == "workflow_dispatch":
+        if event_schedule not in (None, ""):
+            raise ValueError("manual dispatch cannot have a schedule")
+        return CollectionPlan("full", True)
+    if not isinstance(event_schedule, str) or event_schedule not in SUPPORTED_SCHEDULES:
+        raise ValueError("unsupported GitHub schedule")
+    created = _github_datetime(created_at).astimezone(MEXICO_CITY)
+    if event_schedule == "0 16 * * *":
+        return CollectionPlan("cloud", True)
+    if event_schedule == "7 * * * *" and created.hour in FULL_SCAN_HOURS:
+        return CollectionPlan(
+            "full",
+            created.hour in RELEASE_HOURS,
+        )
+    return CollectionPlan("adaptive", False)
+
+
 def run_cli(
     argv: Sequence[str] | None = None,
     *,
@@ -71,6 +116,8 @@ def run_cli(
     parser = _BoundedArgumentParser(add_help=False)
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--created-at")
+    parser.add_argument("--schedule")
+    parser.add_argument("--plan", action="store_true")
     try:
         args = parser.parse_args(argv)
     except (SystemExit, ValueError):
@@ -83,12 +130,27 @@ def run_cli(
             now=(clock or (lambda: datetime.now(timezone.utc)))(),
             event_name=args.event_name,
         )
+        plan = (
+            collection_plan(
+                args.created_at,
+                event_name=args.event_name,
+                event_schedule=args.schedule,
+            )
+            if eligible and args.plan
+            else None
+        )
     except (TypeError, ValueError):
         print("collection_window=invalid")
         return 2
 
     if eligible:
         print("collection_window=eligible")
+        if plan is not None:
+            print(f"scan_mode={plan.scan_mode}")
+            print(
+                "release_eligible="
+                f"{'true' if plan.release_eligible else 'false'}"
+            )
         return 0
     print("collection_window=stale")
     return 3

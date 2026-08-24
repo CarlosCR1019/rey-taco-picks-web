@@ -776,7 +776,18 @@ def stub_successful_legacy_phases(monkeypatch, picks=None):
             "source_starts_at": "2099-08-21T01:00:00Z",
         }
     ]
-    monkeypatch.setattr(scraper, "fase1_escaneo_superficie", lambda _driver, **_kw: ["event"])
+    surface_event = {
+        "source": "playdoit",
+        "source_event_id": "event-pumas-atlas",
+        "sport": "soccer",
+        "observed_at": "2026-08-20T20:00:00Z",
+        "starts_at": "2099-08-21T01:00:00Z",
+    }
+    monkeypatch.setattr(
+        scraper,
+        "fase1_escaneo_superficie",
+        lambda _driver, **_kw: [surface_event],
+    )
     monkeypatch.setattr(scraper, "fase2_comparacion_mercado", lambda *_a, **_kw: {})
     monkeypatch.setattr(scraper, "fase3_filtro_inteligente", lambda *_a, **_kw: ["target"])
     monkeypatch.setattr(scraper, "fase4_inmersion", lambda *_a, **_kw: ["deep"])
@@ -830,6 +841,55 @@ def test_prepared_daily_rows_reject_missing_parlay_flag():
         scraper._prepare_persisted_pick_rows(
             [{"partido": "América vs Pumas"}], generated_date="2026-08-23"
         )
+
+
+def test_residential_event_watch_rows_are_playdoit_only_utc_and_deduplicated():
+    rows = scraper._residential_event_watch_rows([
+        {
+            "source": "playdoit",
+            "source_event_id": "event-1",
+            "sport": "soccer",
+            "observed_at": "2026-08-23T12:00:00-06:00",
+            "starts_at": "2026-08-23T14:00:00-06:00",
+        },
+        {
+            "source": "playdoit",
+            "source_event_id": "event-1",
+            "sport": "soccer",
+            "observed_at": "2026-08-23T12:00:00-06:00",
+            "starts_at": "2026-08-23T14:00:00-06:00",
+        },
+        {
+            "source": "the-odds-api",
+            "source_event_id": "external-1",
+            "sport": "soccer",
+            "observed_at": "2026-08-23T18:00:00Z",
+            "starts_at": "2026-08-23T20:00:00Z",
+        },
+    ])
+
+    assert rows == ({
+        "source": "playdoit",
+        "source_event_id": "event-1",
+        "sport": "soccer",
+        "source_observed_at": "2026-08-23T18:00:00Z",
+        "source_starts_at": "2026-08-23T20:00:00Z",
+    },)
+
+
+def test_residential_event_watch_rows_fail_on_conflicting_duplicate():
+    first = {
+        "source": "playdoit",
+        "source_event_id": "event-1",
+        "sport": "soccer",
+        "observed_at": "2026-08-23T18:00:00Z",
+        "starts_at": "2026-08-23T20:00:00Z",
+    }
+    with pytest.raises(ValueError, match="conflicting"):
+        scraper._residential_event_watch_rows([
+            first,
+            {**first, "starts_at": "2026-08-23T21:00:00Z"},
+        ])
 
 
 def production_values():
@@ -951,6 +1011,7 @@ class DailyRepository:
         self.release_calls = []
         self.resume_daily_calls = []
         self.delivery_calls = []
+        self.event_watch_calls = []
 
     def resume(self, *_args):
         raise AssertionError("daily mode must not use the legacy resume RPC")
@@ -977,6 +1038,10 @@ class DailyRepository:
 
     def record_delivery(self, run_id, destination, success, error=""):
         self.delivery_calls.append((run_id, destination, success, error))
+
+    def record_residential_events(self, events):
+        self.event_watch_calls.append(events)
+        return len(events)
 
 
 def resumed_response(*, delivery_status):
@@ -1075,6 +1140,10 @@ def test_daily_collect_only_stages_private_draft_without_delivery_or_public_file
     assert len(repository.stage_calls) == 1
     assert repository.stage_calls[0][:2] == ("test-run", "2026-08-23")
     assert repository.release_calls == []
+    assert len(repository.event_watch_calls) == 1
+    assert repository.event_watch_calls[0][0]["source_event_id"] == (
+        "event-pumas-atlas"
+    )
     assert repository.delivery_calls == []
     assert driver.quit_calls == 1
     assert not daily_settings.public_picks_path.exists()

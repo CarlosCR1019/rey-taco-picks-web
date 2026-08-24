@@ -134,6 +134,10 @@ class BatchRepository(Protocol):
 
     def resume_daily(self, run_key: str) -> DailyPublishResponse | None: ...
 
+    def record_residential_events(
+        self, events: Sequence[Mapping[str, object]]
+    ) -> int: ...
+
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""
     ) -> None: ...
@@ -394,6 +398,26 @@ class SupabaseBatchRepository:
                 "resume_daily_pick_release returned an invalid response"
             )
         return normalized
+
+    def record_residential_events(
+        self, events: Sequence[Mapping[str, object]]
+    ) -> int:
+        if (
+            isinstance(events, (str, bytes))
+            or not isinstance(events, Sequence)
+            or not 1 <= len(events) <= 5000
+            or any(not isinstance(event, Mapping) for event in events)
+        ):
+            raise ValueError("residential events must contain one to 5000 rows")
+        payload = [dict(event) for event in events]
+        response = self._client.rpc(
+            "record_residential_event_watch",
+            {"requested_events": payload},
+        ).execute()
+        data = getattr(response, "data", None)
+        if type(data) is not int or data != len(payload):
+            raise RuntimeError("residential event watch returned an invalid response")
+        return data
 
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""

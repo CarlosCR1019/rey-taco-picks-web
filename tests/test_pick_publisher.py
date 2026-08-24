@@ -682,6 +682,42 @@ def test_supabase_repository_stages_exact_daily_rpc_arguments():
     )]
 
 
+def test_supabase_repository_records_exact_residential_event_watch_rows():
+    client = FakeClient([2])
+    repository = SupabaseBatchRepository(client)
+    events = [
+        {
+            "source": "playdoit",
+            "source_event_id": "event-1",
+            "sport": "soccer",
+            "source_observed_at": "2026-08-23T18:00:00Z",
+            "source_starts_at": "2026-08-23T20:00:00Z",
+        },
+        {
+            "source": "playdoit",
+            "source_event_id": "event-2",
+            "sport": "soccer",
+            "source_observed_at": "2026-08-23T18:00:00Z",
+            "source_starts_at": "2026-08-23T21:00:00Z",
+        },
+    ]
+
+    assert repository.record_residential_events(events) == 2
+    assert client.calls == [(
+        "record_residential_event_watch",
+        {"requested_events": events},
+    )]
+
+
+@pytest.mark.parametrize("response", [None, True, -1, 1, 3, "2"])
+def test_residential_event_watch_rejects_malformed_counts(response):
+    repository = SupabaseBatchRepository(FakeClient([response]))
+    events = [{"source": "playdoit"}, {"source": "playdoit"}]
+
+    with pytest.raises(RuntimeError, match="event watch"):
+        repository.record_residential_events(events)
+
+
 def test_daily_publisher_stages_projected_rows_without_public_file(tmp_path):
     client = FakeClient(
         [{

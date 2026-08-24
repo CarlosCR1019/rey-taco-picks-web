@@ -1734,6 +1734,55 @@ def _prepare_persisted_pick_rows(picks, *, generated_date):
     return clean_picks
 
 
+def _residential_event_watch_rows(events):
+    if isinstance(events, (str, bytes)) or not isinstance(events, Sequence):
+        raise ValueError("residential events must be a sequence")
+    watched: dict[tuple[str, str], dict[str, str]] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        source = event.get("source")
+        if not isinstance(source, str) or source.casefold() != "playdoit":
+            continue
+        event_id = event.get("source_event_id")
+        sport = event.get("sport")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("playdoit event watch requires source_event_id")
+        if not isinstance(sport, str) or not sport.strip():
+            raise ValueError("playdoit event watch requires sport")
+        timestamps = {}
+        for source_field, target_field in (
+            ("observed_at", "source_observed_at"),
+            ("starts_at", "source_starts_at"),
+        ):
+            value = event.get(source_field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"playdoit event watch requires {source_field}")
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                raise ValueError("playdoit event watch timestamp is invalid") from None
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError("playdoit event watch timestamp must be aware")
+            timestamps[target_field] = parsed.astimezone(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+        if timestamps["source_starts_at"] <= timestamps["source_observed_at"]:
+            raise ValueError("playdoit event watch timestamps are invalid")
+        prepared = {
+            "source": source.strip(),
+            "source_event_id": event_id.strip(),
+            "sport": sport.strip(),
+            **timestamps,
+        }
+        identity = (prepared["source"].casefold(), prepared["source_event_id"])
+        existing = watched.get(identity)
+        if existing is not None and existing != prepared:
+            raise ValueError("playdoit event watch contains conflicting duplicate")
+        watched[identity] = prepared
+    return tuple(watched.values())
+
+
 def fase7_guardar_y_notificar(
     picks,
     *,
@@ -2641,6 +2690,16 @@ class LegacyPipeline:
             )
             if not partidos:
                 return PipelineResult(0, 0, False, ())
+
+            if not self.settings.dry_run and daily_mode:
+                try:
+                    watched_events = _residential_event_watch_rows(partidos)
+                    if watched_events:
+                        self.repository.record_residential_events(watched_events)
+                except Exception:
+                    raise PersistenceFailure(
+                        "residential event watch persistence failed"
+                    ) from None
 
             market_odds = fase2_comparacion_mercado(
                 partidos, odds_api_key=self.settings.odds_api_key

@@ -2,13 +2,11 @@ name: Rey Taco Residential Collector
 
 on:
   schedule:
-    # Mexico City is UTC-6. Five full scans plus the existing 10:00 cloud release.
-    - cron: '0 14 * * *'
+    # Lightweight residential checks every 30 minutes; the planner chooses full scans.
+    - cron: '7 * * * *'
+    - cron: '37 * * * *'
+    # Existing 10:00 Mexico City cloud-only release.
     - cron: '0 16 * * *'
-    - cron: '0 18 * * *'
-    - cron: '0 22 * * *'
-    - cron: '0 2 * * *'
-    - cron: '0 5 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -58,11 +56,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
         run: |
-          $releaseSchedules = @("0 22 * * *", "0 5 * * *")
-          $releaseEligible = (
-            $env:GITHUB_EVENT_NAME -eq "workflow_dispatch" -or
-            $releaseSchedules -contains $env:GITHUB_EVENT_SCHEDULE
-          )
           try {
             $headers = @{
               Authorization = "Bearer $env:GH_TOKEN"
@@ -74,6 +67,7 @@ jobs:
           } catch {
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
             "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
             "window_key=invalid" >> $env:GITHUB_OUTPUT
             exit 0
@@ -82,6 +76,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $portfolioDate -notmatch '^portfolio_date=[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
             "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
             "window_key=invalid" >> $env:GITHUB_OUTPUT
             exit 0
@@ -93,36 +88,67 @@ jobs:
           } else {
             "window_key=$portfolioDateValue|manual|$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
           }
-          $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME)
+          $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME, "--plan")
           if ($env:GITHUB_EVENT_NAME -eq "schedule") {
-            $gateArgs += @("--created-at", [string]$run.created_at)
+            $gateArgs += @(
+              "--created-at", [string]$run.created_at,
+              "--schedule", $env:GITHUB_EVENT_SCHEDULE
+            )
           }
-          & python -m backend.adaptive_schedule @gateArgs
+          $planOutput = @(& python -m backend.adaptive_schedule @gateArgs)
           $gateStatus = $LASTEXITCODE
           if ($gateStatus -eq 0) {
-            "eligible=true" >> $env:GITHUB_OUTPUT
-            if ($releaseEligible) {
-              "release_eligible=true" >> $env:GITHUB_OUTPUT
-            } else {
-              "release_eligible=false" >> $env:GITHUB_OUTPUT
+            $eligibleLines = @($planOutput | Where-Object { $_ -eq "collection_window=eligible" })
+            $scanModeLines = @($planOutput | Where-Object { $_ -match '^scan_mode=(full|adaptive)$' })
+            $releaseLines = @($planOutput | Where-Object { $_ -match '^release_eligible=(true|false)$' })
+            if ($eligibleLines.Count -ne 1 -or $scanModeLines.Count -ne 1 -or $releaseLines.Count -ne 1) {
+              throw "Invalid collection plan response"
             }
+            "eligible=true" >> $env:GITHUB_OUTPUT
+            $scanModeLines[0] >> $env:GITHUB_OUTPUT
+            $releaseLines[0] >> $env:GITHUB_OUTPUT
             exit 0
           }
           if ($gateStatus -eq 3) {
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
             exit 0
           }
           throw "Invalid collection window response"
 
-      - name: Install dependencies
+      - name: Check adaptive work
+        id: adaptive_work
         if: steps.collection_window.outputs.eligible == 'true'
+        shell: powershell
+        env:
+          SCAN_MODE: ${{ steps.collection_window.outputs.scan_mode }}
+          PORTFOLIO_DATE: ${{ steps.collection_window.outputs.portfolio_date }}
+        run: |
+          $result = [string](& python -m backend.adaptive_work --scan-mode $env:SCAN_MODE --portfolio-date $env:PORTFOLIO_DATE)
+          $status = $LASTEXITCODE
+          if ($status -eq 0 -and $result -eq "adaptive_work=needed") {
+            "needed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($status -eq 3 -and $result -eq "adaptive_work=idle") {
+            "needed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid adaptive work response"
+
+      - name: Install dependencies
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true'
         shell: powershell
         run: python -m pip install -r backend/requirements.txt
 
       - name: Claim collection lease
         id: collection_lease
-        if: steps.collection_window.outputs.eligible == 'true'
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true'
         shell: powershell
         env:
           COLLECTION_WINDOW_KEY: ${{ steps.collection_window.outputs.window_key }}
@@ -147,6 +173,7 @@ jobs:
       - name: Collect and persist only
         if: >-
           steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true' &&
           steps.collection_lease.outputs.acquired == 'true'
         shell: powershell
         env:
@@ -211,11 +238,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
         run: |
-          $releaseSchedules = @("0 22 * * *", "0 5 * * *")
-          $releaseEligible = (
-            $env:GITHUB_EVENT_NAME -eq "workflow_dispatch" -or
-            $releaseSchedules -contains $env:GITHUB_EVENT_SCHEDULE
-          )
           try {
             $headers = @{
               Authorization = "Bearer $env:GH_TOKEN"
@@ -227,6 +249,7 @@ jobs:
           } catch {
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
             "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
             "window_key=invalid" >> $env:GITHUB_OUTPUT
             exit 0
@@ -235,6 +258,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $portfolioDate -notmatch '^portfolio_date=[0-9]{4}-[0-9]{2}-[0-9]{2}$') {
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
             "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
             "window_key=invalid" >> $env:GITHUB_OUTPUT
             exit 0
@@ -246,36 +270,67 @@ jobs:
           } else {
             "window_key=$portfolioDateValue|manual|$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
           }
-          $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME)
+          $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME, "--plan")
           if ($env:GITHUB_EVENT_NAME -eq "schedule") {
-            $gateArgs += @("--created-at", [string]$run.created_at)
+            $gateArgs += @(
+              "--created-at", [string]$run.created_at,
+              "--schedule", $env:GITHUB_EVENT_SCHEDULE
+            )
           }
-          & python -m backend.adaptive_schedule @gateArgs
+          $planOutput = @(& python -m backend.adaptive_schedule @gateArgs)
           $gateStatus = $LASTEXITCODE
           if ($gateStatus -eq 0) {
-            "eligible=true" >> $env:GITHUB_OUTPUT
-            if ($releaseEligible) {
-              "release_eligible=true" >> $env:GITHUB_OUTPUT
-            } else {
-              "release_eligible=false" >> $env:GITHUB_OUTPUT
+            $eligibleLines = @($planOutput | Where-Object { $_ -eq "collection_window=eligible" })
+            $scanModeLines = @($planOutput | Where-Object { $_ -match '^scan_mode=(full|adaptive)$' })
+            $releaseLines = @($planOutput | Where-Object { $_ -match '^release_eligible=(true|false)$' })
+            if ($eligibleLines.Count -ne 1 -or $scanModeLines.Count -ne 1 -or $releaseLines.Count -ne 1) {
+              throw "Invalid collection plan response"
             }
+            "eligible=true" >> $env:GITHUB_OUTPUT
+            $scanModeLines[0] >> $env:GITHUB_OUTPUT
+            $releaseLines[0] >> $env:GITHUB_OUTPUT
             exit 0
           }
           if ($gateStatus -eq 3) {
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
+            "scan_mode=idle" >> $env:GITHUB_OUTPUT
             exit 0
           }
           throw "Invalid collection window response"
 
-      - name: Install dependencies
+      - name: Check adaptive work
+        id: adaptive_work
         if: steps.collection_window.outputs.eligible == 'true'
+        shell: powershell
+        env:
+          SCAN_MODE: ${{ steps.collection_window.outputs.scan_mode }}
+          PORTFOLIO_DATE: ${{ steps.collection_window.outputs.portfolio_date }}
+        run: |
+          $result = [string](& python -m backend.adaptive_work --scan-mode $env:SCAN_MODE --portfolio-date $env:PORTFOLIO_DATE)
+          $status = $LASTEXITCODE
+          if ($status -eq 0 -and $result -eq "adaptive_work=needed") {
+            "needed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($status -eq 3 -and $result -eq "adaptive_work=idle") {
+            "needed=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid adaptive work response"
+
+      - name: Install dependencies
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true'
         shell: powershell
         run: python -m pip install -r backend/requirements.txt
 
       - name: Claim collection lease
         id: collection_lease
-        if: steps.collection_window.outputs.eligible == 'true'
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true'
         shell: powershell
         env:
           COLLECTION_WINDOW_KEY: ${{ steps.collection_window.outputs.window_key }}
@@ -300,6 +355,7 @@ jobs:
       - name: Collect and persist only
         if: >-
           steps.collection_window.outputs.eligible == 'true' &&
+          steps.adaptive_work.outputs.needed == 'true' &&
           steps.collection_lease.outputs.acquired == 'true'
         shell: powershell
         env:

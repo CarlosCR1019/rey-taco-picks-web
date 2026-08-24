@@ -164,12 +164,9 @@ def test_workflows_keep_collection_and_verification_schedules():
     verifier = _workflow(VERIFIER_WORKFLOW)
 
     assert {row["cron"] for row in collector["on"]["schedule"]} == {
-        "0 14 * * *",
+        "7 * * * *",
+        "37 * * * *",
         "0 16 * * *",
-        "0 18 * * *",
-        "0 22 * * *",
-        "0 2 * * *",
-        "0 5 * * *",
     }
     assert {row["cron"] for row in verifier["on"]["schedule"]} == {
         "0 13 * * *",
@@ -239,6 +236,7 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
     for job_name in ("collect_primary", "collect_recovery"):
         job = workflow["jobs"][job_name]
         gate = _step(job, "Check collection window")
+        adaptive = _step(job, "Check adaptive work")
         install = _step(job, "Install dependencies")
         lease = _step(job, "Claim collection lease")
         collect = _step(job, "Collect and persist only")
@@ -248,12 +246,15 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
         assert "actions/runs/$env:GITHUB_RUN_ID" in gate["run"]
         assert 'Authorization = "Bearer $env:GH_TOKEN"' in gate["run"]
         assert "backend.adaptive_schedule" in gate["run"]
+        assert '"--plan"' in gate["run"]
+        assert '"--schedule", $env:GITHUB_EVENT_SCHEDULE' in gate["run"]
         assert "backend.daily_portfolio --created-at" in gate["run"]
         assert "$env:GITHUB_EVENT_NAME" in gate["run"]
         assert '"eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
         assert '"eligible=true" >> $env:GITHUB_OUTPUT' in gate["run"]
-        assert '"release_eligible=true" >> $env:GITHUB_OUTPUT' in gate["run"]
         assert '"release_eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert "$releaseLines[0] >> $env:GITHUB_OUTPUT" in gate["run"]
+        assert '"scan_mode=idle" >> $env:GITHUB_OUTPUT' in gate["run"]
         assert '"portfolio_date=invalid" >> $env:GITHUB_OUTPUT' in gate["run"]
         assert '"window_key=invalid" >> $env:GITHUB_OUTPUT' in gate["run"]
         assert "|schedule|$env:GITHUB_EVENT_SCHEDULE" in gate["run"]
@@ -264,9 +265,24 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
         assert collect["env"]["DAILY_PORTFOLIO_DATE"] == (
             "${{ steps.collection_window.outputs.portfolio_date }}"
         )
-        assert install["if"] == "steps.collection_window.outputs.eligible == 'true'"
+        assert adaptive["id"] == "adaptive_work"
+        assert adaptive["if"] == "steps.collection_window.outputs.eligible == 'true'"
+        assert adaptive["env"]["SCAN_MODE"] == (
+            "${{ steps.collection_window.outputs.scan_mode }}"
+        )
+        assert adaptive["env"]["PORTFOLIO_DATE"] == (
+            "${{ steps.collection_window.outputs.portfolio_date }}"
+        )
+        assert "backend.adaptive_work" in adaptive["run"]
+        assert '"needed=true" >> $env:GITHUB_OUTPUT' in adaptive["run"]
+        assert '"needed=false" >> $env:GITHUB_OUTPUT' in adaptive["run"]
+        active_condition = (
+            "steps.collection_window.outputs.eligible == 'true' && "
+            "steps.adaptive_work.outputs.needed == 'true'"
+        )
+        assert install["if"] == active_condition
         assert lease["id"] == "collection_lease"
-        assert lease["if"] == "steps.collection_window.outputs.eligible == 'true'"
+        assert lease["if"] == active_condition
         assert lease["env"]["COLLECTION_WINDOW_KEY"] == (
             "${{ steps.collection_window.outputs.window_key }}"
         )
@@ -281,6 +297,7 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
         assert '"acquired=false" >> $env:GITHUB_OUTPUT' in lease["run"]
         assert collect["if"] == (
             "steps.collection_window.outputs.eligible == 'true' && "
+            "steps.adaptive_work.outputs.needed == 'true' && "
             "steps.collection_lease.outputs.acquired == 'true'"
         )
         assert "backend.collection_lease --window-key" in collect["run"]
@@ -289,23 +306,24 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
             collect["run"].index("--release")
         )
         step_names = [step["name"] for step in job["steps"]]
-        assert step_names.index("Install dependencies") < step_names.index(
+        assert step_names.index("Check adaptive work") < step_names.index(
+            "Install dependencies"
+        ) < step_names.index(
             "Claim collection lease"
         ) < step_names.index("Collect and persist only")
 
 
 def test_daily_release_is_bounded_to_three_windows_or_manual_dispatch():
     workflow = _workflow(COLLECTOR_WORKFLOW)
-    collector_release_crons = {"0 22 * * *", "0 5 * * *"}
 
     for job_name in ("collect_primary", "collect_recovery"):
         gate = _step(workflow["jobs"][job_name], "Check collection window")["run"]
-        for cron in collector_release_crons:
-            assert cron in gate
-        assert "workflow_dispatch" in gate
-        assert "0 14 * * *" not in gate.split("$releaseSchedules", 1)[1]
-        assert "0 18 * * *" not in gate.split("$releaseSchedules", 1)[1]
-        assert "0 2 * * *" not in gate.split("$releaseSchedules", 1)[1]
+        assert "backend.adaptive_schedule" in gate
+        assert '"--plan"' in gate
+        assert '"--schedule", $env:GITHUB_EVENT_SCHEDULE' in gate
+        assert "$releaseSchedules" not in gate
+        assert "^release_eligible=(true|false)$" in gate
+        assert "$releaseLines[0] >> $env:GITHUB_OUTPUT" in gate
 
     assert "github.event.schedule == '0 16 * * *'" in workflow["jobs"][
         "deliver_cloud"

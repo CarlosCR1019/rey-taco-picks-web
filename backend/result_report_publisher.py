@@ -56,6 +56,46 @@ def destinations_for(kind: str) -> tuple[ResultDestination, ...]:
     raise ValueError("result report kind must be evening or final")
 
 
+HEALTHY_RESULT_OUTCOMES = frozenset({"success", "complete"})
+KNOWN_RESULT_OUTCOMES = frozenset(
+    {
+        "success",
+        "complete",
+        "claim_failed",
+        "ambiguous",
+        "not_configured",
+        "token_invalid",
+        "delivery_failed",
+        "completion_failed",
+    }
+)
+
+
+def require_healthy_result_reports(
+    published: Mapping[str, Mapping[str, str]],
+) -> None:
+    failures: list[str] = []
+    for report_key in sorted(published):
+        batch_id, separator, kind = report_key.rpartition(":")
+        if not separator or not batch_id or kind not in {"evening", "final"}:
+            failures.append("invalid_report:invalid=invalid")
+            continue
+        outcomes = published[report_key]
+        for destination in destinations_for(kind):
+            raw_status = outcomes.get(destination, "missing")
+            status = (
+                raw_status
+                if raw_status in KNOWN_RESULT_OUTCOMES
+                else "missing" if raw_status == "missing" else "invalid"
+            )
+            if status not in HEALTHY_RESULT_OUTCOMES:
+                failures.append(f"{report_key}:{destination}={status}")
+    if failures:
+        raise RuntimeError(
+            "result report delivery incomplete: " + ", ".join(failures)
+        )
+
+
 def publish_result_report(
     report: ResultReport,
     *,

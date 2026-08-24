@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from backend.result_report_publisher import (
     destinations_for,
     publish_result_report,
+    require_healthy_result_reports,
 )
 from backend.result_report_repository import Claim
 from backend.result_reporting import build_result_report
@@ -95,6 +98,54 @@ def test_destinations_separate_partial_telegram_from_final_meta():
         "facebook",
         "instagram",
     )
+
+
+def test_result_report_health_accepts_success_and_complete():
+    require_healthy_result_reports(
+        {
+            "12345678-1234-4234-8234-123456789012:evening": {
+                "admin": "success",
+                "vip": "complete",
+                "free": "success",
+            }
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "claim_failed",
+        "ambiguous",
+        "not_configured",
+        "token_invalid",
+        "delivery_failed",
+        "completion_failed",
+    ],
+)
+def test_result_report_health_rejects_unconfirmed_outcomes(status):
+    outcomes = {
+        "admin": "success",
+        "vip": status,
+        "free": "success",
+    }
+
+    with pytest.raises(RuntimeError, match=rf"vip={status}"):
+        require_healthy_result_reports(
+            {"12345678-1234-4234-8234-123456789012:evening": outcomes}
+        )
+
+
+def test_result_report_health_rejects_missing_required_destination_safely():
+    with pytest.raises(RuntimeError, match=r"free=missing"):
+        require_healthy_result_reports(
+            {
+                "12345678-1234-4234-8234-123456789012:evening": {
+                    "admin": "success",
+                    "vip": "success",
+                }
+            }
+        )
 
 
 def test_evening_report_never_calls_meta_or_artifact_storage():

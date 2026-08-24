@@ -70,15 +70,21 @@ def test_cloud_delivery_always_uses_exact_residential_run_key():
 
     assert delivery["needs"] == ["collect_primary", "collect_recovery"]
     assert delivery["if"] == (
-        "always() && !cancelled() && ((needs.collect_primary.result == "
+        "always() && !cancelled() && ((github.event_name == 'schedule' && "
+        "github.event.schedule == '0 16 * * *') || (needs.collect_primary.result == "
         "'success' && needs.collect_primary.outputs.collection_eligible == "
-        "'true') || (needs.collect_primary.result == 'failure' && "
+        "'true' && needs.collect_primary.outputs.release_eligible == 'true') || "
+        "(needs.collect_primary.result == 'failure' && "
         "needs.collect_recovery.result == 'success' && "
-        "needs.collect_recovery.outputs.collection_eligible == 'true'))"
+        "needs.collect_recovery.outputs.collection_eligible == 'true' && "
+        "needs.collect_recovery.outputs.release_eligible == 'true'))"
     )
     assert delivery["env"]["SCRAPER_RUN_KEY"] == RUN_KEY_EXPRESSION
     assert "--deliver-only" in _step(delivery, "Deliver exact persisted batch")["run"]
     assert "backend.social_poster" in _step(delivery, "Publish exact social batch")["run"]
+    assert workflow["jobs"]["collect_primary"]["if"] == (
+        "github.event_name != 'schedule' || github.event.schedule != '0 16 * * *'"
+    )
 
 
 def test_no_pull_request_event_can_reach_personal_computers():
@@ -89,6 +95,12 @@ def test_no_pull_request_event_can_reach_personal_computers():
     assert workflow["jobs"]["collect_recovery"]["outputs"][
         "collection_eligible"
     ] == "${{ steps.collection_window.outputs.eligible }}"
+    assert workflow["jobs"]["collect_primary"]["outputs"][
+        "release_eligible"
+    ] == "${{ steps.collection_window.outputs.release_eligible }}"
+    assert workflow["jobs"]["collect_recovery"]["outputs"][
+        "release_eligible"
+    ] == "${{ steps.collection_window.outputs.release_eligible }}"
 
     assert "pull_request" not in workflow["on"]
     assert workflow["permissions"] == {
@@ -117,6 +129,7 @@ def test_collection_jobs_receive_no_delivery_or_meta_secrets():
     for job_name in ("collect_primary", "collect_recovery"):
         job = workflow["jobs"][job_name]
         assert job["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
+        assert job["env"]["DAILY_PORTFOLIO_ENABLED"] == "true"
         assert forbidden.isdisjoint(job["env"])
         assert "--collect-only" in _step(job, "Collect and persist only")["run"]
 
@@ -151,8 +164,11 @@ def test_workflows_keep_collection_and_verification_schedules():
     verifier = _workflow(VERIFIER_WORKFLOW)
 
     assert {row["cron"] for row in collector["on"]["schedule"]} == {
+        "0 14 * * *",
         "0 16 * * *",
+        "0 18 * * *",
         "0 22 * * *",
+        "0 2 * * *",
         "0 5 * * *",
     }
     assert {row["cron"] for row in verifier["on"]["schedule"]} == {
@@ -231,11 +247,70 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
         assert "actions/runs/$env:GITHUB_RUN_ID" in gate["run"]
         assert 'Authorization = "Bearer $env:GH_TOKEN"' in gate["run"]
         assert "backend.adaptive_schedule" in gate["run"]
+        assert "backend.daily_portfolio --created-at" in gate["run"]
         assert "$env:GITHUB_EVENT_NAME" in gate["run"]
         assert '"eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
         assert '"eligible=true" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert '"release_eligible=true" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert '"release_eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert '"portfolio_date=invalid" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert job["outputs"]["portfolio_date"] == (
+            "${{ steps.collection_window.outputs.portfolio_date }}"
+        )
+        assert collect["env"]["DAILY_PORTFOLIO_DATE"] == (
+            "${{ steps.collection_window.outputs.portfolio_date }}"
+        )
         assert install["if"] == "steps.collection_window.outputs.eligible == 'true'"
         assert collect["if"] == "steps.collection_window.outputs.eligible == 'true'"
+
+
+def test_daily_release_is_bounded_to_three_windows_or_manual_dispatch():
+    workflow = _workflow(COLLECTOR_WORKFLOW)
+    collector_release_crons = {"0 22 * * *", "0 5 * * *"}
+
+    for job_name in ("collect_primary", "collect_recovery"):
+        gate = _step(workflow["jobs"][job_name], "Check collection window")["run"]
+        for cron in collector_release_crons:
+            assert cron in gate
+        assert "workflow_dispatch" in gate
+        assert "0 14 * * *" not in gate.split("$releaseSchedules", 1)[1]
+        assert "0 18 * * *" not in gate.split("$releaseSchedules", 1)[1]
+        assert "0 2 * * *" not in gate.split("$releaseSchedules", 1)[1]
+
+    assert "github.event.schedule == '0 16 * * *'" in workflow["jobs"][
+        "deliver_cloud"
+    ]["if"]
+    assert workflow["jobs"]["deliver_cloud"]["env"][
+        "DAILY_PORTFOLIO_ENABLED"
+    ] == "true"
+
+
+def test_cloud_only_ten_oclock_release_reuses_stale_gate_before_delivery():
+    workflow = _workflow(COLLECTOR_WORKFLOW)
+    delivery = workflow["jobs"]["deliver_cloud"]
+    gate = _step(delivery, "Check cloud release window")
+    install = _step(delivery, "Install dependencies")
+    publish = _step(delivery, "Deliver exact persisted batch")
+    social = _step(delivery, "Publish exact social batch")
+
+    assert gate["id"] == "cloud_window"
+    assert gate["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "actions/runs/$env:GITHUB_RUN_ID" in gate["run"]
+    assert "backend.adaptive_schedule" in gate["run"]
+    assert "backend.daily_portfolio --created-at" in gate["run"]
+    assert '"eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
+    assert '"portfolio_date=invalid" >> $env:GITHUB_OUTPUT' in gate["run"]
+    assert install["if"] == "steps.cloud_window.outputs.eligible == 'true'"
+    assert publish["if"] == "steps.cloud_window.outputs.eligible == 'true'"
+    assert social["if"] == (
+        "success() && steps.cloud_window.outputs.eligible == 'true'"
+    )
+    assert publish["env"]["DAILY_PORTFOLIO_DATE"] == (
+        "${{ steps.cloud_window.outputs.portfolio_date }}"
+    )
+    assert social["env"]["DAILY_PORTFOLIO_DATE"] == (
+        "${{ steps.cloud_window.outputs.portfolio_date }}"
+    )
 
 
 def test_stale_gate_never_changes_power_state_or_logs_the_github_token():

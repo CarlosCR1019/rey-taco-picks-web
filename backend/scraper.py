@@ -53,10 +53,14 @@ from backend.playdoit_health import (
 )
 from backend.pick_publisher import (
     AuditedBatchPublisher,
+    DailyPortfolioPublisher,
     PERSISTED_PICK_COLUMNS,
     SupabaseBatchRepository,
+    revalidate_daily_portfolio,
+    revalidate_delivery_picks,
     revalidate_persisted_picks,
 )
+from backend.daily_portfolio import physical_event_key
 from backend.pick_selection import (
     CandidatePick,
     EvidenceScore,
@@ -1691,6 +1695,45 @@ def fase6_analisis_final(
 # ============================================================
 #  FASE 7: GUARDADO Y NOTIFICACIONES
 # ============================================================
+def _prepare_persisted_pick_rows(picks, *, generated_date):
+    if not picks or len(picks) > 6:
+        raise ValueError("La publicación requiere entre uno y seis picks.")
+    if any(type(pick.get('es_parlay')) is not bool for pick in picks):
+        raise ValueError("Cada pick requiere es_parlay booleano explícito.")
+    visible_picks = assign_visibility(picks)
+    clean_picks = []
+    for pick in visible_picks:
+        prepared = dict(pick)
+        prepared['fecha_generacion'] = generated_date
+        event_date = prepared.get('fecha_evento')
+        try:
+            if not isinstance(event_date, str):
+                raise ValueError("missing verified event date")
+            date.fromisoformat(event_date)
+        except (TypeError, ValueError):
+            event_date = scheduled_event_date(
+                prepared.get('horario'), generated_date
+            )
+        prepared['fecha_evento'] = event_date
+        prepared['estado'] = 'pendiente'
+        prepared['liga'] = prepared.get('liga') or prepared.get(
+            'categoria', 'Fútbol Internacional'
+        )
+        prepared.setdefault('ganancia_simulada', 0)
+        persisted = {
+            key: value
+            for key, value in prepared.items()
+            if key in PERSISTED_PICK_COLUMNS
+        }
+        identity_source = dict(prepared)
+        identity_source.pop('physical_event_key', None)
+        persisted['physical_event_key'] = physical_event_key(identity_source)
+        if persisted.get('visibility') == 'public':
+            persisted.pop('razonamiento', None)
+        clean_picks.append(persisted)
+    return clean_picks
+
+
 def fase7_guardar_y_notificar(
     picks,
     *,
@@ -1721,41 +1764,7 @@ def fase7_guardar_y_notificar(
         repository = SupabaseBatchRepository(supabase)
 
     hoy = datetime.now(ZoneInfo("America/Mexico_City")).date().isoformat()
-    visible_picks = assign_visibility(picks)
-    clean_picks = []
-    for pick in visible_picks:
-        prepared = dict(pick)
-        prepared['fecha_generacion'] = hoy
-        event_date = prepared.get('fecha_evento')
-        try:
-            if not isinstance(event_date, str):
-                raise ValueError("missing verified event date")
-            date.fromisoformat(event_date)
-        except (TypeError, ValueError):
-            event_date = scheduled_event_date(prepared.get('horario'), hoy)
-        prepared['fecha_evento'] = event_date
-        prepared['estado'] = 'pendiente'
-        prepared['liga'] = prepared.get('liga') or prepared.get(
-            'categoria', 'Fútbol Internacional'
-        )
-        prepared.setdefault('ganancia_simulada', 0)
-        clean_picks.append(
-            {
-                key: value
-                for key, value in prepared.items()
-                if key in PERSISTED_PICK_COLUMNS
-            }
-        )
-
-    # Public storage never receives premium rows or the public pick's rationale.
-    persisted_picks = []
-    for pick in clean_picks:
-        persisted = dict(pick)
-        if persisted.get('visibility') == 'public':
-            persisted.pop('razonamiento', None)
-        persisted_picks.append(persisted)
-
-    picks = persisted_picks
+    picks = _prepare_persisted_pick_rows(picks, generated_date=hoy)
     free_picks = public_payload(picks)
     expected_free = expected_public_pick_count(len(picks))
     free_events = {
@@ -1817,9 +1826,21 @@ def _deliver_persisted_publication(
 ):
     """Deliver only destinations absent from the persisted success ledger."""
     try:
-        validated_picks = revalidate_persisted_picks(
-            publication.picks,
-            reference_at=(clock or _utc_now)(),
+        reference_at = (clock or _utc_now)()
+        if publication.portfolio_date is None:
+            revalidate_persisted_picks(
+                publication.picks,
+                reference_at=reference_at,
+            )
+        else:
+            revalidate_daily_portfolio(
+                publication.picks,
+                reference_at=reference_at,
+            )
+        delivery_source = publication.delivery_picks or publication.picks
+        validated_picks = revalidate_delivery_picks(
+            delivery_source,
+            reference_at=reference_at,
         )
     except (RuntimeError, TypeError, ValueError):
         try:
@@ -2451,6 +2472,17 @@ def probe_secure_schema(client):
         raise ConfigError("secure Supabase scraper migration is not applied")
 
 
+def probe_daily_portfolio_schema(client):
+    """Require the complete private daily ledger before enabling daily mode."""
+    try:
+        response = client.rpc("daily_pick_schema_status", {}).execute()
+        ready = _schema_boolean_data(response.data)
+    except Exception:
+        ready = False
+    if not ready:
+        raise ConfigError("secure Supabase daily portfolio migration is not applied")
+
+
 def _cleanup_chrome_driver(driver):
     """Quit once and disable undetected_chromedriver's destructor double-quit.
 
@@ -2508,7 +2540,55 @@ class LegacyPipeline:
         print("=" * 60)
         print(f"dry_run={str(self.settings.dry_run).lower()}")
 
-        if not self.settings.dry_run:
+        daily_mode = self.settings.daily_portfolio_enabled
+        portfolio_date = self.settings.daily_portfolio_date if daily_mode else None
+        if daily_mode and not self.settings.dry_run and not portfolio_date:
+            raise ConfigError("daily portfolio date is not configured")
+
+        if not self.settings.dry_run and daily_mode and deliver_only:
+            try:
+                daily_publisher = DailyPortfolioPublisher(
+                    repository=self.repository,
+                    run_key=self.settings.run_key,
+                    public_path=self.settings.public_picks_path,
+                    clock=self.clock,
+                )
+                publication = daily_publisher.resume(write_public=True)
+                if publication is None:
+                    assert portfolio_date is not None
+                    publication = daily_publisher.release(
+                        portfolio_date=portfolio_date,
+                        write_public=True,
+                    )
+            except Exception:
+                raise PersistenceFailure(
+                    "daily portfolio persistence failed"
+                ) from None
+            if publication is None:
+                return PipelineResult(0, 0, False, ())
+            deliveries = _deliver_persisted_publication(
+                publication,
+                self.repository,
+                self.settings,
+                clock=self.clock,
+            )
+            failed = tuple(
+                sorted(
+                    name
+                    for name, result in deliveries.items()
+                    if not result.success
+                )
+            )
+            persisted_rows = tuple(dict(row) for row in publication.picks)
+            return PipelineResult(
+                len(persisted_rows),
+                len(persisted_rows),
+                True,
+                failed,
+                persisted_rows,
+            )
+
+        if not self.settings.dry_run and not daily_mode:
             try:
                 publication = AuditedBatchPublisher(
                     repository=self.repository,
@@ -2587,6 +2667,78 @@ class LegacyPipeline:
                 )
                 return PipelineResult(len(partidos), len(picks), False, ())
 
+            if daily_mode:
+                assert portfolio_date is not None
+                prepared_picks = _prepare_persisted_pick_rows(
+                    picks,
+                    generated_date=portfolio_date,
+                )
+                try:
+                    daily_publisher = DailyPortfolioPublisher(
+                        repository=self.repository,
+                        run_key=self.settings.run_key,
+                        public_path=self.settings.public_picks_path,
+                        clock=self.clock,
+                    )
+                    stage = daily_publisher.stage(
+                        prepared_picks,
+                        portfolio_date=portfolio_date,
+                    )
+                except Exception:
+                    raise PersistenceFailure(
+                        "daily portfolio persistence failed"
+                    ) from None
+                print(
+                    f"   ✅ Borrador diario {stage.portfolio_date} "
+                    f"revisión {stage.revision}."
+                )
+                if collect_only:
+                    return PipelineResult(
+                        len(partidos),
+                        len(prepared_picks),
+                        True,
+                        (),
+                        prepared_picks,
+                    )
+                try:
+                    publication = daily_publisher.release(
+                        portfolio_date=portfolio_date,
+                        write_public=True,
+                    )
+                except Exception:
+                    raise PersistenceFailure(
+                        "daily portfolio persistence failed"
+                    ) from None
+                if publication is None:
+                    return PipelineResult(
+                        len(partidos),
+                        len(prepared_picks),
+                        True,
+                        (),
+                        prepared_picks,
+                    )
+                deliveries = _deliver_persisted_publication(
+                    publication,
+                    self.repository,
+                    self.settings,
+                    clock=self.clock,
+                )
+                failed = tuple(
+                    sorted(
+                        name
+                        for name, result in deliveries.items()
+                        if not result.success
+                    )
+                )
+                persisted_rows = tuple(dict(row) for row in publication.picks)
+                return PipelineResult(
+                    len(partidos),
+                    len(persisted_rows),
+                    True,
+                    failed,
+                    persisted_rows,
+                )
+
             publication, deliveries = fase7_guardar_y_notificar(
                 picks,
                 repository=self.repository,
@@ -2615,6 +2767,7 @@ def build_pipeline(
     *,
     client_factory=None,
     schema_probe=None,
+    daily_schema_probe=None,
     driver_factory=None,
 ):
     """Build production dependencies, probing secure schema before Chrome."""
@@ -2634,6 +2787,8 @@ def build_pipeline(
     except Exception:
         raise ConfigError("could not initialize secure Supabase scraper client") from None
     active_probe(client)
+    if settings.daily_portfolio_enabled:
+        (daily_schema_probe or probe_daily_portfolio_schema)(client)
     lineup_resolver = None
     if settings.api_football_key:
         lineup_resolver = LineupResolver(ApiFootballClient(

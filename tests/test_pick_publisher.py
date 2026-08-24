@@ -4,8 +4,11 @@ from datetime import datetime, timezone
 import pytest
 
 import backend.pick_publisher as pick_publisher
+from backend.daily_portfolio import physical_event_key
 from backend.pick_publisher import (
     AuditedBatchPublisher,
+    DailyPortfolioPublisher,
+    DAILY_STAGE_PICK_COLUMNS,
     PERSISTED_PICK_COLUMNS,
     SupabaseBatchRepository,
     publish_batch,
@@ -48,6 +51,7 @@ def picks():
     return [
         {
             "pick": "Gratis",
+            "partido": "Pumas vs Atlas",
             "cuota": 1.8,
             "visibility": "public",
             "es_parlay": False,
@@ -60,6 +64,7 @@ def picks():
         },
         {
             "pick": "Solo VIP",
+            "partido": "América vs Cruz Azul",
             "cuota": 2.1,
             "visibility": "premium",
             "es_parlay": False,
@@ -70,6 +75,13 @@ def picks():
             "source_observed_at": "2026-08-20T20:00:00Z",
             "source_starts_at": "2099-08-21T03:00:00+00:00",
         },
+    ]
+
+
+def daily_stage_picks():
+    return [
+        {**row, "physical_event_key": physical_event_key(row)}
+        for row in picks()
     ]
 
 
@@ -118,6 +130,28 @@ def publish_response(rows, *, created=True, delivery_status=None):
             else delivery_status
         ),
         "picks": rows,
+    }
+
+
+def daily_release_response(
+    rows,
+    delivery_rows,
+    *,
+    created=True,
+    delivery_status=None,
+    revision=2,
+    feed_eligible=False,
+):
+    return {
+        **publish_response(
+            rows,
+            created=created,
+            delivery_status={} if delivery_status is None else delivery_status,
+        ),
+        "portfolio_date": "2026-08-23",
+        "revision": revision,
+        "feed_eligible": feed_eligible,
+        "delivery_picks": delivery_rows,
     }
 
 
@@ -613,3 +647,232 @@ def test_publish_rejects_empty_picks_or_run_key_before_repository(bad_picks, run
         publish_batch(repository, bad_picks, run_key, tmp_path / "picks.json")
 
     assert repository.calls == []
+
+
+def test_supabase_repository_stages_exact_daily_rpc_arguments():
+    client = FakeClient(
+        [{
+            "scan_id": "scan-1",
+            "portfolio_date": "2026-08-23",
+            "revision": 4,
+            "created": True,
+        }]
+    )
+    repository = SupabaseBatchRepository(client)
+    payload = picks()
+
+    result = repository.stage_daily(
+        "scan-run-1", "2026-08-23", "hash-1", payload
+    )
+
+    assert result == {
+        "scan_id": "scan-1",
+        "portfolio_date": "2026-08-23",
+        "revision": 4,
+        "created": True,
+    }
+    assert client.calls == [(
+        "stage_daily_pick_portfolio",
+        {
+            "requested_run_key": "scan-run-1",
+            "requested_portfolio_date": "2026-08-23",
+            "requested_source_hash": "hash-1",
+            "requested_picks": payload,
+        },
+    )]
+
+
+def test_daily_publisher_stages_projected_rows_without_public_file(tmp_path):
+    client = FakeClient(
+        [{
+            "scan_id": "scan-1",
+            "portfolio_date": "2026-08-23",
+            "revision": 1,
+            "created": True,
+        }]
+    )
+    publisher = DailyPortfolioPublisher(
+        repository=SupabaseBatchRepository(client),
+        run_key="scan-run-1",
+        public_path=tmp_path / "picks.json",
+    )
+
+    result = publisher.stage(daily_stage_picks(), portfolio_date="2026-08-23")
+
+    assert result.revision == 1
+    assert result.portfolio_date == "2026-08-23"
+    assert result.created is True
+    assert not (tmp_path / "picks.json").exists()
+    sent_rows = client.calls[0][1]["requested_picks"]
+    assert all(set(row) <= DAILY_STAGE_PICK_COLUMNS for row in sent_rows)
+    assert [row["physical_event_key"] for row in sent_rows] == [
+        physical_event_key(row) for row in picks()
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda row: row.pop("physical_event_key"),
+        lambda row: row.pop("es_parlay"),
+        lambda row: row.__setitem__("es_parlay", "false"),
+    ],
+)
+def test_daily_publisher_rejects_incomplete_stage_identity(
+    tmp_path, mutation
+):
+    rows = daily_stage_picks()
+    mutation(rows[0])
+    publisher = DailyPortfolioPublisher(
+        repository=FakeRepository(),
+        run_key="scan-invalid",
+        public_path=tmp_path / "picks.json",
+    )
+
+    with pytest.raises(ValueError):
+        publisher.stage(rows, portfolio_date="2026-08-23")
+
+
+def test_daily_release_writes_full_public_projection_and_exposes_only_delta(tmp_path):
+    full_rows = persisted_picks(
+        [
+            picks()[0],
+            picks()[1],
+            {
+                **picks()[1],
+                "pick": "Nueva VIP",
+                "source_event_id": "event-new",
+                "source_selection_key": "home",
+            },
+        ]
+    )
+    delta = [full_rows[2]]
+    client = FakeClient(
+        [daily_release_response(full_rows, delta, revision=2, feed_eligible=False)]
+    )
+    destination = tmp_path / "public" / "picks.json"
+    publisher = DailyPortfolioPublisher(
+        repository=SupabaseBatchRepository(client),
+        run_key="release-run-2",
+        public_path=destination,
+        clock=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc),
+    )
+
+    result = publisher.release(portfolio_date="2026-08-23")
+
+    assert result is not None
+    assert [dict(row) for row in result.picks] == full_rows
+    assert [dict(row) for row in result.delivery_picks] == delta
+    assert result.revision == 2
+    assert result.feed_eligible is False
+    public_row = dict(full_rows[0])
+    public_row.pop("razonamiento")
+    assert json.loads(destination.read_text(encoding="utf-8")) == [public_row]
+    assert client.calls == [(
+        "release_daily_pick_portfolio",
+        {
+            "requested_run_key": "release-run-2",
+            "requested_portfolio_date": "2026-08-23",
+        },
+    )]
+
+
+def test_daily_resume_uses_exact_run_and_preserves_release_delta(tmp_path):
+    full_rows = persisted_picks()
+    response = daily_release_response(
+        full_rows,
+        [full_rows[1]],
+        created=False,
+        revision=3,
+    )
+    client = FakeClient([response])
+    publisher = DailyPortfolioPublisher(
+        repository=SupabaseBatchRepository(client),
+        run_key="release-run-3",
+        public_path=tmp_path / "picks.json",
+    )
+
+    result = publisher.resume()
+
+    assert result is not None
+    assert [dict(row) for row in result.delivery_picks] == [full_rows[1]]
+    assert client.calls == [(
+        "resume_daily_pick_release",
+        {"requested_run_key": "release-run-3"},
+    )]
+
+
+def test_daily_release_rejects_delta_outside_full_portfolio(tmp_path):
+    full_rows = persisted_picks()
+    foreign = persisted_picks(
+        [{
+            **picks()[1],
+            "source_event_id": "foreign-event",
+            "source_selection_key": "foreign-selection",
+        }]
+    )
+    client = FakeClient([daily_release_response(full_rows, foreign)])
+    publisher = DailyPortfolioPublisher(
+        repository=SupabaseBatchRepository(client),
+        run_key="release-run-invalid",
+        public_path=tmp_path / "picks.json",
+    )
+
+    with pytest.raises(RuntimeError, match="delivery picks"):
+        publisher.release(portfolio_date="2026-08-23")
+
+    assert not (tmp_path / "picks.json").exists()
+
+
+def test_daily_release_allows_started_immutable_rows_but_requires_fresh_delta(
+    tmp_path,
+):
+    full_rows = persisted_picks()
+    full_rows[0]["source_starts_at"] = "2026-08-22T01:00:00Z"
+    response = daily_release_response(full_rows, [full_rows[1]], revision=2)
+    publisher = DailyPortfolioPublisher(
+        repository=SupabaseBatchRepository(FakeClient([response])),
+        run_key="release-after-early-pick",
+        public_path=tmp_path / "picks.json",
+        clock=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc),
+    )
+
+    result = publisher.release(portfolio_date="2026-08-23")
+
+    assert result is not None
+    assert [row["id"] for row in result.delivery_picks] == [2]
+
+
+def test_daily_release_rejects_started_delta_even_when_full_portfolio_is_valid(
+    tmp_path,
+):
+    full_rows = persisted_picks()
+    full_rows[1]["source_starts_at"] = "2026-08-22T03:00:00Z"
+    response = daily_release_response(full_rows, [full_rows[1]], revision=2)
+    publisher = DailyPortfolioPublisher(
+        repository=SupabaseBatchRepository(FakeClient([response])),
+        run_key="release-stale-delta",
+        public_path=tmp_path / "picks.json",
+        clock=lambda: datetime(2026, 8, 23, 12, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(RuntimeError, match="source audit"):
+        publisher.release(portfolio_date="2026-08-23")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        {},
+        {"scan_id": "", "portfolio_date": "2026-08-23", "revision": 1, "created": True},
+        {"scan_id": "scan", "portfolio_date": "2026-8-23", "revision": 1, "created": True},
+        {"scan_id": "scan", "portfolio_date": "2026-08-23", "revision": 0, "created": True},
+        {"scan_id": "scan", "portfolio_date": "2026-08-23", "revision": 1, "created": 1},
+    ],
+)
+def test_daily_stage_rejects_malformed_responses(response):
+    repository = SupabaseBatchRepository(FakeClient([response]))
+
+    with pytest.raises(RuntimeError, match="stage_daily_pick_portfolio"):
+        repository.stage_daily("run", "2026-08-23", "hash", picks())

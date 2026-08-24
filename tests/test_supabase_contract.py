@@ -23,6 +23,9 @@ LINEUP_BUDGET_SQL = (
 SIX_PICK_PORTFOLIO_SQL = (
     SQL.parent / "20260823100000_six_pick_portfolio_policy.sql"
 )
+DAILY_PORTFOLIO_SQL = (
+    SQL.parent / "20260823110000_daily_pick_portfolio_revisions.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -1516,6 +1519,151 @@ class SupabaseContractTests(unittest.TestCase):
                 text,
             )
             self.assertEqual(grants, [("execute", "service_role")])
+
+    def test_daily_portfolio_ledger_is_private_and_revisioned(self):
+        text = " ".join(
+            DAILY_PORTFOLIO_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        for table in (
+            "daily_pick_portfolios",
+            "daily_pick_scans",
+            "daily_pick_entries",
+            "daily_pick_releases",
+        ):
+            self.assertIn(f"create table public.{table}", text)
+            self.assertIn(f"alter table public.{table} enable row level security", text)
+            self.assertIn(
+                f"revoke all on table public.{table} from public, anon, authenticated",
+                text,
+            )
+        self.assertIn("portfolio_date date primary key", text)
+        self.assertIn("revision integer not null default 0", text)
+        self.assertIn("release_revision integer not null default 0", text)
+        self.assertIn("run_key text not null unique", text)
+        self.assertIn("released_revision integer", text)
+        self.assertIn("physical_event_key text not null", text)
+        self.assertIn("physical_event_key ~ '^physical:v1:[0-9a-f]{64}$'", text)
+        self.assertIn("unique (portfolio_date, physical_event_key)", text)
+        self.assertRegex(
+            text,
+            r"unique \(\s*portfolio_date, source, source_event_id, "
+            r"source_market_key, source_selection_key\s*\)",
+        )
+
+    def test_daily_stage_is_locked_replay_safe_and_replaces_only_draft(self):
+        signature = (
+            "public.stage_daily_pick_portfolio( requested_run_key text, "
+            "requested_portfolio_date date, requested_source_hash text, "
+            "requested_picks jsonb ) returns jsonb"
+        )
+        body = function_body(DAILY_PORTFOLIO_SQL, signature)
+
+        self.assertIn("pg_advisory_xact_lock", body)
+        self.assertLess(body.index("pg_advisory_xact_lock"), body.index("for update"))
+        self.assertIn("existing_scan.source_hash <> requested_source_hash", body)
+        self.assertIn("existing_scan.portfolio_date <> requested_portfolio_date", body)
+        self.assertIn("jsonb_array_length(requested_picks) not between 1 and 6", body)
+        self.assertIn("released_revision is not null", body)
+        self.assertIn("released_revision is null", body)
+        self.assertIn("active = false", body)
+        self.assertIn("row_number() over", body)
+        self.assertIn("partition by", body)
+        self.assertIn("physical_event_key", body)
+        self.assertIn("source_event_id", body)
+        self.assertIn("selected_count", body)
+        self.assertIn("expected_public_count", body)
+        self.assertIn("not (entry.value ? 'es_parlay')", body)
+        self.assertIn("jsonb_typeof(entry.value->'es_parlay') <> 'boolean'", body)
+        self.assertNotIn("coalesce((candidate.value->>'es_parlay')::boolean, false)", body)
+        self.assertIn("revision = locked_portfolio.revision + 1", body)
+
+    def test_daily_release_appends_only_delta_and_resume_is_exact(self):
+        release_signature = (
+            "public.release_daily_pick_portfolio( requested_run_key text, "
+            "requested_portfolio_date date ) returns jsonb"
+        )
+        resume_signature = (
+            "public.resume_daily_pick_release( requested_run_key text ) returns jsonb"
+        )
+        release = function_body(DAILY_PORTFOLIO_SQL, release_signature)
+        resume = function_body(DAILY_PORTFOLIO_SQL, resume_signature)
+
+        self.assertIn("pg_advisory_xact_lock", release)
+        self.assertIn("public.publish_pick_batch(", release)
+        self.assertIn("insert into public.scraper_runs", release)
+        self.assertIn("insert into public.picks", release)
+        self.assertIn("entries.released_revision is null", release)
+        self.assertIn("set released_revision = next_release_revision", release)
+        self.assertIn("insert into public.daily_pick_releases", release)
+        self.assertIn("'picks', full_picks", release)
+        self.assertIn("'delivery_picks', delivery_picks", release)
+        self.assertIn("'feed_eligible', next_release_revision = 1", release)
+        self.assertIn("where releases.run_id = selected_run.id", resume)
+        self.assertIn("entries.released_revision = selected_release.revision", resume)
+        self.assertIn("'created', false", resume)
+
+    def test_daily_rpcs_are_service_role_only(self):
+        text = " ".join(
+            DAILY_PORTFOLIO_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        signatures = (
+            "public.stage_daily_pick_portfolio(text, date, text, jsonb)",
+            "public.release_daily_pick_portfolio(text, date)",
+            "public.resume_daily_pick_release(text)",
+            "public.daily_pick_schema_status()",
+        )
+        for signature in signatures:
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature} to service_role",
+                text,
+            )
+
+    def test_daily_schema_probe_checks_every_runtime_rpc_and_private_table(self):
+        signature = "public.daily_pick_schema_status() returns boolean"
+        body = function_body(DAILY_PORTFOLIO_SQL, signature)
+
+        for rpc in (
+            "stage_daily_pick_portfolio(text,date,text,jsonb)",
+            "release_daily_pick_portfolio(text,date)",
+            "resume_daily_pick_release(text)",
+            "get_meta_social_batch(text)",
+        ):
+            self.assertIn(f"to_regprocedure('public.{rpc}') is not null", body)
+        for table in (
+            "daily_pick_portfolios",
+            "daily_pick_scans",
+            "daily_pick_entries",
+            "daily_pick_releases",
+        ):
+            self.assertIn(f"to_regclass('public.{table}') is not null", body)
+        self.assertIn("bool_and(classes.relrowsecurity)", body)
+        self.assertIn("has_table_privilege", body)
+        self.assertIn("required_privilege.name", body)
+        self.assertIn("has_function_privilege", body)
+        self.assertIn("procedures.prosecdef", body)
+        self.assertIn("procedures.prorettype = 'jsonb'::regtype", body)
+        self.assertIn("information_schema.columns", body)
+        self.assertIn("unique (portfolio_date, physical_event_key)", body)
+        self.assertIn("'anon'", body)
+        self.assertIn("'authenticated'", body)
+        self.assertIn("'service_role'", body)
+
+    def test_meta_feed_uses_first_daily_revision_and_supports_six_pick_portfolio(self):
+        signature = (
+            "public.get_meta_social_batch( requested_run_key text ) returns jsonb"
+        )
+        body = function_body(DAILY_PORTFOLIO_SQL, signature)
+
+        self.assertIn("daily_pick_releases", body)
+        self.assertIn("selected_release.feed_eligible is false", body)
+        self.assertIn("return null", body)
+        self.assertIn("expected_public_count", body)
+        self.assertIn("case when eligible_pick_count = 6 then 2 else 1 end", body)
+        self.assertIn("order by picks.id", body)
 
 
 if __name__ == "__main__":

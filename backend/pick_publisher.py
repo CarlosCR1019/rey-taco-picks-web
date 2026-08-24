@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import os
@@ -45,11 +45,13 @@ PERSISTED_PICK_COLUMNS = frozenset(
         "source_starts_at",
     }
 )
+DAILY_STAGE_PICK_COLUMNS = PERSISTED_PICK_COLUMNS | {"physical_event_key"}
 RETURNED_PICK_COLUMNS = PERSISTED_PICK_COLUMNS | {"id"}
 _UTC_SOURCE_TIMESTAMP = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:[.][0-9]{1,6})?(?:Z|[+]00:00)$"
 )
+_PHYSICAL_EVENT_KEY = re.compile(r"^physical:v1:[0-9a-f]{64}$")
 
 
 def _utc_now() -> datetime:
@@ -83,6 +85,20 @@ class PublishResponse(TypedDict):
     picks: tuple[PersistedPick, ...]
 
 
+class DailyStageResponse(TypedDict):
+    scan_id: str
+    portfolio_date: str
+    revision: int
+    created: bool
+
+
+class DailyPublishResponse(PublishResponse):
+    portfolio_date: str
+    revision: int
+    feed_eligible: bool
+    delivery_picks: tuple[PersistedPick, ...]
+
+
 class _SupabaseResponse(Protocol):
     data: object
 
@@ -104,6 +120,20 @@ class BatchRepository(Protocol):
 
     def resume(self, run_key: str) -> PublishResponse | None: ...
 
+    def stage_daily(
+        self,
+        run_key: str,
+        portfolio_date: str,
+        source_hash: str,
+        picks: Sequence[Mapping[str, object]],
+    ) -> DailyStageResponse: ...
+
+    def release_daily(
+        self, run_key: str, portfolio_date: str
+    ) -> DailyPublishResponse | None: ...
+
+    def resume_daily(self, run_key: str) -> DailyPublishResponse | None: ...
+
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""
     ) -> None: ...
@@ -116,7 +146,19 @@ class PublicationResult:
     created: bool
     delivery_status: dict[str, object]
     picks: tuple[PersistedPick, ...] = ()
+    delivery_picks: tuple[PersistedPick, ...] = ()
+    portfolio_date: str | None = None
+    revision: int | None = None
+    feed_eligible: bool = True
     dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class DailyStageResult:
+    scan_id: str
+    portfolio_date: str
+    revision: int
+    created: bool
 
 
 @dataclass(frozen=True)
@@ -180,6 +222,89 @@ class AuditedBatchPublisher:
         return result
 
 
+@dataclass(frozen=True)
+class DailyPortfolioPublisher:
+    """Stage and release one revisioned Mexico-day portfolio."""
+
+    repository: BatchRepository
+    run_key: str
+    public_path: str | Path
+    clock: Callable[[], datetime] = _utc_now
+
+    def stage(
+        self,
+        rows: Sequence[Mapping[str, object]],
+        *,
+        portfolio_date: str,
+    ) -> DailyStageResult:
+        projected = _project_daily_stage_rows(rows)
+        if not projected or len(projected) > 6:
+            raise ValueError("daily picks must contain between one and six rows")
+        normalized_date = _portfolio_date(portfolio_date)
+        response = self.repository.stage_daily(
+            self.run_key,
+            normalized_date,
+            source_hash_for(projected),
+            projected,
+        )
+        normalized = _normalized_daily_stage_response(response)
+        if normalized["portfolio_date"] != normalized_date:
+            raise RuntimeError(
+                "stage_daily_pick_portfolio returned an invalid response"
+            )
+        return DailyStageResult(**normalized)
+
+    def release(
+        self,
+        *,
+        portfolio_date: str,
+        write_public: bool = True,
+    ) -> PublicationResult | None:
+        if type(write_public) is not bool:
+            raise ValueError("write_public must be a boolean")
+        normalized_date = _portfolio_date(portfolio_date)
+        response = self.repository.release_daily(self.run_key, normalized_date)
+        if response is None:
+            return None
+        normalized = _normalized_daily_publish_response(
+            response,
+            reference_at=self.clock(),
+        )
+        if normalized["portfolio_date"] != normalized_date:
+            raise RuntimeError(
+                "release_daily_pick_portfolio returned an invalid response"
+            )
+        result = _daily_publication_result(normalized)
+        if write_public:
+            _write_public_payload(
+                self.public_path,
+                _safe_public_payload(result.picks),
+            )
+        return result
+
+    def resume(self, *, write_public: bool = True) -> PublicationResult | None:
+        if type(write_public) is not bool:
+            raise ValueError("write_public must be a boolean")
+        response = self.repository.resume_daily(self.run_key)
+        if response is None:
+            return None
+        normalized = _normalized_daily_publish_response(
+            response,
+            reference_at=self.clock(),
+        )
+        if normalized["created"] is not False:
+            raise RuntimeError(
+                "resume_daily_pick_release returned an invalid response"
+            )
+        result = _daily_publication_result(normalized)
+        if write_public:
+            _write_public_payload(
+                self.public_path,
+                _safe_public_payload(result.picks),
+            )
+        return result
+
+
 class SupabaseBatchRepository:
     """Supabase RPC implementation of the batch repository boundary."""
 
@@ -218,6 +343,58 @@ class SupabaseBatchRepository:
             reference_at=self._clock(),
         )
 
+    def stage_daily(
+        self,
+        run_key: str,
+        portfolio_date: str,
+        source_hash: str,
+        picks: Sequence[Mapping[str, object]],
+    ) -> DailyStageResponse:
+        response = self._client.rpc(
+            "stage_daily_pick_portfolio",
+            {
+                "requested_run_key": run_key,
+                "requested_portfolio_date": portfolio_date,
+                "requested_source_hash": source_hash,
+                "requested_picks": picks,
+            },
+        ).execute()
+        return _normalized_daily_stage_response(response.data)
+
+    def release_daily(
+        self, run_key: str, portfolio_date: str
+    ) -> DailyPublishResponse | None:
+        response = self._client.rpc(
+            "release_daily_pick_portfolio",
+            {
+                "requested_run_key": run_key,
+                "requested_portfolio_date": portfolio_date,
+            },
+        ).execute()
+        if response.data is None:
+            return None
+        return _normalized_daily_publish_response(
+            response.data,
+            reference_at=self._clock(),
+        )
+
+    def resume_daily(self, run_key: str) -> DailyPublishResponse | None:
+        response = self._client.rpc(
+            "resume_daily_pick_release",
+            {"requested_run_key": run_key},
+        ).execute()
+        if response.data is None:
+            return None
+        normalized = _normalized_daily_publish_response(
+            response.data,
+            reference_at=self._clock(),
+        )
+        if normalized["created"] is not False:
+            raise RuntimeError(
+                "resume_daily_pick_release returned an invalid response"
+            )
+        return normalized
+
     def record_delivery(
         self, run_id: str, destination: str, success: bool, error: str = ""
     ) -> None:
@@ -252,6 +429,35 @@ def _project_persisted_rows(
         projected.append(
             {key: value for key, value in row.items() if key in PERSISTED_PICK_COLUMNS}
         )
+    return tuple(projected)
+
+
+def _project_daily_stage_rows(
+    rows: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    projected = _project_rows(rows, DAILY_STAGE_PICK_COLUMNS)
+    for row in projected:
+        event_key = row.get("physical_event_key")
+        if (
+            not isinstance(event_key, str)
+            or _PHYSICAL_EVENT_KEY.fullmatch(event_key) is None
+        ):
+            raise ValueError("physical_event_key must be a canonical identity")
+        if type(row.get("es_parlay")) is not bool:
+            raise ValueError("es_parlay must be an explicit boolean")
+    return projected
+
+
+def _project_rows(
+    rows: Sequence[Mapping[str, object]], columns: frozenset[str]
+) -> tuple[dict[str, object], ...]:
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        raise ValueError("picks must be a sequence")
+    projected = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("each pick must be a mapping")
+        projected.append({key: value for key, value in row.items() if key in columns})
     return tuple(projected)
 
 
@@ -299,6 +505,7 @@ def _normalized_publish_response(
     data: object,
     *,
     reference_at: datetime | None = None,
+    require_future: bool = True,
 ) -> PublishResponse:
     if isinstance(data, list) and len(data) == 1:
         data = data[0]
@@ -322,6 +529,7 @@ def _normalized_publish_response(
     persisted_picks = _validated_persisted_picks(
         response.get("picks"),
         reference_at=reference_at,
+        require_future=require_future,
     )
 
     return {
@@ -349,10 +557,98 @@ def _normalized_resume_response(
     return response
 
 
+def _normalized_daily_stage_response(data: object) -> DailyStageResponse:
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    response = _string_keyed_dict(data)
+    if response is None:
+        raise RuntimeError(
+            "stage_daily_pick_portfolio returned an invalid response"
+        )
+    scan_id = response.get("scan_id")
+    portfolio_date = response.get("portfolio_date")
+    revision = response.get("revision")
+    created = response.get("created")
+    try:
+        normalized_date = _portfolio_date(portfolio_date)
+    except (TypeError, ValueError):
+        normalized_date = ""
+    if (
+        not isinstance(scan_id, str)
+        or not scan_id.strip()
+        or normalized_date != portfolio_date
+        or type(revision) is not int
+        or revision <= 0
+        or type(created) is not bool
+    ):
+        raise RuntimeError(
+            "stage_daily_pick_portfolio returned an invalid response"
+        )
+    return {
+        "scan_id": scan_id,
+        "portfolio_date": normalized_date,
+        "revision": revision,
+        "created": created,
+    }
+
+
+def _normalized_daily_publish_response(
+    data: object,
+    *,
+    reference_at: datetime | None = None,
+) -> DailyPublishResponse:
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    raw = _string_keyed_dict(data)
+    if raw is None:
+        raise RuntimeError(
+            "release_daily_pick_portfolio returned an invalid response"
+        )
+    base = _normalized_publish_response(
+        raw,
+        reference_at=reference_at,
+        require_future=False,
+    )
+    try:
+        portfolio_date = _portfolio_date(raw.get("portfolio_date"))
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            "release_daily_pick_portfolio returned an invalid response"
+        ) from None
+    revision = raw.get("revision")
+    feed_eligible = raw.get("feed_eligible")
+    if type(revision) is not int or revision <= 0 or type(feed_eligible) is not bool:
+        raise RuntimeError(
+            "release_daily_pick_portfolio returned an invalid response"
+        )
+    delivery_picks = _validated_persisted_picks(
+        raw.get("delivery_picks"),
+        reference_at=reference_at,
+        enforce_public_policy=False,
+    )
+    full_by_id = {row["id"]: dict(row) for row in base["picks"]}
+    if any(
+        row["id"] not in full_by_id or dict(row) != full_by_id[row["id"]]
+        for row in delivery_picks
+    ):
+        raise RuntimeError(
+            "release_daily_pick_portfolio returned invalid delivery picks"
+        )
+    return {
+        **base,
+        "portfolio_date": portfolio_date,
+        "revision": revision,
+        "feed_eligible": feed_eligible,
+        "delivery_picks": delivery_picks,
+    }
+
+
 def _validated_persisted_picks(
     value: object,
     *,
     reference_at: datetime | None = None,
+    enforce_public_policy: bool = True,
+    require_future: bool = True,
 ) -> tuple[PersistedPick, ...]:
     reference = _utc_reference(reference_at)
     if isinstance(value, tuple) and value and all(
@@ -397,7 +693,7 @@ def _validated_persisted_picks(
             or starts is None
             or observed > reference
             or starts <= observed
-            or starts <= reference
+            or (require_future and starts <= reference)
         ):
             raise RuntimeError("publish_pick_batch returned invalid source audit")
 
@@ -422,7 +718,7 @@ def _validated_persisted_picks(
             PersistedPick(tuple((key, row[key]) for key in sorted(row)))
         )
 
-    if public_count != expected_public_pick_count(len(normalized)):
+    if enforce_public_policy and public_count != expected_public_pick_count(len(normalized)):
         raise RuntimeError("publish_pick_batch returned invalid public policy")
     return tuple(normalized)
 
@@ -439,11 +735,52 @@ def revalidate_persisted_picks(
     )
 
 
+def revalidate_delivery_picks(
+    picks: Sequence[Mapping[str, object]],
+    *,
+    reference_at: datetime | None = None,
+) -> tuple[PersistedPick, ...]:
+    """Validate a non-empty release delta without imposing full-batch visibility."""
+
+    return _validated_persisted_picks(
+        [dict(row) for row in picks],
+        reference_at=reference_at,
+        enforce_public_policy=False,
+    )
+
+
+def revalidate_daily_portfolio(
+    picks: Sequence[Mapping[str, object]],
+    *,
+    reference_at: datetime | None = None,
+) -> tuple[PersistedPick, ...]:
+    """Validate the full immutable daily portfolio, including started rows."""
+
+    return _validated_persisted_picks(
+        [dict(row) for row in picks],
+        reference_at=reference_at,
+        require_future=False,
+    )
+
+
 def _utc_reference(value: datetime | None) -> datetime:
     reference = datetime.now(timezone.utc) if value is None else value
     if reference.tzinfo is None or reference.utcoffset() is None:
         raise ValueError("reference_at must be timezone-aware")
     return reference.astimezone(timezone.utc)
+
+
+def _portfolio_date(value: object) -> str:
+    if not isinstance(value, str) or len(value) != 10:
+        raise TypeError("portfolio_date must be an ISO date")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("portfolio_date must be an ISO date") from None
+    normalized = parsed.isoformat()
+    if normalized != value:
+        raise ValueError("portfolio_date must be an ISO date")
+    return normalized
 
 
 def _utc_datetime(value: object) -> datetime | None:
@@ -485,6 +822,21 @@ def _publication_result(response: PublishResponse) -> PublicationResult:
         created=response["created"],
         delivery_status=dict(response["delivery_status"]),
         picks=response["picks"],
+        delivery_picks=response["picks"],
+    )
+
+
+def _daily_publication_result(response: DailyPublishResponse) -> PublicationResult:
+    return PublicationResult(
+        run_id=response["run_id"],
+        batch_id=response["batch_id"],
+        created=response["created"],
+        delivery_status=dict(response["delivery_status"]),
+        picks=response["picks"],
+        delivery_picks=response["delivery_picks"],
+        portfolio_date=response["portfolio_date"],
+        revision=response["revision"],
+        feed_eligible=response["feed_eligible"],
     )
 
 

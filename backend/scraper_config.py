@@ -1,6 +1,7 @@
 """Runtime configuration for the scraper and its publishing paths."""
 
 from dataclasses import dataclass
+from datetime import date
 import os
 from pathlib import Path
 from typing import Mapping
@@ -31,6 +32,8 @@ class ScraperSettings:
     public_picks_path: Path
     queue_path: Path
     api_football_key: str = ""
+    daily_portfolio_enabled: bool = False
+    daily_portfolio_date: str = ""
 
 
 def _clean(value: str | None) -> str:
@@ -38,6 +41,26 @@ def _clean(value: str | None) -> str:
         return ""
     value = value.strip()
     return value
+
+
+def _strict_boolean(value: str | None, *, field: str) -> bool:
+    if value in (None, "", "false"):
+        return False
+    if value == "true":
+        return True
+    raise ConfigError(f"{field} must be exactly true or false")
+
+
+def _strict_iso_date(value: str | None, *, field: str) -> str:
+    if not isinstance(value, str) or len(value) != 10:
+        raise ConfigError(f"{field} must be an ISO date")
+    try:
+        normalized = date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise ConfigError(f"{field} must be an ISO date") from None
+    if normalized != value:
+        raise ConfigError(f"{field} must be an ISO date")
+    return normalized
 
 
 def _settings_values(values: Mapping[str, str | None] | None) -> Mapping[str, str | None]:
@@ -63,6 +86,16 @@ def load_settings(
     run_key = explicit_run_key or (
         f"github-run:{github_run_id}" if github_run_id else ""
     )
+    daily_portfolio_enabled = _strict_boolean(
+        source.get("DAILY_PORTFOLIO_ENABLED"),
+        field="DAILY_PORTFOLIO_ENABLED",
+    )
+    daily_portfolio_date = ""
+    if daily_portfolio_enabled and not dry_run:
+        daily_portfolio_date = _strict_iso_date(
+            source.get("DAILY_PORTFOLIO_DATE"),
+            field="DAILY_PORTFOLIO_DATE",
+        )
 
     if not dry_run:
         missing = [
@@ -94,4 +127,6 @@ def load_settings(
         telegram_free_id=_clean(source.get("TELEGRAM_FREE_CHANNEL_ID")),
         public_picks_path=REPO_ROOT / "frontend" / "public" / "picks.json",
         queue_path=BACKEND_DIR / "channel_queue.json",
+        daily_portfolio_enabled=daily_portfolio_enabled,
+        daily_portfolio_date=daily_portfolio_date,
     )

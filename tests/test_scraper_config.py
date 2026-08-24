@@ -116,3 +116,45 @@ def test_dotenv_path_is_module_relative_and_environment_overrides_file(monkeypat
 
     assert calls == [BACKEND_DIR / ".env"]
     assert settings.supabase_url == "environment-url"
+
+
+def test_daily_portfolio_mode_is_explicit_and_defaults_off():
+    assert load_settings({}, dry_run=True).daily_portfolio_enabled is False
+    assert load_settings(
+        {"DAILY_PORTFOLIO_ENABLED": "true"}, dry_run=True
+    ).daily_portfolio_enabled is True
+
+
+def test_production_daily_mode_requires_one_stable_iso_date():
+    base = {
+        "SUPABASE_URL": "https://example.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "service-role",
+        "SCRAPER_RUN_KEY": "run-1",
+        "DAILY_PORTFOLIO_ENABLED": "true",
+    }
+    with pytest.raises(ConfigError, match="DAILY_PORTFOLIO_DATE"):
+        load_settings(base, dry_run=False)
+    configured = load_settings(
+        {**base, "DAILY_PORTFOLIO_DATE": "2026-08-23"},
+        dry_run=False,
+    )
+    assert configured.daily_portfolio_date == "2026-08-23"
+
+
+@pytest.mark.parametrize("value", ["2026-8-23", "2026-08-23 ", "bad-date"])
+def test_daily_portfolio_date_rejects_noncanonical_values(value):
+    base = {
+        "SUPABASE_URL": "https://example.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "service-role",
+        "SCRAPER_RUN_KEY": "run-1",
+        "DAILY_PORTFOLIO_ENABLED": "true",
+        "DAILY_PORTFOLIO_DATE": value,
+    }
+    with pytest.raises(ConfigError, match="DAILY_PORTFOLIO_DATE"):
+        load_settings(base, dry_run=False)
+
+
+@pytest.mark.parametrize("value", ["1", "yes", "TRUE ", "false "])
+def test_daily_portfolio_mode_rejects_ambiguous_values(value):
+    with pytest.raises(ConfigError, match="DAILY_PORTFOLIO_ENABLED"):
+        load_settings({"DAILY_PORTFOLIO_ENABLED": value}, dry_run=True)

@@ -508,15 +508,22 @@ class FakeSupabase:
         error: Exception | None = None,
         *,
         policy_status=True,
+        daily_status=True,
     ):
         self.status = status
         self.policy_status = policy_status
+        self.daily_status = daily_status
         self.error = error
         self.calls = []
 
     def rpc(self, name, arguments):
         self.calls.append((name, arguments))
-        data = self.policy_status if name == "picks_policy_allowlist_status" else self.status
+        if name == "picks_policy_allowlist_status":
+            data = self.policy_status
+        elif name == "daily_pick_schema_status":
+            data = self.daily_status
+        else:
+            data = self.status
         return FakeRpcCall(data, self.error)
 
 
@@ -566,6 +573,37 @@ def test_build_pipeline_configures_shared_lineup_resolver_when_key_exists(
     )
 
     assert isinstance(pipeline.lineup_resolver, LineupResolver)
+
+
+def test_daily_pipeline_requires_daily_schema_before_runner_or_chrome(tmp_path):
+    status = {
+        "public_picks": True,
+        "publish_pick_batch": True,
+        "resume_pick_batch": True,
+        "source_audit": True,
+        "version": 2,
+    }
+    configured = replace(
+        settings(tmp_path, dry_run=False),
+        daily_portfolio_enabled=True,
+        daily_portfolio_date="2026-08-23",
+    )
+    ready = FakeSupabase(status, daily_status=True)
+
+    pipeline = scraper.build_pipeline(
+        configured,
+        client_factory=lambda _url, _key: ready,
+    )
+
+    assert isinstance(pipeline, LegacyPipeline)
+    assert ready.calls[-1] == ("daily_pick_schema_status", {})
+
+    missing = FakeSupabase(status, daily_status=False)
+    with pytest.raises(scraper.ConfigError, match="daily portfolio migration"):
+        scraper.build_pipeline(
+            configured,
+            client_factory=lambda _url, _key: missing,
+        )
 
 
 def test_schema_probe_rejects_an_unsafe_policy_allowlist_before_chrome(tmp_path):
@@ -746,6 +784,54 @@ def stub_successful_legacy_phases(monkeypatch, picks=None):
     monkeypatch.setattr(scraper, "fase6_analisis_final", lambda *_a, **_kw: selected)
 
 
+def test_prepared_daily_rows_include_cross_source_physical_identity():
+    base = {
+        "pick": "Local gana",
+        "partido": "América vs Pumas",
+        "cuota": 1.8,
+        "es_parlay": False,
+        "source": "playdoit",
+        "source_event_id": "event-1",
+        "source_market_key": "h2h|full_time|",
+        "source_selection_key": "home",
+    }
+    mirror = {
+        **base,
+        "partido": "Pumas contra America",
+        "source": "the-odds-api",
+        "source_event_id": "provider-event-99",
+    }
+
+    first = scraper._prepare_persisted_pick_rows([base], generated_date="2026-08-23")
+    second = scraper._prepare_persisted_pick_rows([mirror], generated_date="2026-08-23")
+
+    assert first[0]["physical_event_key"] == second[0]["physical_event_key"]
+
+
+def test_prepared_daily_rows_never_trust_a_supplied_physical_identity():
+    row = {
+        "pick": "Local gana",
+        "partido": "América vs Pumas",
+        "cuota": 1.8,
+        "es_parlay": False,
+        "physical_event_key": "attacker-controlled-key",
+    }
+
+    prepared = scraper._prepare_persisted_pick_rows(
+        [row], generated_date="2026-08-23"
+    )
+
+    assert prepared[0]["physical_event_key"].startswith("physical:v1:")
+    assert prepared[0]["physical_event_key"] != "attacker-controlled-key"
+
+
+def test_prepared_daily_rows_reject_missing_parlay_flag():
+    with pytest.raises(ValueError, match="es_parlay"):
+        scraper._prepare_persisted_pick_rows(
+            [{"partido": "América vs Pumas"}], generated_date="2026-08-23"
+        )
+
+
 def production_values():
     return {
         "SUPABASE_URL": "https://example.supabase.co",
@@ -857,6 +943,42 @@ class ResumeRepository:
         self.delivery_calls.append((run_id, destination, success, error))
 
 
+class DailyRepository:
+    def __init__(self, *, release_response=None, resume_response=None):
+        self.release_response = release_response
+        self.resume_response = resume_response
+        self.stage_calls = []
+        self.release_calls = []
+        self.resume_daily_calls = []
+        self.delivery_calls = []
+
+    def resume(self, *_args):
+        raise AssertionError("daily mode must not use the legacy resume RPC")
+
+    def publish(self, *_args):
+        raise AssertionError("daily mode must not use the legacy publish RPC")
+
+    def stage_daily(self, run_key, portfolio_date, source_hash, picks):
+        self.stage_calls.append((run_key, portfolio_date, source_hash, picks))
+        return {
+            "scan_id": "scan-1",
+            "portfolio_date": portfolio_date,
+            "revision": 1,
+            "created": True,
+        }
+
+    def release_daily(self, run_key, portfolio_date):
+        self.release_calls.append((run_key, portfolio_date))
+        return self.release_response
+
+    def resume_daily(self, run_key):
+        self.resume_daily_calls.append(run_key)
+        return self.resume_response
+
+    def record_delivery(self, run_id, destination, success, error=""):
+        self.delivery_calls.append((run_id, destination, success, error))
+
+
 def resumed_response(*, delivery_status):
     source = {
         "partido": "Pumas vs Atlas",
@@ -882,6 +1004,151 @@ def resumed_response(*, delivery_status):
         "delivery_status": delivery_status,
         "picks": [row],
     }
+
+
+def daily_release_response(*, delivery_status=None, created=True):
+    public_source = {
+        "partido": "Pumas vs Atlas",
+        "pick": "Pumas gana",
+        "cuota": 1.8,
+        "confianza": "Respaldo alto",
+        "razonamiento": None,
+        "es_parlay": False,
+        "visibility": "public",
+        "source": "playdoit",
+        "source_event_id": "event-public",
+        "source_market_key": "market-public",
+        "source_selection_key": "home",
+        "source_observed_at": "2026-08-20T20:00:00Z",
+        "source_starts_at": "2099-08-21T01:00:00Z",
+    }
+    premium_source = {
+        **public_source,
+        "partido": "América vs Tigres",
+        "pick": "Más de 2.5",
+        "razonamiento": "Datos oficiales completos",
+        "visibility": "premium",
+        "source_event_id": "event-premium",
+        "source_market_key": "market-premium",
+        "source_selection_key": "over",
+    }
+    rows = []
+    for index, source in enumerate((public_source, premium_source), start=1):
+        row = {column: source.get(column) for column in PERSISTED_PICK_COLUMNS}
+        row["id"] = index
+        rows.append(row)
+    return {
+        "run_id": "run-daily",
+        "batch_id": "batch-daily",
+        "created": created,
+        "delivery_status": {} if delivery_status is None else delivery_status,
+        "portfolio_date": "2026-08-23",
+        "revision": 2,
+        "feed_eligible": False,
+        "picks": rows,
+        "delivery_picks": [rows[1]],
+    }
+
+
+def test_daily_collect_only_stages_private_draft_without_delivery_or_public_file(
+    tmp_path, monkeypatch
+):
+    stub_successful_legacy_phases(monkeypatch)
+    repository = DailyRepository()
+    driver = FakeDriver()
+    daily_settings = replace(
+        settings(tmp_path, dry_run=False),
+        daily_portfolio_enabled=True,
+        daily_portfolio_date="2026-08-23",
+    )
+
+    result = LegacyPipeline(
+        daily_settings,
+        repository=repository,
+        history_client=object(),
+        driver_factory=lambda: driver,
+        clock=lambda: datetime(2026, 8, 24, 4, 30, tzinfo=timezone.utc),
+    ).run(collect_only=True)
+
+    assert result.persisted is True
+    assert result.failed_deliveries == ()
+    assert len(repository.stage_calls) == 1
+    assert repository.stage_calls[0][:2] == ("test-run", "2026-08-23")
+    assert repository.release_calls == []
+    assert repository.delivery_calls == []
+    assert driver.quit_calls == 1
+    assert not daily_settings.public_picks_path.exists()
+
+
+def test_daily_deliver_only_releases_delta_without_starting_chrome(
+    tmp_path, monkeypatch
+):
+    repository = DailyRepository(release_response=daily_release_response())
+    sent = []
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: lambda destination, text: sent.append(
+            (destination.name, text)
+        ),
+    )
+    daily_settings = replace(
+        settings(tmp_path, dry_run=False),
+        daily_portfolio_enabled=True,
+        daily_portfolio_date="2026-08-23",
+    )
+
+    result = LegacyPipeline(
+        daily_settings,
+        repository=repository,
+        history_client=object(),
+        driver_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("driver must not start in daily delivery-only mode")
+        ),
+        clock=lambda: datetime(2026, 8, 23, 18, tzinfo=timezone.utc),
+    ).run(deliver_only=True)
+
+    assert result.persisted is True
+    assert repository.resume_daily_calls == ["test-run"]
+    assert repository.release_calls == [("test-run", "2026-08-23")]
+    assert [name for name, _text in sent] == ["admin", "vip"]
+    assert all("Más de 2.5" in text for _name, text in sent)
+    assert repository.delivery_calls == [
+        ("run-daily", "admin", True, ""),
+        ("run-daily", "vip", True, ""),
+    ]
+    public_payload = json.loads(daily_settings.public_picks_path.read_text("utf-8"))
+    assert [row["pick"] for row in public_payload] == ["Pumas gana"]
+
+
+def test_daily_deliver_only_resumes_exact_release_without_creating_another(
+    tmp_path, monkeypatch
+):
+    response = daily_release_response(created=False)
+    repository = DailyRepository(resume_response=response)
+    monkeypatch.setattr(
+        scraper,
+        "TelegramHttpTransport",
+        lambda _token: lambda _destination, _text: None,
+    )
+    daily_settings = replace(
+        settings(tmp_path, dry_run=False),
+        daily_portfolio_enabled=True,
+        daily_portfolio_date="2026-08-23",
+    )
+
+    result = LegacyPipeline(
+        daily_settings,
+        repository=repository,
+        driver_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("driver must not start")
+        ),
+        clock=lambda: datetime(2026, 8, 23, 18, tzinfo=timezone.utc),
+    ).run(deliver_only=True)
+
+    assert result.persisted is True
+    assert repository.resume_daily_calls == ["test-run"]
+    assert repository.release_calls == []
 
 
 def test_production_resumes_before_driver_and_sends_only_missing_persisted_delivery(

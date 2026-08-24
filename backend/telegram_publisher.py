@@ -132,7 +132,11 @@ def deliver_batch(
             continue
 
         payload = public_payload(full_batch) if destination.audience == "public" else full_batch
-        messages = chunk_messages(payload, public=destination.audience == "public")
+        messages = chunk_messages(
+            payload,
+            destination=destination.name,
+            total_count=len(full_batch),
+        )
         if not messages:
             results[destination.name] = DeliveryResult(success=True, skipped=True)
             continue
@@ -153,25 +157,59 @@ def deliver_batch(
     return results
 
 
-def chunk_messages(picks: Iterable[Mapping[str, object]], *, public: bool = False) -> list[str]:
-    """Fit complete, self-contained pick blocks into Telegram's message limit."""
-    messages: list[str] = []
-    current = ""
-    for row in picks:
-        block = format_pick_block(row, public=public)
-        if not current:
-            current = block
-        elif len(current) + 2 + len(block) <= MAX_MESSAGE_LENGTH:
-            current = f"{current}\n\n{block}"
-        else:
-            messages.append(current)
-            current = block
-    if current:
-        messages.append(current)
-    return messages
+def chunk_messages(
+    picks: Iterable[Mapping[str, object]],
+    *,
+    destination: Literal["admin", "vip", "free"] = "admin",
+    total_count: int | None = None,
+) -> list[str]:
+    """Build destination-aware messages without splitting a selection block."""
+    if destination not in _SUPPORTED_DESTINATIONS:
+        raise ValueError("Telegram destination must be admin, vip, or free")
+    rows = list(picks)
+    if not rows:
+        return []
+
+    if destination == "admin":
+        return _chunk_blocks([format_pick_block(row) for row in rows])
+
+    portfolio_total = total_count if isinstance(total_count, int) and total_count >= len(rows) else len(rows)
+    blocks = [
+        _editorial_pick_block(row, index=index, include_rationale=destination == "vip")
+        for index, row in enumerate(rows, start=1)
+    ]
+    if destination == "vip":
+        header = (
+            "👑 REY TACO PICKS • CARTERA VIP\n"
+            f"📋 {portfolio_total} selecciones preparadas para la jornada"
+        )
+        footer = (
+            "🔒 Cartera completa incluida en tu acceso VIP.\n"
+            "Los momios pueden cambiar. 18+ · Juega con responsabilidad."
+        )
+    else:
+        public_count = len(rows)
+        additional = max(0, portfolio_total - public_count)
+        header = (
+            "🌮 REY TACO PICKS • PICKS PÚBLICOS\n"
+            f"Hoy compartimos {public_count} de las {portfolio_total} selecciones de la jornada."
+        )
+        footer_lines = []
+        if additional:
+            footer_lines.append(
+                f"👑 La cartera VIP incluye {additional} selecciones adicionales antes de los partidos."
+            )
+        footer_lines.extend(
+            (
+                "👉 Consulta el acceso VIP en reytacopicks.com",
+                "Los momios pueden cambiar. 18+ · Juega con responsabilidad.",
+            )
+        )
+        footer = "\n".join(footer_lines)
+    return _chunk_blocks(blocks, header=header, footer=footer)
 
 
-def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> str:
+def format_pick_block(pick: Mapping[str, object]) -> str:
     """Build a bounded block, preserving the event and pick when rationale is long."""
     event = _field(pick, ("partido", "event", "evento"), "Evento no especificado", 800)
     schedule = _field(pick, ("horario", "schedule"), "", 300)
@@ -190,19 +228,75 @@ def format_pick_block(pick: Mapping[str, object], *, public: bool = False) -> st
             support,
         ]
     )
-    notice = (
-        "Nota pública: análisis informativo; no garantiza resultados."
-        if public
-        else "Nota: análisis informativo; no garantiza resultados."
-    )
-    if public:
-        return "\n".join([*lines, notice])
+    notice = "Nota: análisis informativo; no garantiza resultados."
 
     rationale = _field(pick, ("razonamiento", "razon", "rationale", "analysis"), "No especificada", MAX_MESSAGE_LENGTH)
     prefix = "\n".join(lines) + "\nRationale: "
     available = MAX_MESSAGE_LENGTH - len(prefix) - 1 - len(notice)
     bounded_rationale = _truncate(rationale, max(0, available))
     return f"{prefix}{bounded_rationale}\n{notice}"
+
+
+def _editorial_pick_block(
+    pick: Mapping[str, object],
+    *,
+    index: int,
+    include_rationale: bool,
+) -> str:
+    event = _field(pick, ("partido", "event", "evento"), "Evento por confirmar", 600)
+    schedule = _field(pick, ("horario", "schedule"), "Horario por confirmar", 240)
+    selection = _field(pick, ("pick",), "Selección por confirmar", 600)
+    price = _field(pick, ("cuota", "price", "odds"), "Por confirmar", 120)
+    confidence = _field(pick, ("confianza", "confidence"), "No disponible", 120)
+    lines = [
+        f"🎯 {index}. {event}",
+        f"🕒 {schedule}",
+        f"✅ Selección: {selection}",
+        f"💰 Momio observado: {price}",
+        f"📊 {format_evidence_support(confidence)}",
+    ]
+    if include_rationale:
+        rationale = _field(pick, ("razonamiento", "razon", "rationale", "analysis"), "", 1_200)
+        if _meaningful_rationale(rationale):
+            lines.append(f"🧠 Lectura del Rey: {rationale}")
+    return "\n".join(lines)
+
+
+def _meaningful_rationale(value: str) -> bool:
+    normalized = " ".join(value.casefold().split()).rstrip(".")
+    return bool(normalized) and normalized not in {
+        "no especificada",
+        "no especificado",
+        "not specified",
+        "n/a",
+    }
+
+
+def _chunk_blocks(blocks: list[str], *, header: str = "", footer: str = "") -> list[str]:
+    """Pack complete blocks under Telegram's limit, repeating context per chunk."""
+    messages: list[str] = []
+    current: list[str] = []
+    for block in blocks:
+        candidate = _compose_message(header, [*current, block], footer)
+        if len(candidate) <= MAX_MESSAGE_LENGTH:
+            current.append(block)
+            continue
+        if current:
+            messages.append(_compose_message(header, current, footer))
+            current = []
+        single = _compose_message(header, [block], footer)
+        if len(single) > MAX_MESSAGE_LENGTH:
+            overhead = len(_compose_message(header, [""], footer))
+            block = _truncate(block, max(0, MAX_MESSAGE_LENGTH - overhead))
+        current.append(block)
+    if current:
+        messages.append(_compose_message(header, current, footer))
+    return messages
+
+
+def _compose_message(header: str, blocks: list[str], footer: str) -> str:
+    sections = [section for section in (header, "\n\n".join(blocks), footer) if section]
+    return "\n\n".join(sections)
 
 
 def _field(pick: Mapping[str, object], names: tuple[str, ...], default: str, limit: int) -> str:

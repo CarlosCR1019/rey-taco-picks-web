@@ -57,16 +57,38 @@ class FakeResponse:
 
 
 class TelegramPublisherTests(unittest.TestCase):
-    def test_pick_block_labels_score_as_data_support_not_confidence(self):
-        message = chunk_messages([pick()])[0]
+    def test_vip_package_is_branded_editorial_and_contains_the_complete_portfolio(self):
+        rows = [
+            pick(
+                partido=f"Partido {index}",
+                pick=f"Selección {index}",
+                cuota=f"{1.50 + index / 100:.2f}",
+                razonamiento=f"Lectura sustentada para la selección {index}.",
+                visibility="public" if index <= 2 else "premium",
+            )
+            for index in range(1, 7)
+        ]
 
+        message = "\n".join(chunk_messages(rows, destination="vip"))
+
+        self.assertIn("REY TACO PICKS", message)
+        self.assertIn("CARTERA VIP", message)
+        self.assertIn("6 selecciones", message)
+        self.assertIn("Partido 1", message)
+        self.assertIn("Selección 6", message)
+        self.assertIn("Lectura del Rey: Lectura sustentada para la selección 1.", message)
         self.assertIn("Respaldo de datos: 65%", message)
         self.assertNotIn("Respaldo de datos: 65% respaldo de datos", message)
-        self.assertNotIn("Confianza:", message)
+        self.assertNotIn("Evento:", message)
+        self.assertNotIn("Rationale:", message)
+        self.assertIn("18+", message)
 
-    def test_chunks_are_bounded_and_overlong_rationale_is_truncated_as_one_block(self):
+    def test_admin_chunks_are_bounded_and_keep_technical_audit_blocks(self):
         huge_reason = "x" * 9_000
-        messages = chunk_messages([pick(razonamiento=huge_reason), pick(partido="Pumas vs Atlas")])
+        messages = chunk_messages(
+            [pick(razonamiento=huge_reason), pick(partido="Pumas vs Atlas")],
+            destination="admin",
+        )
 
         self.assertTrue(messages)
         self.assertTrue(all(len(message) <= 4_000 for message in messages))
@@ -80,6 +102,35 @@ class TelegramPublisherTests(unittest.TestCase):
         self.assertNotIn("Rationale: No especificada", joined)
         self.assertIn("Evento: Pumas vs Atlas", joined)
         self.assertIn("Pick: Lobos +0.5", joined)
+
+    def test_free_package_contains_two_public_picks_and_a_four_pick_vip_cta_without_rationales(self):
+        rows = [
+            pick(partido="Público uno", pick="PUBLIC ONE", visibility="public", razonamiento="Rationale one"),
+            pick(partido="Público dos", pick="PUBLIC TWO", visibility="public", razonamiento="Rationale two"),
+            *[
+                pick(partido=f"Premium {index}", pick=f"PREMIUM {index}", visibility="premium")
+                for index in range(1, 5)
+            ],
+        ]
+
+        transport = FakeTransport()
+        result = deliver_batch(
+            rows,
+            [TelegramDestination("free", "free-id", "public")],
+            transport,
+        )["free"]
+        message = "\n".join(text for _, text in transport.calls)
+
+        self.assertEqual(result, DeliveryResult(success=True, message_count=1))
+        self.assertIn("PICKS PÚBLICOS", message)
+        self.assertIn("2 de las 6 selecciones", message)
+        self.assertIn("PUBLIC ONE", message)
+        self.assertIn("PUBLIC TWO", message)
+        self.assertIn("4 selecciones adicionales", message)
+        self.assertIn("reytacopicks.com", message)
+        self.assertNotIn("PREMIUM 1", message)
+        self.assertNotIn("Rationale one", message)
+        self.assertNotIn("Rationale:", message)
 
     def test_public_destination_receives_only_public_payload_while_all_destinations_receive_full_batch(self):
         public = pick(pick="PUBLIC PICK", visibility="public", razonamiento="Visible rationale")
@@ -101,8 +152,8 @@ class TelegramPublisherTests(unittest.TestCase):
         self.assertNotIn("Rationale:", by_name["free"])
         self.assertIn("PUBLIC PICK", by_name["vip"])
         self.assertIn("PREMIUM SECRET", by_name["vip"])
-        self.assertIn("Visible rationale", by_name["vip"])
-        self.assertIn("Rationale:", by_name["vip"])
+        self.assertIn("Lectura del Rey: Visible rationale", by_name["vip"])
+        self.assertNotIn("Rationale:", by_name["vip"])
         self.assertIn("PREMIUM SECRET", by_name["admin"])
         self.assertIn("Visible rationale", by_name["admin"])
         self.assertIn("Rationale:", by_name["admin"])

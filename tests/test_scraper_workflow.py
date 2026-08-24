@@ -340,6 +340,24 @@ def test_result_verifier_receives_detailed_stats_key_only_as_a_secret():
     assert "python backend/verificar_resultados.py" == verify_step["run"]
 
 
+def test_result_report_secrets_are_scoped_to_the_verifier_step():
+    verifier = _workflow(VERIFIER_WORKFLOW)["jobs"]["verificar"]
+    verify_step = _step(verifier, "Verify Results")
+    expected = {
+        "META_SYSTEM_USER_ACCESS_TOKEN": "${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}",
+        "FB_PAGE_ID": "${{ secrets.FB_PAGE_ID }}",
+        "IG_USER_ID": "${{ secrets.IG_USER_ID }}",
+        "SUPABASE_STORAGE_BUCKET": "${{ secrets.SUPABASE_STORAGE_BUCKET }}",
+    }
+
+    for key, value in expected.items():
+        assert verify_step["env"][key] == value
+        assert key not in verifier.get("env", {})
+    assert "github.event.schedule == '0 1 * * *'" in verify_step["env"][
+        "RESULT_REPORT_MODE"
+    ]
+
+
 def test_workflows_keep_collection_and_verification_schedules():
     collector = _workflow(COLLECTOR_WORKFLOW)
     verifier = _workflow(VERIFIER_WORKFLOW)
@@ -352,6 +370,8 @@ def test_workflows_keep_collection_and_verification_schedules():
     assert {row["cron"] for row in verifier["on"]["schedule"]} == {
         "0 13 * * *",
         "0 19 * * *",
+        "0 1 * * *",
+        "0 5 * * *",
     }
     assert "workflow_dispatch" in collector["on"]
     assert "workflow_dispatch" in verifier["on"]

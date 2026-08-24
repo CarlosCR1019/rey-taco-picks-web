@@ -4,17 +4,22 @@ import math
 import re
 import sys
 import urllib.request
+from pathlib import Path
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-try:
-    from backend.football_result_source import ApiFootballResultsClient, SupabaseResultStore
-    from backend.results_domain import EventResult, PlayerResult, find_matching_event, grade_pick, match_event, parse_market_identity, unit_result
-except ModuleNotFoundError:  # Allows `python backend/verificar_resultados.py`.
-    from football_result_source import ApiFootballResultsClient, SupabaseResultStore
-    from results_domain import EventResult, PlayerResult, find_matching_event, grade_pick, match_event, parse_market_identity, unit_result
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from backend.football_result_source import ApiFootballResultsClient, SupabaseResultStore
+from backend.result_report_publisher import SupabaseResultArtifactStore, publish_result_report
+from backend.result_report_repository import SupabaseResultReportRepository
+from backend.result_reporting import build_result_report
+from backend.results_domain import EventResult, PlayerResult, find_matching_event, grade_pick, match_event, parse_market_identity, unit_result
+from backend.social_poster import MetaHttpTransport, MetaSettings
+from backend.telegram_publisher import TelegramHttpTransport
 
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
@@ -377,6 +382,7 @@ def verificar_picks():
     
     if not picks_pendientes:
         print("ℹ️ No hay picks pendientes por verificar.")
+        publish_available_result_reports()
         return
     
     print(f"📋 {len(picks_pendientes)} picks pendientes encontrados.\n")
@@ -422,60 +428,81 @@ def verificar_picks():
     print(f"\n{'='*60}")
     print(f"📊 RESUMEN: {actualizados} verificados | ✅ {ganados} ganados | ❌ {perdidos} perdidos")
     
-    if actualizados > 0:
-        _notificar_resultados_telegram(ganados, perdidos)
+    publish_available_result_reports()
     
     print("="*60)
 
-def _notificar_resultados_telegram(ganados, perdidos):
-    """Envía resumen de resultados y recap de alto impacto para conversión por Telegram."""
+def publish_available_result_reports():
+    """Publish one evidence-backed partial or final report without duplicates."""
+    mode = os.getenv("RESULT_REPORT_MODE", "auto").strip().casefold()
+    if mode not in {"auto", "evening", "final_only"}:
+        print("   ⚠️ RESULT_REPORT_MODE inválido; reportes omitidos.")
+        return {}
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not supabase:
+        print("   ℹ️ Reportes omitidos: Supabase no está configurado.")
+        return {}
     try:
-        token = os.getenv("TELEGRAM_BOT_TOKEN")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        vip_channel_id = os.getenv("TELEGRAM_VIP_CHANNEL_ID") or os.getenv("TELEGRAM_CHANNEL_ID")
-        free_channel_id = os.getenv("TELEGRAM_FREE_CHANNEL_ID")
-        
-        if not token:
-            return
-        
-        total = ganados + perdidos
-        win_rate = round(ganados / total * 100, 1) if total > 0 else 0
-        
-        mensaje = "👑 REY TACO PICKS — RECAP OFICIAL DE LA JORNADA 👑\n\n"
-        mensaje += f"🏆 Balance del Día: {ganados}W - {perdidos}L\n"
-        mensaje += f"🔥 Efectividad / Win Rate: {win_rate}%\n"
-        if ganados > perdidos:
-            mensaje += "📊 Resultado: más aciertos que fallos en esta jornada.\n\n"
-        elif perdidos > ganados:
-            mensaje += "📊 Resultado: más fallos que aciertos en esta jornada.\n\n"
-        else:
-            mensaje += "📊 Resultado: jornada equilibrada en conteo.\n\n"
-        mensaje += "💎 ¿Quieres recibir todas las combinadas, córners y picks exclusivos antes del inicio?\n"
-        mensaje += "👉 Únete al VIP por solo $299 MXN al mes."
+        repository = SupabaseResultReportRepository(
+            url=SUPABASE_URL,
+            service_role_key=SUPABASE_SERVICE_ROLE_KEY,
+        )
+        batches = repository.batches()
+    except Exception:
+        print("   ⚠️ No se pudieron cargar los lotes para reportes.")
+        return {}
 
-        keyboard_free = {
-            "inline_keyboard": [
-                [
-                    {"text": "👑 Adquirir Pase VIP ($299 MXN)", "url": "https://wa.me/525639331102?text=Hola,%20quiero%20el%20Pase%20VIP%20de%20Rey%20Taco%20Picks"},
-                    {"text": "🌐 Ver Historial en la Web", "url": "https://reytacopicks.com/"}
-                ]
-            ]
-        }
-        
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        
-        for dest in [chat_id, vip_channel_id, free_channel_id]:
-            if dest:
-                try:
-                    data = json.dumps({"chat_id": dest, "text": mensaje, "reply_markup": keyboard_free}).encode('utf-8')
-                    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
-                    urllib.request.urlopen(req, timeout=10)
-                except Exception:
-                    pass
-        
-        print("   📱 ✅ Resultados y Recap VIP enviados por Telegram.")
-    except Exception as e:
-        print(f"   ⚠️ Error Telegram: {e}")
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    telegram_transport = TelegramHttpTransport(token) if token else None
+    telegram_chats = {
+        "admin": (os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip(),
+        "vip": (os.getenv("TELEGRAM_VIP_CHANNEL_ID") or os.getenv("TELEGRAM_CHANNEL_ID") or "").strip(),
+        "free": (os.getenv("TELEGRAM_FREE_CHANNEL_ID") or "").strip(),
+    }
+    try:
+        meta_settings = MetaSettings.from_mapping(os.environ)
+        meta_transport = MetaHttpTransport()
+    except ValueError:
+        meta_settings = None
+        meta_transport = None
+    artifact_store = SupabaseResultArtifactStore(
+        client=supabase,
+        supabase_url=SUPABASE_URL,
+        bucket=(os.getenv("SUPABASE_STORAGE_BUCKET") or "social-media").strip(),
+    )
+
+    published: dict[str, dict[str, str]] = {}
+    for rows in batches:
+        report = _report_for_mode(rows, mode=mode)
+        if report is None:
+            continue
+        outcomes = publish_result_report(
+            report,
+            repository=repository,
+            telegram_transport=telegram_transport,
+            telegram_chats=telegram_chats,
+            meta_transport=meta_transport,
+            meta_settings=meta_settings,
+            artifact_store=artifact_store,
+        )
+        published[f"{report.batch_id}:{report.kind}"] = outcomes
+        summary = ", ".join(f"{name}={status}" for name, status in outcomes.items())
+        print(f"   📣 Reporte {report.kind}: {summary}")
+    return published
+
+
+def _report_for_mode(rows, *, mode):
+    if mode in {"auto", "final_only"}:
+        try:
+            return build_result_report(rows, kind="final")
+        except ValueError:
+            if mode == "final_only":
+                return None
+    if mode in {"auto", "evening"}:
+        try:
+            return build_result_report(rows, kind="evening")
+        except ValueError:
+            return None
+    return None
 
 if __name__ == "__main__":
     verificar_picks()

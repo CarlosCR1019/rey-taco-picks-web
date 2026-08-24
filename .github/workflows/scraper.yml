@@ -2,9 +2,11 @@ name: Rey Taco Results Verifier
 
 on:
   schedule:
-    # 07:00 and 13:00 America/Mexico_City (UTC-6).
+    # 07:00, 13:00, 19:00 and 23:00 America/Mexico_City (UTC-6).
     - cron: '0 13 * * *'
     - cron: '0 19 * * *'
+    - cron: '0 1 * * *'
+    - cron: '0 5 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -44,4 +46,9 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           TELEGRAM_VIP_CHANNEL_ID: ${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}
           TELEGRAM_FREE_CHANNEL_ID: ${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}
+          META_SYSTEM_USER_ACCESS_TOKEN: ${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
+          RESULT_REPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && 'auto' || github.event.schedule == '0 1 * * *' && 'evening' || 'final_only' }}
         run: python backend/verificar_resultados.py

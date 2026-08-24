@@ -11,6 +11,11 @@ on:
         description: Mexico portfolio date (YYYY-MM-DD)
         required: true
         type: string
+      enable_same_day_round_feed:
+        description: Promote this exact verified round to Facebook and Instagram
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: rey-taco-delivery-recovery-${{ inputs.source_run_id }}
@@ -54,6 +59,14 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -r backend/requirements.txt
+
+      - name: Promote exact same-day round feed
+        if: ${{ inputs.enable_same_day_round_feed == true }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ENABLE_ROUND_FEED_RUN_KEY: residential:${{ inputs.source_run_id }}
+        run: python -m backend.round_feed_eligibility
 
       - name: Preflight exact recovery state
         id: recovery_plan

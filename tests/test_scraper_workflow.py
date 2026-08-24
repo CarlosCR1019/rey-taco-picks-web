@@ -209,7 +209,11 @@ def test_delivery_recovery_is_manual_validated_and_idempotent():
 
     assert set(workflow["on"]) == {"workflow_dispatch"}
     inputs = workflow["on"]["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"source_run_id", "portfolio_date"}
+    assert set(inputs) == {
+        "source_run_id",
+        "portfolio_date",
+        "enable_same_day_round_feed",
+    }
     assert all(value["required"] == "true" for value in inputs.values())
     assert workflow["permissions"] == {"contents": "read"}
 
@@ -380,6 +384,26 @@ def test_result_verifier_can_open_a_verified_settled_round():
         "${{ inputs.rollover_settled_portfolio_date }}"
     )
     assert step["run"] == "python -m backend.settled_round_rollover"
+
+
+def test_delivery_recovery_can_promote_one_exact_same_day_round_feed():
+    workflow = _workflow(DELIVERY_RECOVERY_WORKFLOW)
+    dispatch = workflow["on"]["workflow_dispatch"]
+    assert dispatch["inputs"]["enable_same_day_round_feed"] == {
+        "description": "Promote this exact verified round to Facebook and Instagram",
+        "required": "true",
+        "default": "false",
+        "type": "boolean",
+    }
+
+    job = workflow["jobs"]["recover_delivery"]
+    step = _step(job, "Promote exact same-day round feed")
+    assert step["if"] == "${{ inputs.enable_same_day_round_feed == true }}"
+    assert step["env"]["ENABLE_ROUND_FEED_RUN_KEY"] == (
+        "residential:${{ inputs.source_run_id }}"
+    )
+    assert step["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
+    assert step["run"] == "python -m backend.round_feed_eligibility"
 
 
 def test_result_report_secrets_are_scoped_to_the_verifier_step():

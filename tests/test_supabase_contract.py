@@ -32,6 +32,9 @@ COLLECTION_LEASE_SQL = (
 ADAPTIVE_CHECKS_SQL = (
     SQL.parent / "20260823130000_adaptive_residential_checks.sql"
 )
+RESULT_BUDGET_SQL = (
+    SQL.parent / "20260824100000_api_football_result_budget.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -210,6 +213,38 @@ class SupabaseContractTests(unittest.TestCase):
         )
         self.assertIn(
             "revoke all on table public.api_football_cache from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.claim_api_football_request(date, integer) to service_role",
+            text,
+        )
+
+    def test_result_budget_expands_shared_quota_without_exceeding_free_plan(self):
+        self.assertTrue(RESULT_BUDGET_SQL.exists())
+        text = " ".join(
+            RESULT_BUDGET_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        body = function_body(
+            RESULT_BUDGET_SQL,
+            "public.claim_api_football_request( requested_quota_day date, requested_limit integer default 80 ) returns boolean",
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "drop constraint if exists api_football_request_budget_requests_used_check",
+            text,
+        )
+        self.assertIn("check (requests_used between 0 and 80)", text)
+        self.assertIn("effective_limit := least(requested_limit, 80)", body)
+        self.assertIn("if current_count >= effective_limit then return false", body)
+        self.assertIn("for update", body)
+        self.assertIn(
+            "server_quota_day := (now() at time zone 'utc')::date", body
+        )
+        self.assertIn(
+            "revoke all on function public.claim_api_football_request(date, integer) from public, anon, authenticated",
             text,
         )
         self.assertIn(

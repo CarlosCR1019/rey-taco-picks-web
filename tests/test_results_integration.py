@@ -11,6 +11,7 @@ class ResultsIntegrationTests(unittest.TestCase):
             "completed": True,
             "source": "espn",
             "source_id": "event-1",
+            "event_date": "2026-08-23",
             "scores": [
                 {"name": "Tigres UANL", "score": 2},
                 {"name": "Club America", "score": 1},
@@ -88,6 +89,144 @@ class ResultsIntegrationTests(unittest.TestCase):
         decision = grade_pending_pick_from_results(pick, [self.result, second])
         self.assertEqual(decision["estado"], "ganado")
         self.assertEqual(decision["resultado_evento_id"], "event-1,event-2")
+
+    def test_persisted_market_identity_grades_canonical_label(self):
+        pick = {
+            "partido": "Tigres vs America",
+            "pick": "Tigres",
+            "mercado": "Resultado final",
+            "source_market_key": (
+                'market:v1:["playdoit","h2h","full_game",null]'
+            ),
+            "cuota": 1.8,
+        }
+
+        decision = grade_pending_pick(pick, self.result)
+
+        self.assertEqual(decision["estado"], "ganado")
+
+    def test_persisted_deep_market_uses_detailed_api_statistics(self):
+        detailed = {
+            **self.result,
+            "home_team": "Fulham",
+            "away_team": "Chelsea",
+            "scores": [{"score": 1}, {"score": 2}],
+            "home_corners": 3,
+            "away_corners": 6,
+        }
+        pick = {
+            "partido": "Fulham vs Chelsea",
+            "pick": "Más de 8.5",
+            "mercado": "Total de tiros de esquina",
+            "source_market_key": (
+                'market:v1:["playdoit","playdoit_market:corners-1",'
+                '"source_unspecified",null,"corners-1",'
+                '{"scope":"event","participant_id":null,"team_id":null,'
+                '"competitor_id":null,"offer_kind":"standard",'
+                '"lineup_confirmed":false}]'
+            ),
+            "cuota": 1.85,
+        }
+
+        decision = grade_pending_pick(pick, detailed)
+
+        self.assertEqual(decision["estado"], "ganado")
+
+    def test_detailed_api_result_is_preferred_over_matching_score_fallback(self):
+        espn = {
+            **self.result,
+            "home_team": "Fulham",
+            "away_team": "Chelsea",
+            "source_id": "espn-1",
+            "event_date": "2026-08-23",
+            "scores": [{"score": 1}, {"score": 2}],
+        }
+        detailed = {
+            **espn,
+            "source": "api_football",
+            "source_id": "991",
+            "home_corners": 3,
+            "away_corners": 6,
+        }
+        pick = {
+            "partido": "Fulham vs Chelsea",
+            "fecha_evento": "2026-08-23",
+            "pick": "Más de 8.5",
+            "mercado": "Total de tiros de esquina",
+            "source_market_key": (
+                'market:v1:["playdoit","playdoit_market:corners-1",'
+                '"source_unspecified",null,"corners-1",'
+                '{"scope":"event","participant_id":null,"team_id":null,'
+                '"competitor_id":null,"offer_kind":"standard",'
+                '"lineup_confirmed":false}]'
+            ),
+            "cuota": 1.85,
+        }
+
+        decision = grade_pending_pick_from_results(pick, [espn, detailed])
+
+        self.assertEqual(decision["estado"], "ganado")
+        self.assertEqual(decision["resultado_fuente"], "api_football")
+        self.assertEqual(decision["resultado_evento_id"], "991")
+
+    def test_multiple_detailed_matches_never_fall_back_to_espn(self):
+        espn = {**self.result, "source_id": "espn-1"}
+        first = {
+            **self.result,
+            "source": "api_football",
+            "source_id": "api-1",
+        }
+        second = {
+            **first,
+            "source_id": "api-2",
+        }
+        pick = {
+            "partido": "Tigres vs America",
+            "fecha_evento": "2026-08-23",
+            "pick": "Tigres",
+            "mercado": "Resultado final",
+            "source_market_key": (
+                'market:v1:["playdoit","h2h","full_game",null]'
+            ),
+            "cuota": 1.8,
+        }
+
+        self.assertIsNone(
+            grade_pending_pick_from_results(pick, [espn, first, second])
+        )
+
+    def test_malformed_final_result_never_becomes_an_invented_zero_zero(self):
+        malformed_rows = [
+            {**self.result, "scores": [{}, {}]},
+            {**self.result, "completed": "false"},
+            {**self.result, "source_id": ""},
+            {**self.result, "event_date": ""},
+        ]
+        pick = {
+            "partido": "Tigres vs America",
+            "pick": "Empate",
+            "mercado": "Resultado final",
+            "source_market_key": (
+                'market:v1:["playdoit","h2h","full_game",null]'
+            ),
+            "cuota": 2.0,
+        }
+
+        for malformed in malformed_rows:
+            with self.subTest(malformed=malformed):
+                self.assertIsNone(grade_pending_pick(pick, malformed))
+
+    def test_invalid_decimal_odds_prevent_settlement(self):
+        for odds in (None, "bad", 0.5, float("nan"), float("inf")):
+            with self.subTest(odds=odds):
+                self.assertIsNone(grade_pending_pick(
+                    {
+                        "partido": "Tigres vs America",
+                        "pick": "Tigres gana",
+                        "cuota": odds,
+                    },
+                    self.result,
+                ))
 
 
 if __name__ == "__main__":

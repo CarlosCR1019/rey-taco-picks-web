@@ -132,7 +132,7 @@ Store real values in the local process/provider secret store, never in a command
 committed to Git. Production publication requires these backend names:
 
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
-- `GROQ_API_KEY`, `ODDS_API_KEY`
+- `GROQ_API_KEY`, `ODDS_API_KEY`, `API_FOOTBALL_KEY`
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`,
   `TELEGRAM_VIP_CHANNEL_ID`, `TELEGRAM_FREE_CHANNEL_ID`
 - `SCRAPER_RUN_KEY` for a direct local production run, or the automatic
@@ -143,6 +143,7 @@ The backend accepts `TELEGRAM_CHAT_ID` as the compatibility fallback for
 `TELEGRAM_VIP_CHANNEL_ID`. Prefer the canonical names for new configuration.
 The current GitHub workflows read these repository-secret names exactly:
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GROQ_API_KEY`, `ODDS_API_KEY`,
+`API_FOOTBALL_KEY`,
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_CHANNEL_ID`,
 `TELEGRAM_VIP_CHANNEL_ID`, `TELEGRAM_FREE_CHANNEL_ID`,
 `META_SYSTEM_USER_ACCESS_TOKEN`, `FB_PAGE_ID`, and `IG_USER_ID`.
@@ -199,6 +200,19 @@ The pending set must include, in this order:
    removes every legacy `picks` policy, recreates the audited six-policy
    allowlist, revokes anonymous writes, and adds the service-only policy
    allowlist preflight.
+7. `supabase/migrations/20260823090000_api_football_lineup_budget.sql`, which
+   creates the private shared API-Football request budget and cache.
+8. `supabase/migrations/20260823100000_six_pick_portfolio_policy.sql` and
+   `supabase/migrations/20260823110000_daily_pick_portfolio_revisions.sql`,
+   which enforce the six-pick/two-public policy and one private revisioned
+   portfolio per Mexico date.
+9. `supabase/migrations/20260823120000_residential_collection_lease.sql` and
+   `supabase/migrations/20260823130000_adaptive_residential_checks.sql`, which
+   prevent both PCs from collecting the same window and schedule only due
+   residential work.
+10. `supabase/migrations/20260824100000_api_football_result_budget.sql`, which
+    reserves at least 20 of the 100 free daily provider calls while allowing
+    the cloud verifier to reuse the same cache and quota after lineups.
 
 `supabase db push` applies every pending migration, not just a named file. Only
 after reviewing that complete set, confirming the linked project and backup, and

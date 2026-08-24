@@ -159,6 +159,17 @@ def test_cloud_jobs_never_open_playdoit_or_target_residential_runner():
         assert "--collect-only" not in text
 
 
+def test_result_verifier_receives_detailed_stats_key_only_as_a_secret():
+    verifier = _workflow(VERIFIER_WORKFLOW)["jobs"]["verificar"]
+    verify_step = _step(verifier, "Verify Results")
+
+    assert verify_step["env"]["API_FOOTBALL_KEY"] == (
+        "${{ secrets.API_FOOTBALL_KEY }}"
+    )
+    assert "API_FOOTBALL_KEY" not in verifier.get("env", {})
+    assert "python backend/verificar_resultados.py" == verify_step["run"]
+
+
 def test_workflows_keep_collection_and_verification_schedules():
     collector = _workflow(COLLECTOR_WORKFLOW)
     verifier = _workflow(VERIFIER_WORKFLOW)

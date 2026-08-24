@@ -1,16 +1,20 @@
 import os
 import json
+import math
+import re
 import sys
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
 try:
-    from backend.results_domain import EventResult, find_matching_event, find_matching_parlay_events, grade_pick, match_event, unit_result
+    from backend.football_result_source import ApiFootballResultsClient, SupabaseResultStore
+    from backend.results_domain import EventResult, PlayerResult, find_matching_event, grade_pick, match_event, parse_market_identity, unit_result
 except ModuleNotFoundError:  # Allows `python backend/verificar_resultados.py`.
-    from results_domain import EventResult, find_matching_event, find_matching_parlay_events, grade_pick, match_event, unit_result
+    from football_result_source import ApiFootballResultsClient, SupabaseResultStore
+    from results_domain import EventResult, PlayerResult, find_matching_event, grade_pick, match_event, parse_market_identity, unit_result
 
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
@@ -18,8 +22,10 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY else None
+_AMBIGUOUS_MATCH = object()
 
 # ============================================================
 #  VERIFICADOR AUTOMÁTICO DE RESULTADOS
@@ -42,7 +48,28 @@ def event_date_cdmx(value):
         return str(value)[:10]
 
 
-def obtener_resultados_api(event_dates=None):
+def _finite_nonnegative(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed >= 0 else None
+
+
+def _decimal_odds(pick):
+    raw = pick.get('cuota')
+    if isinstance(raw, bool):
+        return None
+    try:
+        parsed = float(str(raw).replace(',', '.'))
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) and 1.01 <= parsed <= 1000 else None
+
+
+def obtener_resultados_api(event_dates=None, pending_picks=None):
     """Consulta múltiples fuentes (ESPN API pública y The Odds API) para obtener resultados de partidos finalizados."""
     todos_juegos = []
     
@@ -80,8 +107,10 @@ def obtener_resultados_api(event_dates=None):
                         home_c = next((c for c in competitors if c.get('homeAway') == 'home'), competitors[0])
                         away_c = next((c for c in competitors if c.get('homeAway') == 'away'), competitors[1])
                         
-                        score_h = float(home_c.get('score', 0) or 0)
-                        score_a = float(away_c.get('score', 0) or 0)
+                        score_h = _finite_nonnegative(home_c.get('score'))
+                        score_a = _finite_nonnegative(away_c.get('score'))
+                        if score_h is None or score_a is None:
+                            continue
                         
                         todos_juegos.append({
                             'source': 'espn',
@@ -95,6 +124,22 @@ def obtener_resultados_api(event_dates=None):
                         })
             except Exception:
                 continue
+
+    if API_FOOTBALL_KEY and supabase and pending_picks:
+        try:
+            detailed_results = ApiFootballResultsClient(
+                API_FOOTBALL_KEY,
+                store=SupabaseResultStore(supabase),
+            ).results_for_picks(pending_picks)
+            todos_juegos.extend(detailed_results)
+            print(
+                "   ✅ API-Football: "
+                f"{len(detailed_results)} partidos finales auditados."
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            print("   ⚠️ API-Football no aportó detalle verificable en esta ejecución.")
 
     unique_results = {}
     for result in todos_juegos:
@@ -114,18 +159,74 @@ def _event_from_api(resultado):
     scores = resultado.get('scores') or []
     if len(scores) < 2:
         return None
+    def optional_number(field):
+        value = resultado.get(field)
+        return None if value is None else _finite_nonnegative(value)
+
+    players = []
+    for raw_player in resultado.get('players') or []:
+        if not isinstance(raw_player, dict):
+            continue
+        try:
+            players.append(PlayerResult(
+                name=str(raw_player['name']),
+                team=str(raw_player['team']),
+                minutes=(None if raw_player.get('minutes') is None else float(raw_player['minutes'])),
+                shots_total=(None if raw_player.get('shots_total') is None else float(raw_player['shots_total'])),
+                shots_on=(None if raw_player.get('shots_on') is None else float(raw_player['shots_on'])),
+                goals=(None if raw_player.get('goals') is None else float(raw_player['goals'])),
+                assists=(None if raw_player.get('assists') is None else float(raw_player['assists'])),
+                yellow_cards=(None if raw_player.get('yellow_cards') is None else float(raw_player['yellow_cards'])),
+                red_cards=(None if raw_player.get('red_cards') is None else float(raw_player['red_cards'])),
+            ))
+        except (KeyError, TypeError, ValueError):
+            continue
     try:
+        completed = resultado.get('completed')
+        source = str(resultado.get('source', '')).strip()
+        source_id = str(resultado.get('source_id', '')).strip()
+        event_date = str(resultado.get('event_date', '')).strip()
+        home = str(resultado.get('home_team', '')).strip()
+        away = str(resultado.get('away_team', '')).strip()
+        home_score = _finite_nonnegative(scores[0].get('score'))
+        away_score = _finite_nonnegative(scores[1].get('score'))
+        if (
+            type(completed) is not bool
+            or not source
+            or not source_id
+            or not home
+            or not away
+            or home_score is None
+            or away_score is None
+            or date.fromisoformat(event_date).isoformat() != event_date
+        ):
+            return None
         return EventResult(
-            home=str(resultado.get('home_team', '')),
-            away=str(resultado.get('away_team', '')),
-            home_score=float(scores[0].get('score', 0) or 0),
-            away_score=float(scores[1].get('score', 0) or 0),
-            completed=bool(resultado.get('completed', False)),
-            home_corners=resultado.get('home_corners'),
-            away_corners=resultado.get('away_corners'),
-            source=str(resultado.get('source', 'unknown')),
-            source_id=str(resultado.get('source_id', '')),
-            event_date=str(resultado.get('event_date', '')),
+            home=home,
+            away=away,
+            home_score=home_score,
+            away_score=away_score,
+            completed=completed,
+            home_corners=optional_number('home_corners'),
+            away_corners=optional_number('away_corners'),
+            source=source,
+            source_id=source_id,
+            event_date=event_date,
+            home_first_half_score=optional_number('home_first_half_score'),
+            away_first_half_score=optional_number('away_first_half_score'),
+            home_shots_total=optional_number('home_shots_total'),
+            away_shots_total=optional_number('away_shots_total'),
+            home_shots_on=optional_number('home_shots_on'),
+            away_shots_on=optional_number('away_shots_on'),
+            home_fouls=optional_number('home_fouls'),
+            away_fouls=optional_number('away_fouls'),
+            home_offsides=optional_number('home_offsides'),
+            away_offsides=optional_number('away_offsides'),
+            home_yellow_cards=optional_number('home_yellow_cards'),
+            away_yellow_cards=optional_number('away_yellow_cards'),
+            home_red_cards=optional_number('home_red_cards'),
+            away_red_cards=optional_number('away_red_cards'),
+            players=tuple(players),
         )
     except (TypeError, ValueError):
         return None
@@ -143,14 +244,18 @@ def grade_pending_pick(pick, resultado):
 
 
 def _decision_for_event(pick, event):
-    estado = grade_pick(str(pick.get('pick', '')), event)
+    estado = grade_pick(
+        str(pick.get('pick', '')),
+        event,
+        market_name=str(pick.get('mercado', '')),
+        market_identity=parse_market_identity(pick.get('source_market_key')),
+    )
     if estado == 'pendiente':
         return None
 
-    try:
-        cuota = float(str(pick.get('cuota', '1')).replace(',', '.'))
-    except (TypeError, ValueError):
-        cuota = 1.0
+    cuota = _decimal_odds(pick)
+    if cuota is None:
+        return None
     unidades = unit_result(estado, cuota)
     return {
         'estado': estado,
@@ -167,7 +272,7 @@ def _decision_for_event(pick, event):
 def grade_pending_pick_from_results(pick, resultados):
     events = [event for event in (_event_from_api(item) for item in resultados) if event]
     if pick.get('es_parlay'):
-        parlay_events = find_matching_parlay_events(
+        parlay_events = _find_preferred_parlay_events(
             str(pick.get('partido', '')),
             events,
             str(pick.get('fecha_evento') or pick.get('fecha_generacion', '')),
@@ -179,12 +284,53 @@ def grade_pending_pick_from_results(pick, resultados):
             return _parlay_decision(pick, parlay_events, ['revision_pendiente'])
         statuses = [grade_pick(leg, event) for leg, event in zip(legs, parlay_events)]
         return _parlay_decision(pick, parlay_events, statuses)
-    event = find_matching_event(
+    event = _find_preferred_event(
         str(pick.get('partido', '')),
         events,
         str(pick.get('fecha_evento') or pick.get('fecha_generacion', '')),
     )
-    return _decision_for_event(pick, event) if event else None
+    return _decision_for_event(pick, event) if isinstance(event, EventResult) else None
+
+
+def _find_preferred_event(label, events, expected_date=''):
+    detailed_matches = [
+        event for event in events
+        if event.source == 'api_football'
+        and event.completed
+        and match_event(label, event)
+        and (
+            not expected_date
+            or event.event_date[:10] == expected_date[:10]
+        )
+    ]
+    if len(detailed_matches) == 1:
+        return detailed_matches[0]
+    if len(detailed_matches) > 1:
+        return _AMBIGUOUS_MATCH
+    return find_matching_event(
+        label,
+        [event for event in events if event.source != 'api_football'],
+        expected_date,
+    )
+
+
+def _find_preferred_parlay_events(label, events, expected_date=''):
+    legs = [
+        part.strip()
+        for part in re.split(r'\s+\+\s+', str(label))
+        if part.strip()
+    ]
+    if len(legs) < 2:
+        return None
+    matched = [
+        _find_preferred_event(leg, events, expected_date)
+        for leg in legs
+    ]
+    if any(not isinstance(event, EventResult) for event in matched):
+        return None
+    resolved = [event for event in matched if isinstance(event, EventResult)]
+    identities = {(event.source, event.source_id) for event in resolved}
+    return resolved if len(identities) == len(resolved) else None
 
 
 def _parlay_decision(pick, events, statuses):
@@ -194,10 +340,9 @@ def _parlay_decision(pick, events, statuses):
         estado = 'ganado'
     else:
         estado = 'revision_pendiente'
-    try:
-        cuota = float(str(pick.get('cuota', '1')).replace(',', '.'))
-    except (TypeError, ValueError):
-        cuota = 1.0
+    cuota = _decimal_odds(pick)
+    if cuota is None:
+        return None
     unidades = unit_result(estado, cuota)
     return {
         'estado': estado,
@@ -237,12 +382,12 @@ def verificar_picks():
     print(f"📋 {len(picks_pendientes)} picks pendientes encontrados.\n")
     
     # Obtener resultados de múltiples deportes (ESPN API pública)
-    pick_dates = {
+    pick_dates = sorted({
         str(pick.get('fecha_evento') or pick.get('fecha_generacion', ''))[:10]
         for pick in picks_pendientes
         if pick.get('fecha_evento') or pick.get('fecha_generacion')
-    }
-    todos_resultados = obtener_resultados_api(pick_dates)
+    }, reverse=True)[:7]
+    todos_resultados = obtener_resultados_api(pick_dates, picks_pendientes)
     print(f"\n📊 Total de resultados obtenidos: {len(todos_resultados)}")
     
     # Comparar cada pick contra resultados

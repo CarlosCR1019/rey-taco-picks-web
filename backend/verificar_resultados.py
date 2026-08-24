@@ -14,7 +14,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.football_result_source import ApiFootballResultsClient, SupabaseResultStore
-from backend.result_report_publisher import SupabaseResultArtifactStore, publish_result_report
+from backend.result_report_publisher import (
+    SupabaseResultArtifactStore,
+    publish_result_report,
+    require_healthy_result_reports,
+)
 from backend.result_report_repository import SupabaseResultReportRepository
 from backend.result_reporting import build_result_report
 from backend.results_domain import EventResult, PlayerResult, find_matching_event, grade_pick, match_event, parse_market_identity, unit_result
@@ -498,6 +502,7 @@ def publish_available_result_reports():
         published[f"{report.batch_id}:{report.kind}"] = outcomes
         summary = ", ".join(f"{name}={status}" for name, status in outcomes.items())
         print(f"   📣 Reporte {report.kind}: {summary}")
+    require_healthy_result_reports(published)
     return published
 
 

@@ -241,6 +241,8 @@ class MetaHttpTransport:
                 ),
             )
             status, payload = _response_payload(response)
+            if status < 200 or status >= 300:
+                _log_meta_http_failure(destination, status=status, payload=payload)
             if _is_token_invalid(payload):
                 return self._result(destination, "token_invalid")
             if status < 200 or status >= 300:
@@ -347,6 +349,8 @@ class MetaHttpTransport:
     def _http_failure(
         self, destination: Destination, *, status: int, payload: object
     ) -> MetaDelivery | None:
+        if status < 200 or status >= 300:
+            _log_meta_http_failure(destination, status=status, payload=payload)
         if _is_token_invalid(payload):
             return self._result(destination, "token_invalid")
         if status < 200 or status >= 300:
@@ -424,7 +428,30 @@ def _is_token_invalid(payload: object) -> bool:
     error = payload.get("error")
     if not isinstance(error, Mapping):
         return False
-    return error.get("code") == 190 or error.get("type") == "OAuthException"
+    return error.get("code") == 190
+
+
+def _log_meta_http_failure(
+    destination: Destination, *, status: int, payload: object
+) -> None:
+    error_code: int | str = "unknown"
+    error_subcode: int | str = "unknown"
+    if isinstance(payload, Mapping):
+        error = payload.get("error")
+        if isinstance(error, Mapping):
+            raw_code = error.get("code")
+            raw_subcode = error.get("error_subcode")
+            if type(raw_code) is int:
+                error_code = raw_code
+            if type(raw_subcode) is int:
+                error_subcode = raw_subcode
+    LOGGER.info(
+        "meta destination=%s http_status=%s error_code=%s error_subcode=%s",
+        destination,
+        status,
+        error_code,
+        error_subcode,
+    )
 
 
 def _safe_id(payload: object) -> str | None:
@@ -882,4 +909,5 @@ def main(environ: Mapping[str, str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     raise SystemExit(main())

@@ -8,6 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 COLLECTOR_WORKFLOW = ROOT / ".github" / "workflows" / "collector.yml"
 VERIFIER_WORKFLOW = ROOT / ".github" / "workflows" / "scraper.yml"
 MIGRATION_WORKFLOW = ROOT / ".github" / "workflows" / "database-migrations.yml"
+DELIVERY_RECOVERY_WORKFLOW = (
+    ROOT / ".github" / "workflows" / "delivery-recovery.yml"
+)
 SERVICE_ROLE_EXPRESSION = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
 RUN_KEY_EXPRESSION = "residential:${{ github.run_id }}"
 RESIDENTIAL_RUNNER = ["self-hosted", "Windows", "X64", "playdoit-residential"]
@@ -199,6 +202,36 @@ def test_cloud_delivery_always_uses_exact_residential_run_key():
     assert workflow["jobs"]["collect_primary"]["if"] == (
         "github.event_name != 'schedule' || github.event.schedule != '0 16 * * *'"
     )
+
+
+def test_delivery_recovery_is_manual_validated_and_idempotent():
+    workflow = _workflow(DELIVERY_RECOVERY_WORKFLOW)
+
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    inputs = workflow["on"]["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"source_run_id", "portfolio_date"}
+    assert all(value["required"] == "true" for value in inputs.values())
+    assert workflow["permissions"] == {"contents": "read"}
+
+    job = workflow["jobs"]["recover_delivery"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["env"]["SCRAPER_RUN_KEY"] == (
+        "residential:${{ inputs.source_run_id }}"
+    )
+    validation = _step(job, "Validate exact recovery target")["run"]
+    assert "^[1-9][0-9]{0,19}$" in validation
+    assert "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" in validation
+    assert "date --date" in validation
+    assert "backend/scraper.py --deliver-only" in _step(
+        job, "Resume exact persisted delivery"
+    )["run"]
+    assert "backend.social_poster" in _step(
+        job, "Resume exact social delivery"
+    )["run"]
+
+    text = DELIVERY_RECOVERY_WORKFLOW.read_text(encoding="utf-8")
+    assert "self-hosted" not in text
+    assert "pull_request" not in text
 
 
 def test_no_pull_request_event_can_reach_personal_computers():

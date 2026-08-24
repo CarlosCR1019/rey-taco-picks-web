@@ -299,7 +299,7 @@ def test_facebook_posts_local_jpeg_with_authorization_header() -> None:
     ("response", "expected"),
     [
         (FakeResponse(400, {"error": {"code": 190, "message": "raw"}}), "token_invalid"),
-        (FakeResponse(400, {"error": {"type": "OAuthException"}}), "token_invalid"),
+        (FakeResponse(400, {"error": {"type": "OAuthException"}}), "delivery_failed"),
         (FakeResponse(500, {"raw": "provider body"}), "delivery_failed"),
         (FakeResponse(200, ValueError("invalid json raw body")), "delivery_failed"),
         (FakeResponse(200, {}), "delivery_failed"),
@@ -328,6 +328,38 @@ def test_facebook_failures_are_sanitized(
     assert "provider body" not in combined
     assert "raw timeout secret" not in combined
     assert "invalid json raw body" not in combined
+
+
+def test_facebook_http_failure_logs_only_safe_error_metadata(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = FakeSession()
+    session.post_responses = [
+        FakeResponse(
+            400,
+            {
+                "error": {
+                    "code": 200,
+                    "error_subcode": 2018065,
+                    "type": "OAuthException",
+                    "message": "private provider explanation",
+                }
+            },
+        )
+    ]
+
+    with caplog.at_level(logging.INFO, logger="backend.social_poster"):
+        result = MetaHttpTransport(session=session).publish_facebook(
+            jpeg=b"jpeg",
+            caption="caption",
+            settings=configured_settings(),
+        )
+
+    assert result == MetaDelivery("facebook", "delivery_failed")
+    assert "http_status=400" in caplog.text
+    assert "error_code=200" in caplog.text
+    assert "error_subcode=2018065" in caplog.text
+    assert "private provider explanation" not in caplog.text
 
 
 def test_transport_returns_not_configured_without_http_calls() -> None:

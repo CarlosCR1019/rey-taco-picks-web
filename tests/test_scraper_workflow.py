@@ -91,10 +91,10 @@ def test_no_pull_request_event_can_reach_personal_computers():
     workflow = _workflow(COLLECTOR_WORKFLOW)
     assert workflow["jobs"]["collect_primary"]["outputs"][
         "collection_eligible"
-    ] == "${{ steps.collection_window.outputs.eligible }}"
+    ] == "${{ steps.collection_lease.outputs.acquired }}"
     assert workflow["jobs"]["collect_recovery"]["outputs"][
         "collection_eligible"
-    ] == "${{ steps.collection_window.outputs.eligible }}"
+    ] == "${{ steps.collection_lease.outputs.acquired }}"
     assert workflow["jobs"]["collect_primary"]["outputs"][
         "release_eligible"
     ] == "${{ steps.collection_window.outputs.release_eligible }}"
@@ -240,6 +240,7 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
         job = workflow["jobs"][job_name]
         gate = _step(job, "Check collection window")
         install = _step(job, "Install dependencies")
+        lease = _step(job, "Claim collection lease")
         collect = _step(job, "Collect and persist only")
 
         assert gate["id"] == "collection_window"
@@ -254,6 +255,9 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
         assert '"release_eligible=true" >> $env:GITHUB_OUTPUT' in gate["run"]
         assert '"release_eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
         assert '"portfolio_date=invalid" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert '"window_key=invalid" >> $env:GITHUB_OUTPUT' in gate["run"]
+        assert "|schedule|$env:GITHUB_EVENT_SCHEDULE" in gate["run"]
+        assert "|manual|$env:GITHUB_RUN_ID" in gate["run"]
         assert job["outputs"]["portfolio_date"] == (
             "${{ steps.collection_window.outputs.portfolio_date }}"
         )
@@ -261,7 +265,33 @@ def test_stale_scheduled_collections_fail_closed_before_dependencies_or_scrape()
             "${{ steps.collection_window.outputs.portfolio_date }}"
         )
         assert install["if"] == "steps.collection_window.outputs.eligible == 'true'"
-        assert collect["if"] == "steps.collection_window.outputs.eligible == 'true'"
+        assert lease["id"] == "collection_lease"
+        assert lease["if"] == "steps.collection_window.outputs.eligible == 'true'"
+        assert lease["env"]["COLLECTION_WINDOW_KEY"] == (
+            "${{ steps.collection_window.outputs.window_key }}"
+        )
+        assert "backend.collection_lease --window-key" in lease["run"]
+        assert "[guid]::NewGuid()" in lease["run"]
+        assert "$env:GITHUB_RUN_ATTEMPT" in lease["run"]
+        assert "$env:GITHUB_JOB" in lease["run"]
+        assert "$env:RUNNER_NAME" in lease["run"]
+        assert '"COLLECTION_LEASE_OWNER_KEY=$ownerKey" >> $env:GITHUB_ENV' in lease["run"]
+        assert '"COLLECTION_WINDOW_KEY=$env:COLLECTION_WINDOW_KEY" >> $env:GITHUB_ENV' in lease["run"]
+        assert '"acquired=true" >> $env:GITHUB_OUTPUT' in lease["run"]
+        assert '"acquired=false" >> $env:GITHUB_OUTPUT' in lease["run"]
+        assert collect["if"] == (
+            "steps.collection_window.outputs.eligible == 'true' && "
+            "steps.collection_lease.outputs.acquired == 'true'"
+        )
+        assert "backend.collection_lease --window-key" in collect["run"]
+        assert "--release" in collect["run"]
+        assert collect["run"].index("backend/scraper.py --collect-only") < (
+            collect["run"].index("--release")
+        )
+        step_names = [step["name"] for step in job["steps"]]
+        assert step_names.index("Install dependencies") < step_names.index(
+            "Claim collection lease"
+        ) < step_names.index("Collect and persist only")
 
 
 def test_daily_release_is_bounded_to_three_windows_or_manual_dispatch():

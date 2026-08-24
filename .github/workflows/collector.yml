@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 25
     outputs:
       recovery_label: ${{ steps.recovery_route.outputs.recovery_label }}
-      collection_eligible: ${{ steps.collection_window.outputs.eligible }}
+      collection_eligible: ${{ steps.collection_lease.outputs.acquired }}
       release_eligible: ${{ steps.collection_window.outputs.release_eligible }}
       portfolio_date: ${{ steps.collection_window.outputs.portfolio_date }}
     env:
@@ -75,6 +75,7 @@ jobs:
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
             "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            "window_key=invalid" >> $env:GITHUB_OUTPUT
             exit 0
           }
           $portfolioDate = [string](& python -m backend.daily_portfolio --created-at ([string]$run.created_at))
@@ -82,9 +83,16 @@ jobs:
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
             "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            "window_key=invalid" >> $env:GITHUB_OUTPUT
             exit 0
           }
           $portfolioDate >> $env:GITHUB_OUTPUT
+          $portfolioDateValue = $portfolioDate.Substring("portfolio_date=".Length)
+          if ($env:GITHUB_EVENT_NAME -eq "schedule") {
+            "window_key=$portfolioDateValue|schedule|$env:GITHUB_EVENT_SCHEDULE" >> $env:GITHUB_OUTPUT
+          } else {
+            "window_key=$portfolioDateValue|manual|$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
+          }
           $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME)
           if ($env:GITHUB_EVENT_NAME -eq "schedule") {
             $gateArgs += @("--created-at", [string]$run.created_at)
@@ -112,14 +120,41 @@ jobs:
         shell: powershell
         run: python -m pip install -r backend/requirements.txt
 
-      - name: Collect and persist only
+      - name: Claim collection lease
+        id: collection_lease
         if: steps.collection_window.outputs.eligible == 'true'
+        shell: powershell
+        env:
+          COLLECTION_WINDOW_KEY: ${{ steps.collection_window.outputs.window_key }}
+        run: |
+          $ownerNonce = [guid]::NewGuid().ToString("N")
+          $ownerKey = "residential:$env:GITHUB_RUN_ID:$env:GITHUB_RUN_ATTEMPT:$env:GITHUB_JOB:$env:RUNNER_NAME:$ownerNonce"
+          $env:COLLECTION_LEASE_OWNER_KEY = $ownerKey
+          "COLLECTION_LEASE_OWNER_KEY=$ownerKey" >> $env:GITHUB_ENV
+          "COLLECTION_WINDOW_KEY=$env:COLLECTION_WINDOW_KEY" >> $env:GITHUB_ENV
+          $leaseResult = [string](& python -m backend.collection_lease --window-key $env:COLLECTION_WINDOW_KEY)
+          $leaseStatus = $LASTEXITCODE
+          if ($leaseStatus -eq 0 -and $leaseResult -eq "collection_lease=acquired") {
+            "acquired=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($leaseStatus -eq 3 -and $leaseResult -eq "collection_lease=busy") {
+            "acquired=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid collection lease response"
+
+      - name: Collect and persist only
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.collection_lease.outputs.acquired == 'true'
         shell: powershell
         env:
           DAILY_PORTFOLIO_DATE: ${{ steps.collection_window.outputs.portfolio_date }}
         run: |
           & python backend/scraper.py --collect-only
           $scraperStatus = $LASTEXITCODE
+          & python -m backend.collection_lease --window-key $env:COLLECTION_WINDOW_KEY --release | Out-Null
           if ($scraperStatus -in @(0, 3, 4)) {
             exit 0
           }
@@ -144,7 +179,7 @@ jobs:
     runs-on: [self-hosted, Windows, X64, playdoit-residential, "${{ needs.collect_primary.outputs.recovery_label }}"]
     timeout-minutes: 25
     outputs:
-      collection_eligible: ${{ steps.collection_window.outputs.eligible }}
+      collection_eligible: ${{ steps.collection_lease.outputs.acquired }}
       release_eligible: ${{ steps.collection_window.outputs.release_eligible }}
       portfolio_date: ${{ steps.collection_window.outputs.portfolio_date }}
     env:
@@ -193,6 +228,7 @@ jobs:
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
             "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            "window_key=invalid" >> $env:GITHUB_OUTPUT
             exit 0
           }
           $portfolioDate = [string](& python -m backend.daily_portfolio --created-at ([string]$run.created_at))
@@ -200,9 +236,16 @@ jobs:
             "eligible=false" >> $env:GITHUB_OUTPUT
             "release_eligible=false" >> $env:GITHUB_OUTPUT
             "portfolio_date=invalid" >> $env:GITHUB_OUTPUT
+            "window_key=invalid" >> $env:GITHUB_OUTPUT
             exit 0
           }
           $portfolioDate >> $env:GITHUB_OUTPUT
+          $portfolioDateValue = $portfolioDate.Substring("portfolio_date=".Length)
+          if ($env:GITHUB_EVENT_NAME -eq "schedule") {
+            "window_key=$portfolioDateValue|schedule|$env:GITHUB_EVENT_SCHEDULE" >> $env:GITHUB_OUTPUT
+          } else {
+            "window_key=$portfolioDateValue|manual|$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
+          }
           $gateArgs = @("--event-name", $env:GITHUB_EVENT_NAME)
           if ($env:GITHUB_EVENT_NAME -eq "schedule") {
             $gateArgs += @("--created-at", [string]$run.created_at)
@@ -230,14 +273,41 @@ jobs:
         shell: powershell
         run: python -m pip install -r backend/requirements.txt
 
-      - name: Collect and persist only
+      - name: Claim collection lease
+        id: collection_lease
         if: steps.collection_window.outputs.eligible == 'true'
+        shell: powershell
+        env:
+          COLLECTION_WINDOW_KEY: ${{ steps.collection_window.outputs.window_key }}
+        run: |
+          $ownerNonce = [guid]::NewGuid().ToString("N")
+          $ownerKey = "residential:$env:GITHUB_RUN_ID:$env:GITHUB_RUN_ATTEMPT:$env:GITHUB_JOB:$env:RUNNER_NAME:$ownerNonce"
+          $env:COLLECTION_LEASE_OWNER_KEY = $ownerKey
+          "COLLECTION_LEASE_OWNER_KEY=$ownerKey" >> $env:GITHUB_ENV
+          "COLLECTION_WINDOW_KEY=$env:COLLECTION_WINDOW_KEY" >> $env:GITHUB_ENV
+          $leaseResult = [string](& python -m backend.collection_lease --window-key $env:COLLECTION_WINDOW_KEY)
+          $leaseStatus = $LASTEXITCODE
+          if ($leaseStatus -eq 0 -and $leaseResult -eq "collection_lease=acquired") {
+            "acquired=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          if ($leaseStatus -eq 3 -and $leaseResult -eq "collection_lease=busy") {
+            "acquired=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          throw "Invalid collection lease response"
+
+      - name: Collect and persist only
+        if: >-
+          steps.collection_window.outputs.eligible == 'true' &&
+          steps.collection_lease.outputs.acquired == 'true'
         shell: powershell
         env:
           DAILY_PORTFOLIO_DATE: ${{ steps.collection_window.outputs.portfolio_date }}
         run: |
           & python backend/scraper.py --collect-only
           $scraperStatus = $LASTEXITCODE
+          & python -m backend.collection_lease --window-key $env:COLLECTION_WINDOW_KEY --release | Out-Null
           if ($scraperStatus -in @(0, 3, 4)) {
             exit 0
           }

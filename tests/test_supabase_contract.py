@@ -26,6 +26,9 @@ SIX_PICK_PORTFOLIO_SQL = (
 DAILY_PORTFOLIO_SQL = (
     SQL.parent / "20260823110000_daily_pick_portfolio_revisions.sql"
 )
+COLLECTION_LEASE_SQL = (
+    SQL.parent / "20260823120000_residential_collection_lease.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -1664,6 +1667,66 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("expected_public_count", body)
         self.assertIn("case when eligible_pick_count = 6 then 2 else 1 end", body)
         self.assertIn("order by picks.id", body)
+
+    def test_collection_lease_is_private_expiring_and_owner_reentrant(self):
+        text = " ".join(
+            COLLECTION_LEASE_SQL.read_text(encoding="utf-8").lower().split()
+        )
+        self.assertIn("create table public.residential_collection_leases", text)
+        self.assertIn("window_key text primary key", text)
+        self.assertIn("owner_run_key text not null", text)
+        self.assertIn("lease_expires_at timestamptz not null", text)
+        self.assertIn(
+            "alter table public.residential_collection_leases enable row level security",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.residential_collection_leases from public, anon, authenticated",
+            text,
+        )
+        signature = (
+            "public.claim_residential_collection_lease( "
+            "requested_window_key text, requested_owner_run_key text, "
+            "requested_lease_minutes integer ) returns boolean"
+        )
+        body = function_body(COLLECTION_LEASE_SQL, signature)
+        self.assertIn("pg_advisory_xact_lock", body)
+        self.assertIn("clock_timestamp()", body)
+        self.assertIn("requested_lease_minutes not between 5 and 60", body)
+        self.assertIn("make_interval(mins => requested_lease_minutes)", body)
+        self.assertLess(
+            body.index("pg_advisory_xact_lock"),
+            body.index("checked_at := clock_timestamp()"),
+        )
+        self.assertIn(
+            "existing_lease.owner_run_key = btrim(requested_owner_run_key)", body
+        )
+        self.assertIn("existing_lease.lease_expires_at <= checked_at", body)
+        self.assertIn("return false", body)
+        self.assertIn("on conflict (window_key) do update", body)
+        self.assertIn(
+            "revoke all on function public.claim_residential_collection_lease(text, text, integer) from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.claim_residential_collection_lease(text, text, integer) to service_role",
+            text,
+        )
+        release_signature = (
+            "public.release_residential_collection_lease( "
+            "requested_window_key text, requested_owner_run_key text "
+            ") returns boolean"
+        )
+        release = function_body(COLLECTION_LEASE_SQL, release_signature)
+        self.assertIn("pg_advisory_xact_lock", release)
+        self.assertIn(
+            "leases.owner_run_key = btrim(requested_owner_run_key)", release
+        )
+        self.assertIn("return found", release)
+        self.assertIn(
+            "revoke all on function public.release_residential_collection_lease(text, text) from public, anon, authenticated",
+            text,
+        )
 
 
 if __name__ == "__main__":

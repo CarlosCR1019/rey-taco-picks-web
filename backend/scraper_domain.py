@@ -62,6 +62,7 @@ class Outcome:
     name: str
     price: float
     source_id: str | None = None
+    competitor_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _canonical_key(self.key, "key"))
@@ -71,6 +72,12 @@ class Outcome:
                 self,
                 "source_id",
                 _required_text(self.source_id, "source_id"),
+            )
+        if self.competitor_id is not None:
+            object.__setattr__(
+                self,
+                "competitor_id",
+                _required_text(self.competitor_id, "competitor_id"),
             )
         price = _finite_float(self.price, "price")
         maximum_price = 1000.0 if self.source_id is not None else 50.0
@@ -101,6 +108,14 @@ class Market:
     name: str | None = None
     source_id: str | None = None
     sport_market_id: str | None = None
+    scope: str | None = None
+    participant_id: str | None = None
+    team_id: str | None = None
+    competitor_id: str | None = None
+    offer_kind: str | None = None
+    offer_description: str | None = None
+    source_selection_ids: tuple[str, ...] | None = None
+    lineup_confirmed: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _canonical_key(self.key, "key"))
@@ -111,7 +126,17 @@ class Market:
                 "bookmaker_key",
                 _canonical_key(self.bookmaker_key, "bookmaker_key"),
             )
-        for field in ("name", "source_id", "sport_market_id"):
+        for field in (
+            "name",
+            "source_id",
+            "sport_market_id",
+            "scope",
+            "participant_id",
+            "team_id",
+            "competitor_id",
+            "offer_kind",
+            "offer_description",
+        ):
             value = getattr(self, field)
             if value is not None:
                 object.__setattr__(
@@ -119,6 +144,24 @@ class Market:
                     field,
                     _required_text(value, field),
                 )
+        if self.source_selection_ids is not None:
+            if not isinstance(self.source_selection_ids, tuple):
+                raise TypeError("source_selection_ids must be a tuple")
+            normalized_source_ids = tuple(
+                _required_text(value, "source_selection_ids")
+                for value in self.source_selection_ids
+            )
+            if not normalized_source_ids:
+                raise ValueError("source_selection_ids must not be empty")
+            if len(normalized_source_ids) != len(set(normalized_source_ids)):
+                raise ValueError("source_selection_ids must be unique")
+            object.__setattr__(
+                self,
+                "source_selection_ids",
+                normalized_source_ids,
+            )
+        if not isinstance(self.lineup_confirmed, bool):
+            raise TypeError("lineup_confirmed must be a bool")
         if self.line is not None:
             object.__setattr__(self, "line", _finite_float(self.line, "line"))
         if not isinstance(self.outcomes, tuple):
@@ -130,6 +173,24 @@ class Market:
         keys = [outcome.key for outcome in self.outcomes]
         if len(keys) != len(set(keys)):
             raise ValueError("outcome keys must be unique within a market")
+        if self.source_id is not None:
+            outcome_source_ids = tuple(
+                outcome.source_id
+                for outcome in self.outcomes
+                if outcome.source_id is not None
+            )
+            if len(outcome_source_ids) != len(self.outcomes):
+                raise ValueError(
+                    "source market outcomes require source identities"
+                )
+            if self.source_selection_ids is None:
+                raise ValueError(
+                    "source market requires declared source selections"
+                )
+            if set(outcome_source_ids) != set(self.source_selection_ids):
+                raise ValueError(
+                    "source market outcomes must match declared source selections"
+                )
 
         required_outcomes = {
             "totals": ("over", "under"),

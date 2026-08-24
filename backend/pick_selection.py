@@ -12,7 +12,7 @@ from numbers import Real
 import unicodedata
 from zoneinfo import ZoneInfo
 
-from backend.scraper_domain import Event
+from backend.scraper_domain import Event, Market
 
 
 SUPPORTED_MARKETS = frozenset(
@@ -33,6 +33,15 @@ MAX_AI_RANKED_PICKS = 12
 EVIDENCE_LABEL_LIMITED = "Datos limitados"
 EVIDENCE_LABEL_HIGH = "Respaldo alto"
 EVIDENCE_START_TOLERANCE = timedelta(minutes=5)
+_PLAYER_PROP_MARKERS = (
+    "remates",
+    "tiros a puerta",
+    "tiros del jugador",
+    "anota",
+    "goleador",
+    "pases del jugador",
+    "tarjetas del jugador",
+)
 
 
 def _required_text(value: object, field: str) -> str:
@@ -158,6 +167,8 @@ def _candidate_id(
     period: str,
     line: float | None,
     selection_key: str,
+    offer_kind: str | None = None,
+    offer_description: str | None = None,
 ) -> str:
     identity = [
         source,
@@ -168,6 +179,12 @@ def _candidate_id(
         _canonical_line(line),
         selection_key,
     ]
+    if offer_kind is not None or offer_description is not None:
+        identity.extend([
+            "offer",
+            offer_kind,
+            offer_description,
+        ])
     return "candidate:v1:" + json.dumps(
         identity,
         ensure_ascii=False,
@@ -195,6 +212,17 @@ class CandidatePick:
     selection_key: str
     selection_name: str
     price: float
+    market_name: str | None = None
+    source_market_id: str | None = None
+    source_selection_id: str | None = None
+    market_scope: str | None = None
+    participant_id: str | None = None
+    team_id: str | None = None
+    competitor_id: str | None = None
+    offer_kind: str | None = None
+    offer_description: str | None = None
+    source_market_selection_ids: tuple[str, ...] | None = None
+    lineup_confirmed: bool = False
 
     def __post_init__(self) -> None:
         for field in (
@@ -222,20 +250,105 @@ class CandidatePick:
         observed_at = _aware_datetime(self.observed_at, "observed_at")
         if starts_at <= observed_at:
             raise ValueError("candidate event must start after it was observed")
-        if (self.market_key, self.period) not in SUPPORTED_MARKETS:
+        canonical_market = (self.market_key, self.period) in SUPPORTED_MARKETS
+        generic_market = self.market_key.startswith("playdoit_market:")
+        if not canonical_market and not generic_market:
             raise ValueError("candidate market and period are not supported")
-        if self.selection_key not in SUPPORTED_SELECTIONS[self.market_key]:
-            raise ValueError("candidate selection is not supported for its market")
-        if self.market_key == "h2h" and self.line is not None:
-            raise ValueError("h2h line must be absent")
-        if self.market_key in {"totals", "spreads"} and self.line is None:
-            raise ValueError(f"{self.market_key} line is required")
+        if generic_market:
+            if (
+                self.source.casefold() != "playdoit"
+                or self.bookmaker_key != "playdoit"
+            ):
+                raise ValueError(
+                    "generic market requires Playdoit provenance"
+                )
+            for field in (
+                "market_name",
+                "source_market_id",
+                "source_selection_id",
+                "market_scope",
+                "offer_kind",
+            ):
+                object.__setattr__(
+                    self,
+                    field,
+                    _required_text(getattr(self, field), field),
+                )
+            for field in (
+                "participant_id",
+                "team_id",
+                "competitor_id",
+                "offer_description",
+            ):
+                value = getattr(self, field)
+                if value is not None:
+                    object.__setattr__(
+                        self,
+                        field,
+                        _required_text(value, field),
+                    )
+            if not isinstance(self.source_market_selection_ids, tuple):
+                raise TypeError(
+                    "source_market_selection_ids must be a tuple"
+                )
+            normalized_selection_ids = tuple(
+                _required_text(value, "source_market_selection_ids")
+                for value in self.source_market_selection_ids
+            )
+            if (
+                not normalized_selection_ids
+                or len(normalized_selection_ids)
+                != len(set(normalized_selection_ids))
+            ):
+                raise ValueError(
+                    "source_market_selection_ids must be nonempty and unique"
+                )
+            object.__setattr__(
+                self,
+                "source_market_selection_ids",
+                normalized_selection_ids,
+            )
+            if self.market_key != (
+                f"playdoit_market:{self.source_market_id}".casefold()
+            ):
+                raise ValueError("generic market key must contain its source id")
+            if self.selection_key != (
+                f"playdoit_odd:{self.source_selection_id}".casefold()
+            ):
+                raise ValueError(
+                    "generic selection key must contain its source id"
+                )
+            if self.source_selection_id not in normalized_selection_ids:
+                raise ValueError(
+                    "generic selection must belong to its declared market"
+                )
+            if not isinstance(self.lineup_confirmed, bool):
+                raise TypeError("lineup_confirmed must be a bool")
+            if _candidate_requires_confirmed_lineup(self) and not (
+                self.lineup_confirmed
+            ):
+                raise ValueError(
+                    "player prop requires confirmed starting lineup"
+                )
+        else:
+            if self.selection_key not in SUPPORTED_SELECTIONS[self.market_key]:
+                raise ValueError(
+                    "candidate selection is not supported for its market"
+                )
+            if self.market_key == "h2h" and self.line is not None:
+                raise ValueError("h2h line must be absent")
+            if self.market_key in {"totals", "spreads"} and self.line is None:
+                raise ValueError(f"{self.market_key} line is required")
 
         if self.line is not None:
             object.__setattr__(self, "line", _finite_float(self.line, "line"))
         price = _finite_float(self.price, "price")
-        if not 1.01 <= price <= 50.0:
-            raise ValueError("price must be decimal odds between 1.01 and 50")
+        maximum_price = 1000.0 if generic_market else 50.0
+        if not 1.01 <= price <= maximum_price:
+            raise ValueError(
+                "price must be decimal odds between "
+                f"1.01 and {maximum_price:g}"
+            )
         object.__setattr__(self, "price", price)
 
         expected_id = _candidate_id(
@@ -246,6 +359,8 @@ class CandidatePick:
             self.period,
             self.line,
             self.selection_key,
+            self.offer_kind,
+            self.offer_description,
         )
         if self.candidate_id != expected_id:
             raise ValueError("candidate_id does not match candidate evidence")
@@ -264,6 +379,8 @@ def _candidate_from_evidence(event: Event, market_index: int, outcome_index: int
         market.period,
         market.line,
         outcome.key,
+        market.offer_kind,
+        market.offer_description,
     )
     return CandidatePick(
         candidate_id=candidate_id,
@@ -282,7 +399,64 @@ def _candidate_from_evidence(event: Event, market_index: int, outcome_index: int
         selection_key=outcome.key,
         selection_name=outcome.name,
         price=outcome.price,
+        market_name=market.name,
+        source_market_id=market.source_id,
+        source_selection_id=outcome.source_id,
+        market_scope=market.scope,
+        participant_id=market.participant_id,
+        team_id=market.team_id,
+        competitor_id=outcome.competitor_id or market.competitor_id,
+        offer_kind=market.offer_kind,
+        offer_description=market.offer_description,
+        source_market_selection_ids=market.source_selection_ids,
+        lineup_confirmed=market.lineup_confirmed,
     )
+
+
+def _market_requires_confirmed_lineup(market: Market) -> bool:
+    if market.participant_id is not None:
+        return True
+    if market.scope is not None and market.scope.casefold() in {
+        "player",
+        "participant",
+        "player_prop",
+    }:
+        return True
+    if (
+        market.scope is not None
+        and market.scope.casefold() == "source_unspecified"
+        and market.team_id is None
+        and (
+            market.competitor_id is not None
+            or any(
+                outcome.competitor_id is not None
+                for outcome in market.outcomes
+            )
+        )
+    ):
+        return True
+    title = (market.name or "").casefold()
+    return any(marker in title for marker in _PLAYER_PROP_MARKERS)
+
+
+def _candidate_requires_confirmed_lineup(candidate: CandidatePick) -> bool:
+    if candidate.participant_id is not None:
+        return True
+    if candidate.market_scope is not None and candidate.market_scope.casefold() in {
+        "player",
+        "participant",
+        "player_prop",
+    }:
+        return True
+    if (
+        candidate.market_scope is not None
+        and candidate.market_scope.casefold() == "source_unspecified"
+        and candidate.team_id is None
+        and candidate.competitor_id is not None
+    ):
+        return True
+    title = (candidate.market_name or "").casefold()
+    return any(marker in title for marker in _PLAYER_PROP_MARKERS)
 
 
 def build_candidates(events: Iterable[Event]) -> list[CandidatePick]:
@@ -294,15 +468,38 @@ def build_candidates(events: Iterable[Event]) -> list[CandidatePick]:
         if not isinstance(event, Event):
             continue
         for market_index, market in enumerate(event.markets):
+            generic_market = market.key.startswith("playdoit_market:")
             if (
-                (market.key, market.period) not in SUPPORTED_MARKETS
+                (
+                    (market.key, market.period) not in SUPPORTED_MARKETS
+                    and not generic_market
+                )
                 or market.bookmaker_key is None
                 or (market.key == "h2h" and market.line is not None)
                 or (market.key in {"totals", "spreads"} and market.line is None)
+                or (
+                    generic_market
+                    and (
+                        market.name is None
+                        or market.source_id is None
+                        or market.scope is None
+                        or market.offer_kind is None
+                        or market.source_selection_ids is None
+                        or (
+                            _market_requires_confirmed_lineup(market)
+                            and not market.lineup_confirmed
+                        )
+                    )
+                )
             ):
                 continue
             for outcome_index, _outcome in enumerate(market.outcomes):
-                if _outcome.key not in SUPPORTED_SELECTIONS[market.key]:
+                if (
+                    generic_market and _outcome.source_id is None
+                ) or (
+                    not generic_market
+                    and _outcome.key not in SUPPORTED_SELECTIONS[market.key]
+                ):
                     continue
                 candidate = _candidate_from_evidence(
                     event,
@@ -464,6 +661,12 @@ def _market_quote_identity(candidate: CandidatePick) -> tuple[object, ...]:
 
 
 def _required_market_outcomes(candidate: CandidatePick) -> frozenset[str]:
+    if candidate.market_key.startswith("playdoit_market:"):
+        assert candidate.source_market_selection_ids is not None
+        return frozenset(
+            f"playdoit_odd:{source_id}".casefold()
+            for source_id in candidate.source_market_selection_ids
+        )
     if candidate.market_key == "h2h":
         sport = candidate.sport.casefold()
         if sport.startswith("soccer") or sport in {

@@ -312,6 +312,34 @@ def _deduplicate_event_records(events):
     return [selected[identity] for identity in order if identity in selected]
 
 
+def _verified_market_coverage(events):
+    """Count events carrying canonical or official source-backed candidates."""
+
+    coverage = {
+        "h2h": 0,
+        "totals": 0,
+        "spreads": 0,
+        "source_markets": 0,
+    }
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        candidates = event.get(_VERIFIED_CANDIDATES_FIELD)
+        if not isinstance(candidates, tuple):
+            continue
+        event_markets = set()
+        for candidate in candidates:
+            if not isinstance(candidate, CandidatePick):
+                continue
+            if candidate.market_key in {"h2h", "totals", "spreads"}:
+                event_markets.add(candidate.market_key)
+            elif candidate.market_key.startswith("playdoit_market:"):
+                event_markets.add("source_markets")
+        for market_key in event_markets:
+            coverage[market_key] += 1
+    return coverage
+
+
 def _surface_event_record(event, category, schedule):
     """Project surface data without treating positional prices as named quotes."""
 
@@ -660,12 +688,21 @@ def _sport_for_category(category):
 
 
 def extract_events_from_page(
-    driver, *, observed_at=None, fallback_league=None, fallback_sport=None
+    driver,
+    *,
+    observed_at=None,
+    fallback_league=None,
+    fallback_sport=None,
+    detail_cache=None,
 ):
     """Extract and normalize Playdoit records before legacy phase projection."""
 
     observed = observed_at or datetime.now(ZoneInfo("America/Mexico_City"))
-    raw_records = extract_playdoit_raw_events(driver)
+    extraction_options = {}
+    if detail_cache is not None:
+        extraction_options["detail_cache"] = detail_cache
+        extraction_options["detail_observed_at"] = observed
+    raw_records = extract_playdoit_raw_events(driver, **extraction_options)
     enriched = []
     for raw in raw_records:
         if not isinstance(raw, dict):
@@ -803,6 +840,7 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
     print("="*60)
     
     partidos_data = []
+    detail_cache = {}
     observed_playdoit = datetime.now(ZoneInfo("America/Mexico_City"))
     try:
         driver.get("https://www.playdoit.mx/es/")
@@ -822,7 +860,9 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
         eventos_iniciales = []
         for intento_carga in range(5):
             eventos_iniciales = extract_events_from_page(
-                driver, observed_at=observed_playdoit
+                driver,
+                observed_at=observed_playdoit,
+                detail_cache=detail_cache,
             )
             if eventos_iniciales:
                 break
@@ -856,6 +896,7 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
                         observed_at=observed_playdoit,
                         fallback_league=cat,
                         fallback_sport=_sport_for_category(cat),
+                        detail_cache=detail_cache,
                     )
                     if eventos: break
                     time.sleep(2.0)
@@ -880,6 +921,14 @@ def fase1_escaneo_superficie(driver, *, odds_api_key=None):
     
     # Si la lista inicial en Playdoit tuviera pocos eventos o fuera entre semana (martes/miércoles)
     partidos_data = _deduplicate_event_records(partidos_data)
+    coverage = _verified_market_coverage(partidos_data)
+    print(
+        "   market_coverage="
+        f"h2h:{coverage['h2h']} "
+        f"totals:{coverage['totals']} "
+        f"spreads:{coverage['spreads']} "
+        f"source_markets:{coverage['source_markets']}"
+    )
     if len(partidos_data) < 4:
         print(f"\n   🌐 Cartelera en Playdoit reducida ({len(partidos_data)}). Conectando satélite The Odds API...")
         api_events = obtener_eventos_odds_api(odds_api_key)
@@ -1276,10 +1325,23 @@ def _candidate_prompt_row(candidate: CandidatePick) -> dict[str, object]:
         "home_team": candidate.home_team,
         "away_team": candidate.away_team,
         "market_key": candidate.market_key,
+        "market_name": candidate.market_name or candidate.market_key,
+        "source_market_id": candidate.source_market_id,
         "period": candidate.period,
         "line": candidate.line,
         "selection_key": candidate.selection_key,
         "selection_name": candidate.selection_name,
+        "source_selection_id": candidate.source_selection_id,
+        "market_scope": candidate.market_scope,
+        "participant_id": candidate.participant_id,
+        "team_id": candidate.team_id,
+        "competitor_id": candidate.competitor_id,
+        "offer_kind": candidate.offer_kind,
+        "offer_description": candidate.offer_description,
+        "source_market_selection_ids": (
+            candidate.source_market_selection_ids
+        ),
+        "lineup_confirmed": candidate.lineup_confirmed,
         "price": candidate.price,
     }
 
@@ -1406,7 +1468,7 @@ def _legacy_ranked_pick_projection(
             ZoneInfo("America/Mexico_City")
         ).date().isoformat(),
         "market_key": candidate.market_key,
-        "mercado": candidate.market_key,
+        "mercado": candidate.market_name or candidate.market_key,
         "period": candidate.period,
         "line": candidate.line,
         "selection_key": candidate.selection_key,
@@ -1414,7 +1476,9 @@ def _legacy_ranked_pick_projection(
         "pick": candidate.selection_name,
         "cuota": candidate.price,
         "source_market_key": _source_market_audit_key(candidate),
-        "source_selection_key": candidate.selection_key,
+        "source_selection_key": (
+            candidate.source_selection_id or candidate.selection_key
+        ),
         "source_observed_at": candidate.observed_at.astimezone(
             timezone.utc
         ).isoformat().replace("+00:00", "Z"),
@@ -1978,6 +2042,16 @@ def _source_market_audit_key(candidate: CandidatePick) -> str:
         candidate.period,
         _canonical_line(candidate.line),
     ]
+    if candidate.source_market_id is not None:
+        identity.append(candidate.source_market_id)
+        identity.append({
+            "scope": candidate.market_scope,
+            "participant_id": candidate.participant_id,
+            "team_id": candidate.team_id,
+            "competitor_id": candidate.competitor_id,
+            "offer_kind": candidate.offer_kind,
+            "lineup_confirmed": candidate.lineup_confirmed,
+        })
     return "market:v1:" + json.dumps(
         identity,
         ensure_ascii=False,
@@ -1997,7 +2071,9 @@ def _source_backed_pick_row(
             "source": candidate.source,
             "source_event_id": candidate.source_event_id,
             "source_market_key": _source_market_audit_key(candidate),
-            "source_selection_key": candidate.selection_key,
+            "source_selection_key": (
+                candidate.source_selection_id or candidate.selection_key
+            ),
             "source_observed_at": candidate.observed_at.astimezone(
                 timezone.utc
             ).isoformat().replace("+00:00", "Z"),
@@ -2070,6 +2146,66 @@ def _valid_source_audit_row(
     ):
         return False
     price = row.get("cuota")
+    maximum_price = 50.0
+    source_market_key = row.get("source_market_key")
+    if (
+        isinstance(source_market_key, str)
+        and source_market_key.startswith("market:v1:")
+        and isinstance(row.get("source"), str)
+        and str(row["source"]).casefold() == "playdoit"
+    ):
+        try:
+            market_identity = json.loads(
+                source_market_key.removeprefix("market:v1:")
+            )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            market_identity = None
+        if (
+            isinstance(market_identity, list)
+            and len(market_identity) == 6
+            and market_identity[0] == "playdoit"
+            and isinstance(market_identity[1], str)
+            and isinstance(market_identity[2], str)
+            and market_identity[2].strip()
+            and market_identity[3] is None
+            and isinstance(market_identity[4], str)
+            and market_identity[4].strip()
+            and market_identity[1]
+            == f"playdoit_market:{market_identity[4]}".casefold()
+            and isinstance(market_identity[5], dict)
+            and set(market_identity[5]) == {
+                "scope",
+                "participant_id",
+                "team_id",
+                "competitor_id",
+                "offer_kind",
+                "lineup_confirmed",
+            }
+            and isinstance(market_identity[5].get("scope"), str)
+            and isinstance(market_identity[5].get("offer_kind"), str)
+            and isinstance(
+                market_identity[5].get("lineup_confirmed"), bool
+            )
+            and all(
+                value is None or (
+                    isinstance(value, str) and bool(value.strip())
+                )
+                for value in (
+                    market_identity[5].get("participant_id"),
+                    market_identity[5].get("team_id"),
+                    market_identity[5].get("competitor_id"),
+                )
+            )
+            and (
+                (
+                    market_identity[5].get("participant_id") is None
+                    and str(market_identity[5].get("scope")).casefold()
+                    not in {"player", "participant", "player_prop"}
+                )
+                or market_identity[5].get("lineup_confirmed") is True
+            )
+        ):
+            maximum_price = 1000.0
     return (
         type(row.get("tiene_valor")) is bool
         and isinstance(row.get("confianza"), str)
@@ -2077,7 +2213,7 @@ def _valid_source_audit_row(
         and isinstance(price, (int, float))
         and not isinstance(price, bool)
         and math.isfinite(float(price))
-        and 1.01 <= float(price) <= 50.0
+        and 1.01 <= float(price) <= maximum_price
     )
 
 

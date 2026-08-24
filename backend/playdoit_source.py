@@ -440,8 +440,9 @@ Array.from(detailRoot.querySelectorAll('button[class*="OddBoxButton"]'))
     var offerKind = offerRoot ? 'boosted' : 'standard';
     var offerDescription = offerRoot ? (offerRoot.innerText || '').trim() : '';
     var marketId = String(market.id);
-    if (!groups[marketId]) {
-      groups[marketId] = {
+    var groupId = JSON.stringify([marketId, offerKind, offerDescription]);
+    if (!groups[groupId]) {
+      groups[groupId] = {
         market: {
           id: market.id,
           name: market.name,
@@ -464,10 +465,10 @@ Array.from(detailRoot.querySelectorAll('button[class*="OddBoxButton"]'))
         odds: []
       };
     }
-    if (!groups[marketId].odds.some(function(value) {
+    if (!groups[groupId].odds.some(function(value) {
       return String(value.id) === String(odd.id);
     })) {
-      groups[marketId].odds.push({
+      groups[groupId].odds.push({
         id: odd.id,
         competitorId: odd.competitorId,
         name: odd.name,
@@ -816,10 +817,41 @@ def _normalize_source_market(raw: Mapping[str, object]) -> Market:
             source_id=_required_text(
                 row.get("source_selection_id"), "source selection id"
             ),
+            competitor_id=(
+                _required_text(
+                    row.get("competitor_id"), "outcome competitor id"
+                )
+                if row.get("competitor_id") is not None
+                else None
+            ),
         )
         for row in _raw_outcomes(raw)
     )
+    raw_selection_ids = raw.get("source_selection_ids")
+    if raw_selection_ids is None:
+        source_selection_ids = tuple(
+            outcome.source_id
+            for outcome in outcomes
+            if outcome.source_id is not None
+        )
+    elif isinstance(raw_selection_ids, list):
+        source_selection_ids = tuple(
+            _required_text(value, "source selection id")
+            for value in raw_selection_ids
+        )
+    else:
+        raise TypeError("source_selection_ids must be a list")
     sport_market_id = raw.get("sport_market_id")
+    offer_description_value = str(
+        raw.get("offer_description") or ""
+    ).strip()
+
+    def optional_source_text(field: str) -> str | None:
+        value = raw.get(field)
+        if value is None:
+            return None
+        return _required_text(value, field)
+
     return Market(
         f"playdoit_market:{source_market_id}",
         period_value,
@@ -833,6 +865,20 @@ def _normalize_source_market(raw: Mapping[str, object]) -> Market:
             if sport_market_id is not None
             else None
         ),
+        scope=_required_text(
+            raw.get("scope") or "source_unspecified", "market scope"
+        ),
+        participant_id=optional_source_text("participant_id"),
+        team_id=optional_source_text("team_id"),
+        competitor_id=optional_source_text("competitor_id"),
+        offer_kind=_required_text(
+            raw.get("offer_kind") or "standard", "offer_kind"
+        ),
+        offer_description=(
+            offer_description_value or None
+        ),
+        source_selection_ids=source_selection_ids,
+        lineup_confirmed=False,
     )
 
 
@@ -867,7 +913,18 @@ def _normalize_market(
 
 
 def _market_identity(market: Market) -> tuple[object, ...]:
-    return (market.bookmaker_key, market.key, market.period, market.line)
+    return (
+        market.bookmaker_key,
+        market.key,
+        market.period,
+        market.line,
+        market.source_id,
+        market.scope,
+        market.participant_id,
+        market.team_id,
+        market.competitor_id,
+        market.offer_kind,
+    )
 
 
 def _market_prices(market: Market) -> tuple[tuple[str, str, float], ...]:
@@ -906,12 +963,31 @@ def normalize_playdoit_event(raw: dict[str, Any], observed_at: datetime) -> Even
         raise TypeError("markets must be a list")
     selected: dict[tuple[object, ...], Market] = {}
     conflicted: set[tuple[object, ...]] = set()
+    source_revisions: dict[tuple[str | None, str, str | None], Market] = {}
+    conflicted_source_revisions: set[
+        tuple[str | None, str, str | None]
+    ] = set()
     for raw_market in raw_markets:
         if not isinstance(raw_market, Mapping):
             continue
         market = _normalize_market(raw_market, home, away, sport)
         if market is None:
             continue
+        if market.source_id is not None:
+            source_revision = (
+                market.bookmaker_key,
+                market.source_id,
+                market.offer_kind,
+            )
+            if source_revision in conflicted_source_revisions:
+                continue
+            previous_revision = source_revisions.get(source_revision)
+            if previous_revision is not None and previous_revision != market:
+                selected.pop(_market_identity(previous_revision), None)
+                source_revisions.pop(source_revision, None)
+                conflicted_source_revisions.add(source_revision)
+                continue
+            source_revisions[source_revision] = market
         identity = _market_identity(market)
         if identity in conflicted:
             continue
@@ -1035,6 +1111,20 @@ def _generic_react_market_from_group(
     if offer_kind == "boosted" and not offer_description:
         return None
 
+    declared_raw = market.get("oddIds")
+    declared_ids: tuple[str, ...] = ()
+    if isinstance(declared_raw, list) and declared_raw:
+        declared_ids = tuple(
+            str(value).strip()
+            for value in declared_raw
+            if str(value).strip()
+        )
+        if (
+            len(declared_ids) != len(declared_raw)
+            or len(declared_ids) != len(set(declared_ids))
+        ):
+            return None
+
     outcomes: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for odd in odds:
@@ -1045,17 +1135,27 @@ def _generic_react_market_from_group(
         if not odd_id or not name or odd_id in seen_ids:
             continue
         try:
-            price = _strict_number(odd.get("price"), "price", price=True)
+            price = _strict_number(odd.get("price"), "price")
         except (TypeError, ValueError, OverflowError):
+            continue
+        if not 1.01 <= price <= 1000.0:
             continue
         seen_ids.add(odd_id)
         outcomes.append({
             "key": f"playdoit_odd:{odd_id}",
             "source_selection_id": odd_id,
+            "competitor_id": (
+                str(odd["competitorId"]).strip()
+                if odd.get("competitorId") is not None
+                else None
+            ),
             "name": name,
             "price": price,
         })
     if not outcomes:
+        return None
+    observed_ids = tuple(row["source_selection_id"] for row in outcomes)
+    if declared_ids and set(observed_ids) != set(declared_ids):
         return None
 
     explicit_period = market.get("period")
@@ -1070,6 +1170,7 @@ def _generic_react_market_from_group(
         "period": str(explicit_period or "source_unspecified").strip(),
         "scope": str(explicit_scope or "source_unspecified").strip(),
         "source_market_id": market_id,
+        "source_selection_ids": list(declared_ids or observed_ids),
         "sport_market_id": (
             str(market["sportMarketId"]).strip()
             if market.get("sportMarketId") is not None
@@ -1077,6 +1178,21 @@ def _generic_react_market_from_group(
         ),
         "offer_kind": offer_kind,
         "offer_description": offer_description,
+        "participant_id": (
+            str(market["participantId"]).strip()
+            if market.get("participantId") is not None
+            else None
+        ),
+        "team_id": (
+            str(market["teamId"]).strip()
+            if market.get("teamId") is not None
+            else None
+        ),
+        "competitor_id": (
+            str(market["competitorId"]).strip()
+            if market.get("competitorId") is not None
+            else None
+        ),
         "outcomes": outcomes,
     }
 
@@ -1242,14 +1358,14 @@ def _react_detail_markets_from_group(
     return results
 
 
-def extract_react_detail_groups(
+def _extract_react_detail_snapshot(
     driver: Any, event_id: str, home: str, away: str
-) -> list[dict[str, Any]]:
-    """Return groups only when React detail provenance matches one event."""
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Return verification state and groups for one exact routed event."""
 
     expected_event_id = str(event_id).strip()
     if not expected_event_id:
-        return []
+        return False, []
     raw = driver.execute_script(
         _EXTRACT_REACT_DETAIL_MARKETS_SCRIPT,
         expected_event_id,
@@ -1263,19 +1379,73 @@ def extract_react_detail_groups(
         != expected_event_id
         or not isinstance(raw.get("groups"), list)
     ):
-        return []
-    return [
-        dict(item)
-        for item in raw["groups"]
-        if isinstance(item, Mapping)
+        return False, []
+    return True, [
+        dict(item) for item in raw["groups"] if isinstance(item, Mapping)
     ]
 
 
+def extract_react_detail_groups(
+    driver: Any, event_id: str, home: str, away: str
+) -> list[dict[str, Any]]:
+    """Return groups only when React detail provenance matches one event."""
+
+    _verified, groups = _extract_react_detail_snapshot(
+        driver, event_id, home, away
+    )
+    return groups
+
+
 def _merge_react_detail_groups(
-    accumulated: dict[str, dict[str, Any]],
+    accumulated: dict[tuple[str, str, str], dict[str, Any]],
     observed: Iterable[Mapping[str, Any]],
 ) -> None:
     """Merge progressive React snapshots by official market and odd IDs."""
+
+    market_fields = (
+        "name",
+        "sportMarketId",
+        "typeId",
+        "sv",
+        "period",
+        "periodName",
+        "scope",
+        "scopeName",
+        "competitorId",
+        "teamId",
+        "participantId",
+        "shortName",
+        "variant",
+        "offerKind",
+        "offerDescription",
+    )
+    odd_fields = (
+        "competitorId",
+        "name",
+        "oddStatus",
+        "price",
+        "typeId",
+        "sv",
+    )
+
+    def missing(value: Any) -> bool:
+        return value is None or value == "" or value == []
+
+    def merge_fields(
+        target: dict[str, Any],
+        incoming: Mapping[str, Any],
+        fields: Iterable[str],
+    ) -> bool:
+        for field in fields:
+            observed_value = incoming.get(field)
+            if missing(observed_value):
+                continue
+            existing_value = target.get(field)
+            if missing(existing_value):
+                target[field] = observed_value
+            elif existing_value != observed_value:
+                return False
+        return True
 
     for row in observed:
         market = row.get("market")
@@ -1285,19 +1455,44 @@ def _merge_react_detail_groups(
         market_id = str(market.get("id") or "").strip()
         if not market_id:
             continue
-        target = accumulated.setdefault(
+        group_identity = (
             market_id,
+            str(market.get("offerKind") or "standard").strip(),
+            str(market.get("offerDescription") or "").strip(),
+        )
+        target = accumulated.setdefault(
+            group_identity,
             {"market": dict(market), "odds": []},
         )
+        if target.get("_conflicted") is True:
+            continue
         target_market = target.get("market")
-        if isinstance(target_market, dict):
-            target_market.update(
-                {
-                    key: value
-                    for key, value in market.items()
-                    if value is not None
-                }
-            )
+        if not isinstance(target_market, dict):
+            target["_conflicted"] = True
+            target["odds"] = []
+            continue
+        declared_ids = {
+            str(item)
+            for item in target_market.get("oddIds", [])
+            if item is not None
+        }
+        observed_ids = {
+            str(item)
+            for item in market.get("oddIds", [])
+            if item is not None
+        }
+        declared_ids_conflict = bool(
+            declared_ids and observed_ids and declared_ids != observed_ids
+        )
+        if (
+            declared_ids_conflict
+            or not merge_fields(target_market, market, market_fields)
+        ):
+            target["_conflicted"] = True
+            target["odds"] = []
+            continue
+        if not declared_ids and observed_ids:
+            target_market["oddIds"] = list(market.get("oddIds", []))
         target_odds = target.get("odds")
         if not isinstance(target_odds, list):
             target_odds = []
@@ -1308,28 +1503,37 @@ def _merge_react_detail_groups(
         }
         for odd in odds:
             if isinstance(odd, Mapping) and odd.get("id") is not None:
-                by_id[str(odd["id"])] = dict(odd)
+                odd_id = str(odd["id"])
+                existing_odd = by_id.get(odd_id)
+                if existing_odd is None:
+                    by_id[odd_id] = dict(odd)
+                elif not merge_fields(existing_odd, odd, odd_fields):
+                    target["_conflicted"] = True
+                    by_id = {}
+                    break
         target["odds"] = list(by_id.values())
 
 
 def _react_detail_group_signature(
-    accumulated: Mapping[str, Mapping[str, Any]],
-) -> tuple[tuple[str, str], ...]:
+    accumulated: Mapping[tuple[str, str, str], Mapping[str, Any]],
+) -> tuple[tuple[str, str, str, str], ...]:
     return tuple(sorted(
-        (market_id, str(odd.get("id")))
-        for market_id, row in accumulated.items()
+        (*group_identity, str(odd.get("id")))
+        for group_identity, row in accumulated.items()
         for odd in row.get("odds", [])
         if isinstance(odd, Mapping) and odd.get("id") is not None
     ))
 
 
 def _project_react_detail_groups(
-    accumulated: Mapping[str, Mapping[str, Any]],
+    accumulated: Mapping[tuple[str, str, str], Mapping[str, Any]],
     home: str,
     away: str,
 ) -> list[dict[str, Any]]:
     markets: list[dict[str, Any]] = []
     for row in accumulated.values():
+        if row.get("_conflicted") is True:
+            continue
         markets.extend(_react_detail_markets_from_group(row, home, away))
     return markets
 
@@ -1361,18 +1565,25 @@ def extract_supported_markets(
     active_wait_factory = wait_factory or WebDriverWait
 
     markets: list[dict[str, Any]] = []
-    accumulated_groups: dict[str, dict[str, Any]] = {}
-    last_signature: tuple[tuple[str, str], ...] | None = None
+    accumulated_groups: dict[
+        tuple[str, str, str], dict[str, Any]
+    ] = {}
+    last_signature: tuple[tuple[str, str, str, str], ...] | None = None
     stable_signatures = 0
-    scroll_complete = True
+    scroll_complete = False
+    react_catalog_complete = False
+    react_provenance_verified = False
 
     expected_event_id = str(event_id or "").strip()
 
     def react_detail_ready(active: Any) -> list[dict[str, Any]] | bool:
-        nonlocal markets, last_signature, stable_signatures, scroll_complete
-        observed = extract_react_detail_groups(
+        nonlocal markets, last_signature, stable_signatures
+        nonlocal scroll_complete, react_catalog_complete
+        nonlocal react_provenance_verified
+        verified, observed = _extract_react_detail_snapshot(
             active, expected_event_id, home, away
         )
+        react_provenance_verified = react_provenance_verified or verified
         _merge_react_detail_groups(accumulated_groups, observed)
         signature = _react_detail_group_signature(accumulated_groups)
         if signature and signature == last_signature:
@@ -1411,6 +1622,7 @@ def extract_supported_markets(
             and scroll_complete
             and (has_deep_market or has_source_market)
         ):
+            react_catalog_complete = True
             return markets
         return False
 
@@ -1423,6 +1635,8 @@ def extract_supported_markets(
             raise
         except Exception:
             pass
+        if not react_catalog_complete:
+            markets = []
     if markets and not any(
         market.get("key") == "spreads" for market in markets
     ):
@@ -1432,6 +1646,9 @@ def extract_supported_markets(
                 sorted(SUPPORTED_BOX_TITLES["spreads"]),
             ) is True
             if expanded:
+                baseline_markets = list(markets)
+                react_catalog_complete = False
+                stable_signatures = 0
                 def spread_ready(active: Any) -> list[dict[str, Any]] | bool:
                     result = react_detail_ready(active)
                     return (
@@ -1446,12 +1663,20 @@ def extract_supported_markets(
                 markets = active_wait_factory(driver, timeout).until(
                     spread_ready
                 )
+                if not react_catalog_complete:
+                    markets = baseline_markets
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception:
-            pass
+            if "baseline_markets" in locals():
+                markets = baseline_markets
+                react_catalog_complete = True
     if markets:
         return markets
+    if expected_event_id and not react_provenance_verified:
+        # A route-bound request must never degrade to DOM tabs whose event
+        # provenance cannot be proven against the requested identifier.
+        return []
     try:
         active_wait_factory(driver, timeout).until(
             lambda active: bool(_available_market_tabs(active))

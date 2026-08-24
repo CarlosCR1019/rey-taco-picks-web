@@ -70,6 +70,7 @@ def test_market_preserves_official_display_and_source_identity():
         "Más de 0.5 remates",
         1.75,
         source_id="4132889965",
+        competitor_id="cole-palmer",
     )
     market = Market(
         "playdoit_market:1614791472",
@@ -80,12 +81,25 @@ def test_market_preserves_official_display_and_source_identity():
         name="Remates a Puerta - Cole Palmer",
         source_id="1614791472",
         sport_market_id="70520",
+        scope="player",
+        participant_id="cole-palmer",
+        team_id="chelsea",
+        competitor_id="chelsea",
+        offer_kind="standard",
+        source_selection_ids=("4132889965",),
     )
 
     assert market.name == "Remates a Puerta - Cole Palmer"
     assert market.source_id == "1614791472"
     assert market.sport_market_id == "70520"
+    assert market.scope == "player"
+    assert market.participant_id == "cole-palmer"
+    assert market.team_id == "chelsea"
+    assert market.competitor_id == "chelsea"
+    assert market.offer_kind == "standard"
+    assert market.source_selection_ids == ("4132889965",)
     assert market.outcomes[0].source_id == "4132889965"
+    assert market.outcomes[0].competitor_id == "cole-palmer"
 
 
 @pytest.mark.parametrize(
@@ -121,6 +135,27 @@ def test_source_backed_outcome_accepts_official_high_decimal_price():
     assert outcome.price == 80.0
     with pytest.raises(ValueError, match="between 1.01 and 50"):
         Outcome("longshot", "Marcador exacto 7-0", 80.0)
+
+
+def test_source_market_requires_exact_declared_selection_identity_set():
+    outcome = Outcome(
+        "playdoit_odd:over-1",
+        "Más de 2.5",
+        1.85,
+        source_id="over-1",
+    )
+
+    with pytest.raises(ValueError, match="declared source selections"):
+        Market(
+            "playdoit_market:total-1",
+            "source_unspecified",
+            None,
+            (outcome,),
+            bookmaker_key="playdoit",
+            name="Total",
+            source_id="total-1",
+            source_selection_ids=("over-1", "under-1"),
+        )
 
 
 def test_market_outcome_reports_the_missing_key_clearly():

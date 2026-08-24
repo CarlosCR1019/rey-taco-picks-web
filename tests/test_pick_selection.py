@@ -138,6 +138,160 @@ def event_with(
     )
 
 
+def source_market_event(
+    *,
+    price: float = 1.75,
+    player_prop: bool = False,
+    lineup_confirmed: bool = False,
+) -> Event:
+    market_id = "player-shots-1" if player_prop else "corners-1"
+    selection_id = "shots-over-05" if player_prop else "corners-over-85"
+    market_name = (
+        "Remates a Puerta - Cole Palmer"
+        if player_prop
+        else "Total de tiros de esquina"
+    )
+    return event_with(
+        source_event_id="playdoit-props-1",
+        sport="soccer",
+        home_team="Fulham",
+        away_team="Chelsea",
+        markets=(
+            Market(
+                f"playdoit_market:{market_id}",
+                "source_unspecified",
+                None,
+                (
+                    Outcome(
+                        f"playdoit_odd:{selection_id}",
+                        "Más de 0.5" if player_prop else "Más de 8.5",
+                        price,
+                        source_id=selection_id,
+                    ),
+                ),
+                bookmaker_key="playdoit",
+                name=market_name,
+                source_id=market_id,
+                sport_market_id="shots" if player_prop else "corners",
+                scope="player" if player_prop else "event",
+                participant_id="cole-palmer" if player_prop else None,
+                offer_kind="standard",
+                source_selection_ids=(selection_id,),
+                lineup_confirmed=lineup_confirmed,
+            ),
+        ),
+    )
+
+
+def test_build_candidates_preserves_generic_market_display_and_ids():
+    candidate = build_candidates([source_market_event()])[0]
+
+    assert candidate.market_key == "playdoit_market:corners-1"
+    assert candidate.market_name == "Total de tiros de esquina"
+    assert candidate.source_market_id == "corners-1"
+    assert candidate.selection_key == "playdoit_odd:corners-over-85"
+    assert candidate.source_selection_id == "corners-over-85"
+    assert candidate.source_market_selection_ids == ("corners-over-85",)
+
+
+@pytest.mark.parametrize(
+    "field", ["market_name", "source_market_id", "source_selection_id"]
+)
+def test_generic_candidate_requires_complete_official_identity(field):
+    candidate = build_candidates([source_market_event()])[0]
+
+    with pytest.raises((TypeError, ValueError), match=field):
+        replace(candidate, **{field: None})
+
+
+def test_generic_source_backed_candidate_allows_official_longshot_price():
+    candidate = build_candidates([source_market_event(price=80.0)])[0]
+
+    assert candidate.price == 80.0
+
+
+def test_player_prop_requires_confirmed_starting_lineup_before_candidate():
+    assert build_candidates([
+        source_market_event(player_prop=True, lineup_confirmed=False)
+    ]) == []
+
+    confirmed = build_candidates([
+        source_market_event(player_prop=True, lineup_confirmed=True)
+    ])
+    assert len(confirmed) == 1
+    assert confirmed[0].participant_id == "cole-palmer"
+    assert confirmed[0].lineup_confirmed is True
+
+
+def test_official_first_half_team_market_remains_a_candidate_opportunity():
+    base = source_market_event()
+    market = replace(
+        base.markets[0],
+        period="first_half",
+        scope="team_total",
+        team_id="chelsea",
+    )
+
+    candidates = build_candidates([replace(base, markets=(market,))])
+
+    assert len(candidates) == 1
+    assert candidates[0].period == "first_half"
+    assert candidates[0].market_scope == "team_total"
+    assert candidates[0].team_id == "chelsea"
+
+
+def test_standard_and_boosted_offers_can_share_official_selection_id():
+    base = source_market_event()
+    standard = base.markets[0]
+    boosted = replace(
+        standard,
+        offer_kind="boosted",
+        offer_description="Cuota mejorada",
+    )
+
+    candidates = build_candidates([
+        replace(base, markets=(standard, boosted))
+    ])
+
+    assert len(candidates) == 2
+    assert len({candidate.candidate_id for candidate in candidates}) == 2
+    assert {candidate.offer_kind for candidate in candidates} == {
+        "standard",
+        "boosted",
+    }
+
+
+def test_unclassified_selection_competitor_requires_confirmed_lineup():
+    base = source_market_event()
+    player_outcome = replace(
+        base.markets[0].outcomes[0],
+        name="Cole Palmer - 1+ goles",
+        competitor_id="cole-palmer",
+    )
+    ambiguous_prop = replace(
+        base.markets[0],
+        name="Cole Palmer - 1+ goles",
+        scope="source_unspecified",
+        outcomes=(player_outcome,),
+        lineup_confirmed=False,
+    )
+
+    assert build_candidates([
+        replace(base, markets=(ambiguous_prop,))
+    ]) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("source", "the_odds_api"), ("bookmaker_key", "book-x")],
+)
+def test_generic_candidate_requires_playdoit_provenance(field, value):
+    candidate = build_candidates([source_market_event()])[0]
+
+    with pytest.raises(ValueError, match="Playdoit provenance"):
+        replace(candidate, **{field: value})
+
+
 def _comparison_candidates(
     *,
     observed_first: datetime = OBSERVED,

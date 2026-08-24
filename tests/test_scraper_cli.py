@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,6 +71,140 @@ def test_exit_codes_are_stable():
         "SOURCE": ExitCode(7),
         "UNEXPECTED": ExitCode(10),
     }
+
+
+def test_verified_market_coverage_counts_each_event_once_per_market(event_fixture):
+    record = scraper._legacy_odds_projection(event_fixture)
+    candidates = record[scraper._VERIFIED_CANDIDATES_FIELD]
+    record[scraper._VERIFIED_CANDIDATES_FIELD] = (
+        *candidates,
+        candidates[0],
+    )
+
+    assert scraper._verified_market_coverage([record]) == {
+        "h2h": 1,
+        "totals": 0,
+        "spreads": 0,
+        "source_markets": 0,
+    }
+
+
+def test_verified_market_coverage_counts_generic_source_markets():
+    from backend.pick_selection import build_candidates
+    from backend.scraper_domain import Event, Market, Outcome
+
+    observed = datetime(2026, 8, 23, 12, tzinfo=timezone.utc)
+    event = Event(
+        source="playdoit",
+        source_event_id="event-corners-1",
+        sport="soccer",
+        league="Liga MX",
+        home_team="América",
+        away_team="Tigres",
+        starts_at=observed + timedelta(hours=4),
+        observed_at=observed,
+        markets=(
+            Market(
+                "playdoit_market:corners-1",
+                "source_unspecified",
+                None,
+                (
+                    Outcome(
+                        "playdoit_odd:corners-over",
+                        "Más de 8.5",
+                        1.85,
+                        source_id="corners-over",
+                    ),
+                ),
+                bookmaker_key="playdoit",
+                name="Total de tiros de esquina",
+                source_id="corners-1",
+                scope="event",
+                offer_kind="standard",
+                source_selection_ids=("corners-over",),
+            ),
+        ),
+    )
+    record = {
+        scraper._VERIFIED_CANDIDATES_FIELD: tuple(build_candidates([event]))
+    }
+
+    assert scraper._verified_market_coverage([record]) == {
+        "h2h": 0,
+        "totals": 0,
+        "spreads": 0,
+        "source_markets": 1,
+    }
+
+
+def test_generic_market_uses_official_display_and_source_ids_in_projection():
+    from backend.pick_selection import (
+        EvidenceScore,
+        RankedPick,
+        build_candidates,
+    )
+    from backend.scraper_domain import Event, Market, Outcome
+
+    observed = datetime(2026, 8, 23, 12, tzinfo=timezone.utc)
+    event = Event(
+        source="playdoit",
+        source_event_id="event-props-1",
+        sport="soccer",
+        league="Premier League",
+        home_team="Fulham",
+        away_team="Chelsea",
+        starts_at=observed + timedelta(hours=4),
+        observed_at=observed,
+        markets=(
+            Market(
+                "playdoit_market:player-shots-1",
+                "source_unspecified",
+                None,
+                (
+                    Outcome(
+                        "playdoit_odd:shots-over-05",
+                        "Más de 0.5",
+                        80.0,
+                        source_id="shots-over-05",
+                    ),
+                ),
+                bookmaker_key="playdoit",
+                name="Remates a Puerta - Cole Palmer",
+                source_id="player-shots-1",
+                scope="player",
+                participant_id="cole-palmer",
+                offer_kind="standard",
+                source_selection_ids=("shots-over-05",),
+                lineup_confirmed=True,
+            ),
+        ),
+    )
+    candidate = build_candidates([event])[0]
+
+    prompt_row = scraper._candidate_prompt_row(candidate)
+    projected = scraper._legacy_ranked_pick_projection(
+        RankedPick(candidate, "Selección oficial con línea verificada."),
+        EvidenceScore(65, "Datos limitados", False),
+    )
+    audit_identity = json.loads(
+        projected["source_market_key"].removeprefix("market:v1:")
+    )
+
+    assert prompt_row["market_name"] == "Remates a Puerta - Cole Palmer"
+    assert prompt_row["source_market_id"] == "player-shots-1"
+    assert prompt_row["source_selection_id"] == "shots-over-05"
+    assert prompt_row["market_scope"] == "player"
+    assert prompt_row["participant_id"] == "cole-palmer"
+    assert prompt_row["lineup_confirmed"] is True
+    assert projected["mercado"] == "Remates a Puerta - Cole Palmer"
+    assert projected["source_selection_key"] == "shots-over-05"
+    assert audit_identity[-2] == "player-shots-1"
+    assert audit_identity[-1]["scope"] == "player"
+    assert audit_identity[-1]["lineup_confirmed"] is True
+    assert scraper._valid_source_audit_row(
+        projected,
+        reference_at=observed,
+    ) is True
 
 
 def test_source_failure_is_recoverable_and_sanitized(capsys):

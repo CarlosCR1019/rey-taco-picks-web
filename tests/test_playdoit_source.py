@@ -285,6 +285,7 @@ def test_unknown_official_market_becomes_source_backed_market():
         "outcomes": [{
             "key": "playdoit_odd:shots-over-05",
             "source_selection_id": "shots-over-05",
+            "competitor_id": "cole-palmer",
             "name": "Más de 0.5",
             "price": 1.75,
         }],
@@ -301,6 +302,7 @@ def test_unknown_official_market_becomes_source_backed_market():
     assert market.source_id == "player-shots-1"
     assert market.sport_market_id == "shots"
     assert market.outcomes[0].source_id == "shots-over-05"
+    assert market.outcomes[0].competitor_id == "cole-palmer"
 
 
 @pytest.mark.parametrize(
@@ -329,6 +331,34 @@ def test_source_backed_market_fails_closed_without_official_ids(
     if missing_odd_id:
         source_market["outcomes"][0].pop("source_selection_id")
     raw["markets"] = [source_market]
+
+    event = normalize_playdoit_event(
+        raw, datetime(2026, 8, 20, 10, tzinfo=MEXICO)
+    )
+
+    assert event.markets == ()
+
+
+def test_conflicting_scope_for_same_official_market_fails_closed():
+    raw = fixture_event()
+    source_market = {
+        "key": "source_market",
+        "title": "Total",
+        "period": "source_unspecified",
+        "scope": "event",
+        "source_market_id": "total-1",
+        "offer_kind": "standard",
+        "source_selection_ids": ["over-1"],
+        "outcomes": [{
+            "key": "playdoit_odd:over-1",
+            "source_selection_id": "over-1",
+            "name": "Más de 2.5",
+            "price": 1.85,
+        }],
+    }
+    conflicting = deepcopy(source_market)
+    conflicting["scope"] = "team_total"
+    raw["markets"] = [source_market, conflicting]
 
     event = normalize_playdoit_event(
         raw, datetime(2026, 8, 20, 10, tzinfo=MEXICO)
@@ -458,6 +488,14 @@ class MarketDriver:
 
     def execute_script(self, script, *args):
         self.calls.append((script, args))
+        if "playdoit:extract-react-detail-markets" in script:
+            return {
+                "verified": True,
+                "source_event_id": args[0],
+                "groups": [],
+            }
+        if "playdoit:advance-react-detail-markets" in script:
+            return {"scrollTop": 0, "scrollHeight": 100, "clientHeight": 100}
         if "playdoit:discover-market-tabs" in script:
             self.discovery_calls += 1
             if self.late_details and self.discovery_calls == 1:
@@ -623,6 +661,12 @@ class ReactDetailMarketDriver:
 
     def execute_script(self, script, *args):
         self.script = script
+        if "playdoit:advance-react-detail-markets" in script:
+            return {
+                "scrollTop": 0,
+                "scrollHeight": 100,
+                "clientHeight": 100,
+            }
         if "playdoit:extract-react-detail-markets" not in script:
             raise AssertionError("unexpected script")
         groups = [
@@ -823,6 +867,32 @@ def test_supported_market_extraction_waits_for_react_detail_to_render():
     assert [market["key"] for market in markets] == ["totals"]
 
 
+class WrongEventReactWithLegacyTabsDriver(MarketDriver):
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" in script:
+            return {
+                "verified": False,
+                "source_event_id": "other-event",
+                "groups": [],
+            }
+        if "playdoit:advance-react-detail-markets" in script:
+            return {"scrollTop": 0, "scrollHeight": 100, "clientHeight": 100}
+        return super().execute_script(script, *args)
+
+
+def test_wrong_event_react_provenance_never_falls_back_to_legacy_tabs():
+    markets = extract_supported_markets(
+        WrongEventReactWithLegacyTabsDriver(active="h2h"),
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+    )
+
+    assert markets == []
+
+
 class PartialThenCompleteTotalDriver(RoutedReactDetailMarketDriver):
     def __init__(self):
         super().__init__()
@@ -1010,6 +1080,266 @@ def test_stable_unknown_market_finishes_without_waiting_for_timeout():
 
     assert driver.polls == 2
     assert [row["key"] for row in markets] == ["source_market"]
+
+
+class ScrollingUnknownMarketDriver(StableUnknownMarketDriver):
+    def __init__(self):
+        super().__init__()
+        self.scroll_polls = 0
+
+    def execute_script(self, script, *args):
+        if "playdoit:advance-react-detail-markets" in script:
+            self.scroll_polls += 1
+            return {
+                "scrollTop": min(self.scroll_polls * 100, 300),
+                "scrollHeight": 400,
+                "clientHeight": 100,
+            }
+        return super().execute_script(script, *args)
+
+
+def test_progressive_catalog_reaches_bottom_before_stable_completion():
+    driver = ScrollingUnknownMarketDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ProgressiveWait,
+        timeout=0.01,
+    )
+
+    assert driver.polls == 3
+    assert driver.scroll_polls == 3
+    assert [row["key"] for row in markets] == ["source_market"]
+
+
+class BoostedUnknownMarketDriver(RoutedReactDetailMarketDriver):
+    def __init__(self, description: str):
+        super().__init__()
+        self.description = description
+
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        self.script = script
+        self.args = args
+        return {
+            "verified": True,
+            "source_event_id": args[0],
+            "groups": [{
+                "market": {
+                    "id": "boost-1",
+                    "name": "Cole Palmer anota",
+                    "offerKind": "boosted",
+                    "offerDescription": self.description,
+                },
+                "odds": [{
+                    "id": "boost-yes",
+                    "name": "Sí",
+                    "price": 3.5,
+                }],
+            }],
+        }
+
+
+def test_boosted_market_requires_complete_official_description():
+    incomplete = extract_react_detail_markets(
+        BoostedUnknownMarketDriver(""),
+        "16848649",
+        "Fulham",
+        "Chelsea",
+    )
+    complete = extract_react_detail_markets(
+        BoostedUnknownMarketDriver("Cuota aumentada: Cole Palmer anota"),
+        "16848649",
+        "Fulham",
+        "Chelsea",
+    )
+
+    assert incomplete == []
+    assert len(complete) == 1
+    assert complete[0]["offer_kind"] == "boosted"
+    assert complete[0]["source_market_id"] == "boost-1"
+
+
+class HighPriceUnknownMarketDriver(BoostedUnknownMarketDriver):
+    def __init__(self):
+        super().__init__("standard")
+
+    def execute_script(self, script, *args):
+        raw = super().execute_script(script, *args)
+        if "playdoit:extract-react-detail-markets" in script:
+            raw["groups"][0]["market"]["offerKind"] = "standard"
+            raw["groups"][0]["market"]["offerDescription"] = ""
+            raw["groups"][0]["odds"][0]["price"] = 80.0
+        return raw
+
+
+def test_unknown_official_market_preserves_source_backed_longshot_price():
+    markets = extract_react_detail_markets(
+        HighPriceUnknownMarketDriver(),
+        "16848649",
+        "Fulham",
+        "Chelsea",
+    )
+
+    assert markets[0]["outcomes"][0]["price"] == 80.0
+
+
+class IncompleteDeclaredOddsDriver(BoostedUnknownMarketDriver):
+    def __init__(self):
+        super().__init__("standard")
+
+    def execute_script(self, script, *args):
+        raw = super().execute_script(script, *args)
+        if "playdoit:extract-react-detail-markets" in script:
+            market = raw["groups"][0]["market"]
+            market["offerKind"] = "standard"
+            market["offerDescription"] = ""
+            market["oddIds"] = ["boost-yes", "boost-no"]
+        return raw
+
+
+def test_generic_market_waits_for_every_declared_official_odd_id():
+    markets = extract_react_detail_markets(
+        IncompleteDeclaredOddsDriver(),
+        "16848649",
+        "Fulham",
+        "Chelsea",
+    )
+
+    assert markets == []
+
+
+class FailedScrollUnknownMarketDriver(StableUnknownMarketDriver):
+    def execute_script(self, script, *args):
+        if "playdoit:advance-react-detail-markets" in script:
+            return None
+        return super().execute_script(script, *args)
+
+
+def test_unknown_market_fails_closed_when_detail_scroll_cannot_be_verified():
+    driver = FailedScrollUnknownMarketDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ProgressiveWait,
+        timeout=0.01,
+    )
+
+    assert markets == []
+
+
+class StandardAndBoostedSameIdDriver(RoutedReactDetailMarketDriver):
+    def __init__(self):
+        super().__init__()
+        self.polls = 0
+
+    def execute_script(self, script, *args):
+        if "playdoit:advance-react-detail-markets" in script:
+            return {"scrollTop": 0, "scrollHeight": 100, "clientHeight": 100}
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        self.polls += 1
+        return {
+            "verified": True,
+            "source_event_id": args[0],
+            "groups": [
+                {
+                    "market": {
+                        "id": "scorer-1",
+                        "name": "Primer goleador",
+                        "oddIds": ["standard-1"],
+                        "offerKind": "standard",
+                        "offerDescription": "",
+                    },
+                    "odds": [{
+                        "id": "standard-1",
+                        "name": "Cole Palmer",
+                        "price": 5.0,
+                    }],
+                },
+                {
+                    "market": {
+                        "id": "scorer-1",
+                        "name": "Primer goleador",
+                        "oddIds": ["boosted-1"],
+                        "offerKind": "boosted",
+                        "offerDescription": "Boost Cole Palmer",
+                    },
+                    "odds": [{
+                        "id": "boosted-1",
+                        "name": "Cole Palmer",
+                        "price": 6.0,
+                    }],
+                },
+            ],
+        }
+
+
+def test_standard_and_boosted_offers_with_same_market_id_stay_separate():
+    markets = extract_supported_markets(
+        StandardAndBoostedSameIdDriver(),
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ProgressiveWait,
+        timeout=0.01,
+    )
+
+    assert len(markets) == 2
+    assert [row["offer_kind"] for row in markets] == [
+        "standard",
+        "boosted",
+    ]
+    assert [len(row["outcomes"]) for row in markets] == [1, 1]
+
+
+class ContradictoryProgressiveMetadataDriver(
+    StandardAndBoostedSameIdDriver
+):
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        self.polls += 1
+        market_name = "Total" if self.polls == 1 else "Total alterno"
+        return {
+            "verified": True,
+            "source_event_id": args[0],
+            "groups": [{
+                "market": {
+                    "id": "total-1",
+                    "name": market_name,
+                    "oddIds": ["over-1"],
+                    "scope": "event",
+                    "offerKind": "standard",
+                    "offerDescription": "",
+                },
+                "odds": [{
+                    "id": "over-1",
+                    "name": "Más de 2.5",
+                    "price": 1.85,
+                }],
+            }],
+        }
+
+
+def test_progressive_metadata_contradiction_fails_closed():
+    markets = extract_supported_markets(
+        ContradictoryProgressiveMetadataDriver(),
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ProgressiveWait,
+        timeout=0.01,
+    )
+
+    assert markets == []
 
 
 class EarlyH2HReactDetailDriver(ReactDetailMarketDriver):

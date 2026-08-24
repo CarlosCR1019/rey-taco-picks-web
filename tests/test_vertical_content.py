@@ -50,7 +50,7 @@ def test_final_and_verified_result_stories_keep_report_identity():
     assert len(final_story.rows) == 6
     assert verified_story.kind == "verified_result_story"
     assert len(verified_story.rows) == 1
-    assert verified_story.batch_id == report.batch_id
+    assert final_story.batch_id == verified_story.batch_id == report.batch_id
 
 
 def test_final_results_story_rejects_non_final_reports():

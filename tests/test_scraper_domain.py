@@ -64,6 +64,65 @@ def test_market_preserves_optional_nonempty_bookmaker_identity():
         Market("h2h", "full_game", None, (_outcome(),), bookmaker_key="  ")
 
 
+def test_market_preserves_official_display_and_source_identity():
+    outcome = Outcome(
+        "playdoit_odd:4132889965",
+        "Más de 0.5 remates",
+        1.75,
+        source_id="4132889965",
+    )
+    market = Market(
+        "playdoit_market:1614791472",
+        "source_unspecified",
+        None,
+        (outcome,),
+        bookmaker_key="playdoit",
+        name="Remates a Puerta - Cole Palmer",
+        source_id="1614791472",
+        sport_market_id="70520",
+    )
+
+    assert market.name == "Remates a Puerta - Cole Palmer"
+    assert market.source_id == "1614791472"
+    assert market.sport_market_id == "70520"
+    assert market.outcomes[0].source_id == "4132889965"
+
+
+@pytest.mark.parametrize(
+    ("target", "field"),
+    [
+        ("outcome", "source_id"),
+        ("market", "name"),
+        ("market", "source_id"),
+        ("market", "sport_market_id"),
+    ],
+)
+def test_official_metadata_rejects_blank_values_when_provided(
+    target: str, field: str
+):
+    if target == "outcome":
+        with pytest.raises(ValueError, match=field):
+            Outcome("home", "América", 1.7, **{field: "  "})
+        return
+
+    values = {field: "  "}
+    with pytest.raises(ValueError, match=field):
+        Market("h2h", "full_game", None, (_outcome(),), **values)
+
+
+def test_source_backed_outcome_accepts_official_high_decimal_price():
+    outcome = Outcome(
+        "playdoit_odd:longshot-1",
+        "Marcador exacto 7-0",
+        80.0,
+        source_id="longshot-1",
+    )
+
+    assert outcome.price == 80.0
+    with pytest.raises(ValueError, match="between 1.01 and 50"):
+        Outcome("longshot", "Marcador exacto 7-0", 80.0)
+
+
 def test_market_outcome_reports_the_missing_key_clearly():
     market = _market()
 

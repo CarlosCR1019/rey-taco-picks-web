@@ -11,6 +11,7 @@ import pytest
 
 from backend.playdoit_source import (
     extract_playdoit_raw_events,
+    extract_react_detail_markets,
     extract_supported_markets,
     normalize_playdoit_event,
     normalize_playdoit_events,
@@ -272,6 +273,70 @@ def test_only_supported_full_game_markets_are_kept():
     assert [market.key for market in event.markets] == ["h2h"]
 
 
+def test_unknown_official_market_becomes_source_backed_market():
+    raw = fixture_event()
+    raw["markets"].append({
+        "key": "source_market",
+        "title": "Remates a Puerta - Cole Palmer",
+        "period": "source_unspecified",
+        "scope": "source_unspecified",
+        "source_market_id": "player-shots-1",
+        "sport_market_id": "shots",
+        "outcomes": [{
+            "key": "playdoit_odd:shots-over-05",
+            "source_selection_id": "shots-over-05",
+            "name": "Más de 0.5",
+            "price": 1.75,
+        }],
+    })
+
+    event = normalize_playdoit_event(
+        raw, datetime(2026, 8, 20, 10, tzinfo=MEXICO)
+    )
+    market = event.markets[-1]
+
+    assert market.key == "playdoit_market:player-shots-1"
+    assert market.period == "source_unspecified"
+    assert market.name == "Remates a Puerta - Cole Palmer"
+    assert market.source_id == "player-shots-1"
+    assert market.sport_market_id == "shots"
+    assert market.outcomes[0].source_id == "shots-over-05"
+
+
+@pytest.mark.parametrize(
+    ("missing_market_id", "missing_odd_id"),
+    [(True, False), (False, True)],
+)
+def test_source_backed_market_fails_closed_without_official_ids(
+    missing_market_id: bool, missing_odd_id: bool
+):
+    raw = fixture_event()
+    source_market = {
+        "key": "source_market",
+        "title": "Tiros de esquina",
+        "period": "source_unspecified",
+        "scope": "source_unspecified",
+        "source_market_id": "corners-1",
+        "outcomes": [{
+            "key": "playdoit_odd:corners-over",
+            "source_selection_id": "corners-over",
+            "name": "Más de 8.5",
+            "price": 1.85,
+        }],
+    }
+    if missing_market_id:
+        source_market.pop("source_market_id")
+    if missing_odd_id:
+        source_market["outcomes"][0].pop("source_selection_id")
+    raw["markets"] = [source_market]
+
+    event = normalize_playdoit_event(
+        raw, datetime(2026, 8, 20, 10, tzinfo=MEXICO)
+    )
+
+    assert event.markets == ()
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -363,13 +428,24 @@ class ImmediateWait:
         self.timeout = timeout
 
     def until(self, predicate):
-        for _ in range(3):
+        for _ in range(5):
             value = predicate(self.driver)
             if value:
                 return value
         from selenium.common.exceptions import TimeoutException
 
         raise TimeoutException("unchanged")
+
+
+class ProgressiveWait(ImmediateWait):
+    def until(self, predicate):
+        for _ in range(8):
+            value = predicate(self.driver)
+            if value:
+                return value
+        from selenium.common.exceptions import TimeoutException
+
+        raise TimeoutException("progressive market did not stabilize")
 
 
 class MarketDriver:
@@ -541,6 +617,555 @@ def test_market_extraction_passes_source_text_as_script_arguments():
     assert source_calls[0][1][:3] == ("h2h", "América", "Tigres")
 
 
+class ReactDetailMarketDriver:
+    def __init__(self):
+        self.script = ""
+
+    def execute_script(self, script, *args):
+        self.script = script
+        if "playdoit:extract-react-detail-markets" not in script:
+            raise AssertionError("unexpected script")
+        groups = [
+            {
+                "market": {
+                    "id": 1614791472,
+                    "name": "Total",
+                    "oddIds": [],
+                    "sportMarketId": 70520,
+                    "sv": "2.5",
+                    "typeId": 18,
+                    "period": "full_game",
+                    "scope": "event",
+                },
+                "odds": [
+                    {
+                        "id": 4132889965,
+                        "name": "Más de 2.5",
+                        "oddStatus": 0,
+                        "price": 1.6667,
+                        "sv": "2.5",
+                        "typeId": 12,
+                    },
+                    {
+                        "id": 4132889966,
+                        "name": "Menos de 2.5",
+                        "oddStatus": 0,
+                        "price": 2.2223,
+                        "sv": "2.5",
+                        "typeId": 13,
+                    },
+                ],
+            },
+            {
+                "market": {
+                    "id": 999,
+                    "name": "Fulham total de goles",
+                    "sv": "1.5",
+                    "typeId": 18,
+                },
+                "odds": [],
+            },
+        ]
+        return {
+            "verified": True,
+            "source_event_id": args[0],
+            "groups": groups,
+        }
+
+
+class RoutedReactDetailMarketDriver(ReactDetailMarketDriver):
+    def __init__(self, *, verified=True, routed_event_id="16848649"):
+        super().__init__()
+        self.verified = verified
+        self.routed_event_id = routed_event_id
+        self.args = None
+
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        raw = super().execute_script(script, *args)
+        self.args = args
+        raw["verified"] = self.verified
+        raw["source_event_id"] = self.routed_event_id
+        return raw
+
+
+def test_react_detail_passes_exact_event_identity_as_script_arguments():
+    driver = RoutedReactDetailMarketDriver()
+
+    markets = extract_react_detail_markets(
+        driver,
+        "16848649",
+        "Fulham",
+        "Chelsea",
+    )
+
+    assert driver.args == ("16848649", "Fulham", "Chelsea")
+    assert "16848649" not in driver.script
+    assert "EventDetailsMarketsContainer" in driver.script
+    assert "detailRoot.querySelectorAll" in driver.script
+    assert "host.shadowRoot.querySelectorAll('button" not in driver.script
+    assert "offerKind" in driver.script
+    assert "route.get('eventId')" in driver.script
+    assert "market.oddIds.some" in driver.script
+    assert [market["key"] for market in markets] == ["totals"]
+
+
+def test_react_detail_rejects_unverified_route_snapshot():
+    driver = RoutedReactDetailMarketDriver(
+        verified=False,
+        routed_event_id="999",
+    )
+
+    markets = extract_react_detail_markets(
+        driver,
+        "16848649",
+        "Fulham",
+        "Chelsea",
+    )
+
+    assert markets == []
+
+
+def test_react_detail_extracts_exact_full_game_total_and_ignores_team_total():
+    driver = ReactDetailMarketDriver()
+
+    markets = extract_react_detail_markets(
+        driver, "16848649", "Fulham", "Chelsea"
+    )
+
+    assert "__reactFiber$" in driver.script
+    assert markets == [{
+        "key": "totals",
+        "title": "Total",
+        "period": "full_game",
+        "scope": "event",
+        "line": "2.5",
+        "outcomes": [
+            {
+                "key": "over",
+                "name": "Más de 2.5",
+                "price": 1.6667,
+                "line": "2.5",
+            },
+            {
+                "key": "under",
+                "name": "Menos de 2.5",
+                "price": 2.2223,
+                "line": "2.5",
+            },
+        ],
+    }]
+
+    raw = fixture_event()
+    raw["markets"].extend(markets)
+    event = normalize_playdoit_event(
+        raw, datetime(2026, 8, 20, 10, tzinfo=MEXICO)
+    )
+    assert [market.key for market in event.markets] == ["h2h", "totals"]
+    assert event.markets[1].line == 2.5
+
+
+class ExplicitFirstHalfTotalDriver(ReactDetailMarketDriver):
+    def execute_script(self, script, *args):
+        raw = super().execute_script(script, *args)
+        total = raw["groups"][0]["market"]
+        total["period"] = "first_half"
+        total["scope"] = "event"
+        return raw
+
+
+def test_explicit_first_half_total_is_generic_not_canonical_full_game():
+    driver = ExplicitFirstHalfTotalDriver()
+
+    markets = extract_react_detail_markets(
+        driver, "16848649", "Fulham", "Chelsea"
+    )
+
+    assert len(markets) == 1
+    assert markets[0]["key"] == "source_market"
+    assert markets[0]["period"] == "first_half"
+    assert markets[0]["scope"] == "event"
+    assert markets[0]["source_market_id"] == "1614791472"
+
+
+class DelayedReactDetailMarketDriver(ReactDetailMarketDriver):
+    def __init__(self):
+        super().__init__()
+        self.detail_polls = 0
+
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" in script:
+            self.detail_polls += 1
+            if self.detail_polls < 3:
+                self.script = script
+                return {
+                    "verified": True,
+                    "source_event_id": args[0],
+                    "groups": [],
+                }
+        return super().execute_script(script, *args)
+
+
+def test_supported_market_extraction_waits_for_react_detail_to_render():
+    driver = DelayedReactDetailMarketDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+    )
+
+    assert driver.detail_polls >= 3
+    assert [market["key"] for market in markets] == ["totals"]
+
+
+class PartialThenCompleteTotalDriver(RoutedReactDetailMarketDriver):
+    def __init__(self):
+        super().__init__()
+        self.polls = 0
+
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        self.script = script
+        self.args = args
+        self.polls += 1
+        odds = [{
+            "id": "over-1",
+            "name": "Más de 2.5",
+            "oddStatus": 0,
+            "price": 1.8,
+            "sv": "2.5",
+            "typeId": 12,
+        }]
+        if self.polls >= 3:
+            odds.append({
+                "id": "under-1",
+                "name": "Menos de 2.5",
+                "oddStatus": 0,
+                "price": 2.0,
+                "sv": "2.5",
+                "typeId": 13,
+            })
+        return {
+            "verified": True,
+            "source_event_id": args[0],
+            "groups": [{
+                "market": {
+                    "id": "total-1",
+                    "name": "Total",
+                    "sv": "2.5",
+                    "typeId": 18,
+                    "period": "full_game",
+                    "scope": "event",
+                },
+                "odds": odds,
+            }],
+        }
+
+
+def test_progressive_total_waits_for_both_official_sides():
+    driver = PartialThenCompleteTotalDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ProgressiveWait,
+        timeout=0.01,
+    )
+
+    assert driver.polls >= 3
+    assert [row["key"] for row in markets] == ["totals"]
+    assert [row["key"] for row in markets[0]["outcomes"]] == [
+        "over",
+        "under",
+    ]
+
+
+class ProgressiveMarketUnionDriver(RoutedReactDetailMarketDriver):
+    def __init__(self):
+        super().__init__()
+        self.polls = 0
+
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        self.script = script
+        self.args = args
+        self.polls += 1
+        h2h = {
+            "market": {
+                "id": "h2h-1",
+                "name": "Resultado Final",
+                "period": "full_game",
+                "scope": "event",
+            },
+            "odds": [
+                {"id": "home-1", "name": "Fulham", "price": 4.0},
+                {"id": "draw-1", "name": "Empate", "price": 4.0},
+                {"id": "away-1", "name": "Chelsea", "price": 1.8},
+            ],
+        }
+        total = {
+            "market": {
+                "id": "total-1",
+                "name": "Total",
+                "sv": "2.5",
+                "period": "full_game",
+                "scope": "event",
+            },
+            "odds": [
+                {
+                    "id": "over-1",
+                    "name": "Más de 2.5",
+                    "price": 1.8,
+                    "sv": "2.5",
+                },
+                {
+                    "id": "under-1",
+                    "name": "Menos de 2.5",
+                    "price": 2.0,
+                    "sv": "2.5",
+                },
+            ],
+        }
+        return {
+            "verified": True,
+            "source_event_id": args[0],
+            "groups": [h2h] if self.polls == 1 else [total],
+        }
+
+
+def test_progressive_market_union_keeps_groups_and_deduplicates_odd_ids():
+    driver = ProgressiveMarketUnionDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ProgressiveWait,
+        timeout=0.01,
+    )
+
+    assert driver.polls >= 3
+    assert [row["key"] for row in markets] == ["h2h", "totals"]
+    assert len(markets[0]["outcomes"]) == 3
+    assert len(markets[1]["outcomes"]) == 2
+
+
+class StableUnknownMarketDriver(RoutedReactDetailMarketDriver):
+    def __init__(self):
+        super().__init__()
+        self.polls = 0
+
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        self.script = script
+        self.args = args
+        self.polls += 1
+        return {
+            "verified": True,
+            "source_event_id": args[0],
+            "groups": [{
+                "market": {
+                    "id": "corners-1",
+                    "name": "Total de tiros de esquina",
+                    "sportMarketId": "corners",
+                },
+                "odds": [
+                    {
+                        "id": "corners-over",
+                        "name": "Más de 8.5",
+                        "price": 1.85,
+                    },
+                    {
+                        "id": "corners-under",
+                        "name": "Menos de 8.5",
+                        "price": 1.95,
+                    },
+                ],
+            }],
+        }
+
+
+def test_stable_unknown_market_finishes_without_waiting_for_timeout():
+    driver = StableUnknownMarketDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ProgressiveWait,
+        timeout=0.01,
+    )
+
+    assert driver.polls == 2
+    assert [row["key"] for row in markets] == ["source_market"]
+
+
+class EarlyH2HReactDetailDriver(ReactDetailMarketDriver):
+    def __init__(self):
+        super().__init__()
+        self.detail_polls = 0
+
+    def execute_script(self, script, *args):
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        self.script = script
+        self.detail_polls += 1
+        h2h = {
+            "market": {
+                "id": 1,
+                "name": "Resultado Final (Tiempo Regular)",
+                "period": "full_game",
+                "scope": "event",
+            },
+            "odds": [
+                {"id": 1, "name": "Fulham", "oddStatus": 0, "price": 4.0},
+                {"id": 2, "name": "Empate", "oddStatus": 0, "price": 4.0},
+                {"id": 3, "name": "Chelsea", "oddStatus": 0, "price": 1.8182},
+            ],
+        }
+        if self.detail_polls < 3:
+            return {
+                "verified": True,
+                "source_event_id": args[0],
+                "groups": [h2h],
+            }
+        raw = super().execute_script(script, *args)
+        raw["groups"] = [h2h, *raw["groups"]]
+        return raw
+
+
+def test_react_detail_does_not_stop_when_only_early_h2h_has_rendered():
+    driver = EarlyH2HReactDetailDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+    )
+
+    assert driver.detail_polls >= 3
+    assert [market["key"] for market in markets] == ["h2h", "totals"]
+
+
+class ExpandableSpreadDriver(ReactDetailMarketDriver):
+    def __init__(self):
+        super().__init__()
+        self.expanded = False
+
+    def execute_script(self, script, *args):
+        if "playdoit:expand-react-spread-market" in script:
+            self.expanded = True
+            return True
+        if "playdoit:extract-react-detail-markets" not in script:
+            return super().execute_script(script, *args)
+        raw = super().execute_script(script, *args)
+        groups = raw["groups"]
+        if self.expanded:
+            groups.append({
+                "market": {
+                    "id": 77,
+                    "name": "Hándicap Asiatico",
+                    "sv": "+2.5",
+                    "typeId": 2,
+                    "period": "full_game",
+                    "scope": "event",
+                },
+                "odds": [
+                    {
+                        "id": 771,
+                        "name": "Fulham (+2.5)",
+                        "oddStatus": 0,
+                        "price": 1.125,
+                        "sv": "+2.5",
+                    },
+                    {
+                        "id": 772,
+                        "name": "Chelsea (-2.5)",
+                        "oddStatus": 0,
+                        "price": 6.0,
+                        "sv": "+2.5",
+                    },
+                    {
+                        "id": 773,
+                        "name": "Fulham (+1.5)",
+                        "oddStatus": 0,
+                        "price": 1.3637,
+                        "sv": "+2.5",
+                    },
+                    {
+                        "id": 774,
+                        "name": "Chelsea (-1.5)",
+                        "oddStatus": 0,
+                        "price": 3.1,
+                        "sv": "+2.5",
+                    },
+                ],
+            })
+        return raw
+
+
+def test_supported_market_extraction_expands_and_validates_opposing_spreads():
+    driver = ExpandableSpreadDriver()
+
+    markets = extract_supported_markets(
+        driver,
+        "Fulham",
+        "Chelsea",
+        event_id="16848649",
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+    )
+
+    assert driver.expanded is True
+    assert [market["key"] for market in markets] == [
+        "totals",
+        "spreads",
+        "spreads",
+    ]
+    spread = markets[1]
+    assert spread["line"] == "+2.5"
+    assert [row["line"] for row in spread["outcomes"]] == ["+2.5", "-2.5"]
+    assert markets[2]["line"] == "+1.5"
+    assert [row["line"] for row in markets[2]["outcomes"]] == [
+        "+1.5",
+        "-1.5",
+    ]
+
+    raw = fixture_event()
+    raw["home"] = "Fulham"
+    raw["away"] = "Chelsea"
+    for outcome in raw["markets"][0]["outcomes"]:
+        if outcome["key"] == "home":
+            outcome["name"] = "Fulham"
+        elif outcome["key"] == "away":
+            outcome["name"] = "Chelsea"
+    raw["markets"].extend(markets)
+    event = normalize_playdoit_event(
+        raw, datetime(2026, 8, 20, 10, tzinfo=MEXICO)
+    )
+    assert [market.key for market in event.markets] == [
+        "h2h",
+        "totals",
+        "spreads",
+        "spreads",
+    ]
+
+
 class EventDriver(MarketDriver):
     def execute_script(self, script, *args):
         if "playdoit:event-summaries" in script:
@@ -578,11 +1203,14 @@ class EventDriver(MarketDriver):
         return super().execute_script(script, *args)
 
 
-class CurrentReactSnapshotDriver:
+class CurrentReactSnapshotDriver(MarketDriver):
     def __init__(self):
+        super().__init__()
         self.summary_script = ""
+        self.clicked_event = None
+        self.returned_to_events = False
 
-    def execute_script(self, script, *_args):
+    def execute_script(self, script, *args):
         if "playdoit:event-summaries" in script:
             self.summary_script = script
             return [{
@@ -632,12 +1260,66 @@ class CurrentReactSnapshotDriver:
                     ],
                 }],
             }]
-        raise AssertionError("structured list data must not open event details")
+        if "playdoit:click-event" in script:
+            self.calls.append((script, args))
+            self.clicked_event = args
+            self.active = "h2h"
+            return True
+        if "playdoit:return-to-events" in script:
+            self.calls.append((script, args))
+            self.returned_to_events = True
+            return True
+        if "playdoit:event-list-ready" in script:
+            self.calls.append((script, args))
+            return True
+        if "playdoit:extract-visible-market" in script:
+            self.calls.append((script, args))
+            key, home, away = args[:3]
+            if key == "h2h":
+                return [{
+                    "key": "h2h",
+                    "title": "resultado final (tiempo regular)",
+                    "period": "full_game",
+                    "scope": "event",
+                    "outcomes": [
+                        {"key": "home", "name": home, "price": "1.6154"},
+                        {"key": "draw", "name": "Empate", "price": "4.0"},
+                        {"key": "away", "name": away, "price": "5.5"},
+                    ],
+                }]
+            if key == "totals":
+                return [{
+                    "key": "totals",
+                    "title": "total de goles",
+                    "period": "full_game",
+                    "scope": "event",
+                    "line": "2.5",
+                    "outcomes": [
+                        {"key": "over", "name": "Más 2.5", "price": "1.90", "line": "2.5"},
+                        {"key": "under", "name": "Menos 2.5", "price": "1.90", "line": "2.5"},
+                    ],
+                }]
+            return [{
+                "key": "spreads",
+                "title": "hándicap del partido",
+                "period": "full_game",
+                "scope": "event",
+                "line": "-1.0",
+                "outcomes": [
+                    {"key": "home", "name": f"{home} -1.0", "price": "2.10", "line": "-1.0"},
+                    {"key": "away", "name": f"{away} +1.0", "price": "1.70", "line": "+1.0"},
+                ],
+            }]
+        return super().execute_script(script, *args)
 
 
-def test_current_react_snapshot_yields_official_id_time_and_decimal_h2h():
+def test_current_react_snapshot_opens_detail_and_keeps_all_supported_markets():
     driver = CurrentReactSnapshotDriver()
-    records = extract_playdoit_raw_events(driver)
+    records = extract_playdoit_raw_events(
+        driver,
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+    )
 
     assert len(records) == 1
     assert "__reactFiber$" in driver.summary_script
@@ -646,14 +1328,127 @@ def test_current_react_snapshot_yields_official_id_time_and_decimal_h2h():
     assert records[0]["event_id"] == "17289368"
     assert records[0]["date_label"] == "22/08"
     assert records[0]["time_label"] == "21:00"
+    assert driver.clicked_event == ("17289368", "Cruz Azul", "Atlas")
+    assert driver.returned_to_events is True
+    click_source = next(
+        script
+        for script, _args in driver.calls
+        if "playdoit:click-event" in script
+    )
+    assert "__reactFiber$" in click_source
+    assert "17289368" not in click_source
 
     event = normalize_playdoit_event(
         records[0], datetime(2026, 8, 22, 12, tzinfo=MEXICO)
     )
+    assert [market.key for market in event.markets] == [
+        "h2h",
+        "totals",
+        "spreads",
+    ]
     h2h = event.markets[0]
     assert h2h.outcome("home").price == 1.6154
     assert h2h.outcome("draw").price == 4.0
     assert h2h.outcome("away").price == 5.5
+
+
+class SnapshotDetailUnavailableDriver(CurrentReactSnapshotDriver):
+    def execute_script(self, script, *args):
+        if "playdoit:click-event" in script:
+            self.calls.append((script, args))
+            self.clicked_event = args
+            return False
+        return super().execute_script(script, *args)
+
+
+def test_current_react_snapshot_keeps_verified_h2h_when_detail_is_unavailable():
+    driver = SnapshotDetailUnavailableDriver()
+
+    records = extract_playdoit_raw_events(
+        driver,
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+    )
+
+    assert driver.clicked_event == ("17289368", "Cruz Azul", "Atlas")
+    event = normalize_playdoit_event(
+        records[0], datetime(2026, 8, 22, 12, tzinfo=MEXICO)
+    )
+    assert [market.key for market in event.markets] == ["h2h"]
+    assert event.markets[0].outcome("home").price == 1.6154
+
+
+class ConflictingSnapshotDetailDriver(CurrentReactSnapshotDriver):
+    def execute_script(self, script, *args):
+        result = super().execute_script(script, *args)
+        if "playdoit:extract-visible-market" in script and args[0] == "h2h":
+            result[0]["outcomes"][0]["price"] = "9.99"
+        return result
+
+
+def test_current_react_snapshot_rejects_conflicting_detail_quote_fail_closed():
+    records = extract_playdoit_raw_events(
+        ConflictingSnapshotDetailDriver(),
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+    )
+
+    event = normalize_playdoit_event(
+        records[0], datetime(2026, 8, 22, 12, tzinfo=MEXICO)
+    )
+    assert [market.key for market in event.markets] == ["totals", "spreads"]
+
+
+def test_repeated_snapshot_reuses_detail_markets_within_one_collection_run():
+    driver = CurrentReactSnapshotDriver()
+    detail_cache = {}
+
+    first = extract_playdoit_raw_events(
+        driver,
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+        detail_cache=detail_cache,
+    )
+    second = extract_playdoit_raw_events(
+        driver,
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+        detail_cache=detail_cache,
+    )
+
+    detail_clicks = [
+        args
+        for script, args in driver.calls
+        if "playdoit:click-event" in script
+    ]
+    assert detail_clicks == [("17289368", "Cruz Azul", "Atlas")]
+    assert first == second
+
+
+class DistantReactSnapshotDriver(CurrentReactSnapshotDriver):
+    def execute_script(self, script, *args):
+        result = super().execute_script(script, *args)
+        if "playdoit:event-summaries" in script:
+            result[0]["event"]["startDate"] = "2026-08-30T03:00:00Z"
+        return result
+
+
+def test_distant_snapshot_keeps_surface_h2h_without_opening_event_detail():
+    driver = DistantReactSnapshotDriver()
+
+    records = extract_playdoit_raw_events(
+        driver,
+        wait_factory=ImmediateWait,
+        timeout=0.01,
+        detail_observed_at=datetime(2026, 8, 22, 12, tzinfo=MEXICO),
+    )
+
+    assert len(records) == 1
+    assert driver.clicked_event is None
+    event = normalize_playdoit_event(
+        records[0], datetime(2026, 8, 22, 12, tzinfo=MEXICO)
+    )
+    assert [market.key for market in event.markets] == ["h2h"]
 
 
 def test_full_extraction_requires_id_date_time_and_never_synthesizes_defaults():

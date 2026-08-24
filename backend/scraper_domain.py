@@ -61,13 +61,24 @@ class Outcome:
     key: str
     name: str
     price: float
+    source_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _canonical_key(self.key, "key"))
         object.__setattr__(self, "name", _required_text(self.name, "name"))
+        if self.source_id is not None:
+            object.__setattr__(
+                self,
+                "source_id",
+                _required_text(self.source_id, "source_id"),
+            )
         price = _finite_float(self.price, "price")
-        if not 1.01 <= price <= 50.0:
-            raise ValueError("price must be decimal odds between 1.01 and 50")
+        maximum_price = 1000.0 if self.source_id is not None else 50.0
+        if not 1.01 <= price <= maximum_price:
+            raise ValueError(
+                "price must be decimal odds between "
+                f"1.01 and {maximum_price:g}"
+            )
         object.__setattr__(self, "price", price)
 
 
@@ -87,6 +98,9 @@ class Market:
     line: float | None
     outcomes: tuple[Outcome, ...]
     bookmaker_key: str | None = None
+    name: str | None = None
+    source_id: str | None = None
+    sport_market_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _canonical_key(self.key, "key"))
@@ -97,6 +111,14 @@ class Market:
                 "bookmaker_key",
                 _canonical_key(self.bookmaker_key, "bookmaker_key"),
             )
+        for field in ("name", "source_id", "sport_market_id"):
+            value = getattr(self, field)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field,
+                    _required_text(value, field),
+                )
         if self.line is not None:
             object.__setattr__(self, "line", _finite_float(self.line, "line"))
         if not isinstance(self.outcomes, tuple):

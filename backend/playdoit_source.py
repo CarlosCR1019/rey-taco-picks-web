@@ -8,6 +8,7 @@ it with a positional price or an inferred selection.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from datetime import datetime, timedelta
 import math
 from numbers import Real
@@ -30,10 +31,18 @@ SUPPORTED_BOX_TITLES = {
         "1x2",
     }),
     "totals": frozenset(
-        {"total de goles", "total de carreras", "total de puntos"}
+        {"total", "total de goles", "total de carreras", "total de puntos"}
     ),
     "spreads": frozenset(
-        {"hándicap del partido", "handicap del partido", "línea de juego"}
+        {
+            "hándicap asiatico",
+            "hándicap asiático",
+            "handicap asiatico",
+            "handicap asiático",
+            "hándicap del partido",
+            "handicap del partido",
+            "línea de juego",
+        }
     ),
 }
 UNSUPPORTED_MARKET_SCOPES = frozenset({"first_half", "team_total"})
@@ -43,6 +52,9 @@ SUPPORTED_MARKET_PERIODS = frozenset(
 SUPPORTED_MARKET_SCOPES = frozenset({"event", "match", "partido"})
 _DECIMAL = re.compile(r"(?:0|[1-9]\d*)(?:\.\d+)?\Z")
 _SIGNED_DECIMAL = re.compile(r"[+-]?(?:0|[1-9]\d*)(?:\.\d+)?\Z")
+_SPREAD_SELECTION_LINE = re.compile(
+    r"\(([+-]?(?:0|[1-9]\d*)(?:\.\d+)?)\)\s*\Z"
+)
 _CALENDAR_DATE = re.compile(r"(\d{2})([/\-])(\d{2})\Z")
 _CLOCK_TIME = re.compile(r"([01]\d|2[0-3]):([0-5]\d)\Z")
 
@@ -169,6 +181,25 @@ var sourceId = arguments[0], home = arguments[1], away = arguments[2];
 var host = document.querySelector('div#altenar > div') ||
   document.querySelector('asb-sports-app, asb-app, altenar-app');
 if (!host || !host.shadowRoot) return false;
+function playdoitFiber(node) {
+  if (!node) return null;
+  var key = Object.getOwnPropertyNames(node).find(function(name) {
+    return name.indexOf('__reactFiber$') === 0;
+  });
+  return key ? node[key] : null;
+}
+function playdoitProps(node) {
+  var fiber = playdoitFiber(node);
+  for (var depth = 0; fiber && depth < 30; depth += 1, fiber = fiber.return) {
+    var candidates = [fiber.memoizedProps, fiber.pendingProps];
+    for (var index = 0; index < candidates.length; index += 1) {
+      var props = candidates[index];
+      if (props && props.event && typeof props.event === 'object' &&
+          Array.isArray(props.competitors)) return props;
+    }
+  }
+  return null;
+}
 var containers = Array.from(host.shadowRoot.querySelectorAll('div[class*="EventBoxContainer"]'));
 var target = containers.find(function(container) {
   var nodes = [container].concat(Array.from(container.querySelectorAll(
@@ -178,9 +209,19 @@ var target = containers.find(function(container) {
     return candidate.getAttribute('data-event-id') || candidate.getAttribute('data-eventid') ||
       candidate.getAttribute('data-event-id-value') || '';
   });
+  var props = playdoitProps(container);
+  var reactId = props && props.event ? String(props.event.id || '') : '';
+  var competitorNames = props ? props.competitors.map(function(competitor) {
+    return String(competitor.name || '').trim().toLocaleLowerCase();
+  }) : [];
   var text = (container.innerText || '').toLocaleLowerCase();
-  return values.some(function(value) { return value.trim() === sourceId; }) &&
+  var identityMatches = competitorNames.length ?
+    competitorNames.includes(home.toLocaleLowerCase()) &&
+      competitorNames.includes(away.toLocaleLowerCase()) :
     text.includes(home.toLocaleLowerCase()) && text.includes(away.toLocaleLowerCase());
+  return (reactId === sourceId || values.some(function(value) {
+    return value.trim() === sourceId;
+  })) && identityMatches;
 });
 if (!target) return false;
 var clickable = target.querySelector(
@@ -333,6 +374,166 @@ return boxes.map(function(box) {
   if (marketLine !== null) result.line = marketLine;
   return result;
 }).filter(Boolean);
+"""
+
+
+_EXTRACT_REACT_DETAIL_MARKETS_SCRIPT = r"""
+/* playdoit:extract-react-detail-markets */
+var sourceId = String(arguments[0] || '').trim();
+var home = String(arguments[1] || '').trim().toLocaleLowerCase();
+var away = String(arguments[2] || '').trim().toLocaleLowerCase();
+var host = document.querySelector('div#altenar > div') ||
+  document.querySelector('asb-sports-app, asb-app, altenar-app');
+if (!host || !host.shadowRoot || !sourceId || !home || !away) {
+  return {verified: false, source_event_id: '', groups: []};
+}
+var route = new URLSearchParams(
+  String(window.location.hash || '').replace(/^#/, '')
+);
+var routedEventId = String(route.get('eventId') || '').trim();
+if (routedEventId !== sourceId) {
+  return {verified: false, source_event_id: routedEventId, groups: []};
+}
+var roots = Array.from(host.shadowRoot.querySelectorAll(
+  '[class*="EventDetailsMarketsContainer"]'
+));
+if (roots.length !== 1) {
+  return {verified: false, source_event_id: sourceId, groups: []};
+}
+var detailRoot = roots[0];
+var detailText = (detailRoot.innerText || '').toLocaleLowerCase();
+if (!detailText.includes(home) || !detailText.includes(away)) {
+  return {verified: false, source_event_id: sourceId, groups: []};
+}
+function playdoitFiber(node) {
+  if (!node) return null;
+  var key = Object.getOwnPropertyNames(node).find(function(name) {
+    return name.indexOf('__reactFiber$') === 0;
+  });
+  return key ? node[key] : null;
+}
+function playdoitField(node, field) {
+  var fiber = playdoitFiber(node);
+  for (var depth = 0; fiber && depth < 30; depth += 1, fiber = fiber.return) {
+    var candidates = [fiber.memoizedProps, fiber.pendingProps];
+    for (var index = 0; index < candidates.length; index += 1) {
+      var props = candidates[index];
+      if (props && props[field] && typeof props[field] === 'object') {
+        return props[field];
+      }
+    }
+  }
+  return null;
+}
+var groups = {};
+Array.from(detailRoot.querySelectorAll('button[class*="OddBoxButton"]'))
+  .forEach(function(button) {
+    var odd = playdoitField(button, 'odd');
+    var market = playdoitField(button, 'market');
+    if (!odd || !market || market.id === undefined || market.id === null ||
+        odd.id === undefined || odd.id === null) return;
+    if (Array.isArray(market.oddIds) && market.oddIds.length &&
+        !market.oddIds.some(function(value) {
+          return String(value) === String(odd.id);
+        })) return;
+    var offerRoot = button.closest('[class*="Boosted"], [class*="PlayBoost"]');
+    var offerKind = offerRoot ? 'boosted' : 'standard';
+    var offerDescription = offerRoot ? (offerRoot.innerText || '').trim() : '';
+    var marketId = String(market.id);
+    if (!groups[marketId]) {
+      groups[marketId] = {
+        market: {
+          id: market.id,
+          name: market.name,
+          oddIds: Array.isArray(market.oddIds) ? market.oddIds.slice() : [],
+          sportMarketId: market.sportMarketId,
+          typeId: market.typeId,
+          sv: market.sv,
+          period: market.period,
+          periodName: market.periodName,
+          scope: market.scope,
+          scopeName: market.scopeName,
+          competitorId: market.competitorId,
+          teamId: market.teamId,
+          participantId: market.participantId,
+          shortName: market.shortName,
+          variant: market.variant,
+          offerKind: offerKind,
+          offerDescription: offerDescription
+        },
+        odds: []
+      };
+    }
+    if (!groups[marketId].odds.some(function(value) {
+      return String(value.id) === String(odd.id);
+    })) {
+      groups[marketId].odds.push({
+        id: odd.id,
+        competitorId: odd.competitorId,
+        name: odd.name,
+        oddStatus: odd.oddStatus,
+        price: odd.price,
+        typeId: odd.typeId,
+        sv: odd.sv
+      });
+    }
+  });
+return {
+  verified: true,
+  source_event_id: sourceId,
+  groups: Object.keys(groups).map(function(key) { return groups[key]; })
+};
+"""
+
+
+_EXPAND_REACT_SPREAD_MARKET_SCRIPT = r"""
+/* playdoit:expand-react-spread-market */
+var supportedTitles = arguments[0];
+var host = document.querySelector('div#altenar > div') ||
+  document.querySelector('asb-sports-app, asb-app, altenar-app');
+if (!host || !host.shadowRoot || !Array.isArray(supportedTitles)) return false;
+var node = Array.from(host.shadowRoot.querySelectorAll(
+  '[class*="EventDetailsMarketName"]'
+)).find(function(candidate) {
+  var text = (candidate.textContent || '').trim().toLocaleLowerCase();
+  return supportedTitles.includes(text);
+});
+if (!node) return false;
+var root = node.closest('[class*="EventDetailsMarketBoxRoot"]');
+if (root) root.scrollIntoView({block: 'center'});
+var header = node.closest('[class*="EventDetailsMarketHeader"]') || node;
+header.click();
+node.click();
+return true;
+"""
+
+
+_ADVANCE_REACT_DETAIL_MARKETS_SCRIPT = r"""
+/* playdoit:advance-react-detail-markets */
+var sourceId = String(arguments[0] || '').trim();
+var route = new URLSearchParams(
+  String(window.location.hash || '').replace(/^#/, '')
+);
+if (!sourceId || route.get('eventId') !== sourceId) return null;
+var host = document.querySelector('div#altenar > div') ||
+  document.querySelector('asb-sports-app, asb-app, altenar-app');
+if (!host || !host.shadowRoot) return null;
+var roots = Array.from(host.shadowRoot.querySelectorAll(
+  '[class*="EventDetailsMarketsContainer"]'
+));
+if (roots.length !== 1) return null;
+var root = roots[0];
+var before = Number(root.scrollTop || 0);
+var step = Math.max(Number(root.clientHeight || 0) * 0.75, 240);
+root.scrollTop = Math.min(
+  before + step,
+  Math.max(Number(root.scrollHeight || 0) - Number(root.clientHeight || 0), 0)
+);
+return {
+  scrollTop: Number(root.scrollTop || 0),
+  scrollHeight: Number(root.scrollHeight || 0),
+  clientHeight: Number(root.clientHeight || 0)
+};
 """
 
 
@@ -601,14 +802,52 @@ def _normalize_spreads(
     )
 
 
+def _normalize_source_market(raw: Mapping[str, object]) -> Market:
+    source_market_id = _required_text(
+        raw.get("source_market_id"), "source market id"
+    )
+    title = _required_text(raw.get("title"), "market title")
+    period_value = _required_text(raw.get("period"), "market period")
+    outcomes = tuple(
+        Outcome(
+            _required_text(row.get("key"), "outcome key"),
+            _required_text(row.get("name"), "outcome name"),
+            _strict_number(row.get("price"), "price", price=True),
+            source_id=_required_text(
+                row.get("source_selection_id"), "source selection id"
+            ),
+        )
+        for row in _raw_outcomes(raw)
+    )
+    sport_market_id = raw.get("sport_market_id")
+    return Market(
+        f"playdoit_market:{source_market_id}",
+        period_value,
+        None,
+        outcomes,
+        bookmaker_key="playdoit",
+        name=title,
+        source_id=source_market_id,
+        sport_market_id=(
+            _required_text(sport_market_id, "sport_market_id")
+            if sport_market_id is not None
+            else None
+        ),
+    )
+
+
 def _normalize_market(
     raw: Mapping[str, object], home: str, away: str, sport: str
 ) -> Market | None:
     key = raw.get("key")
-    if not isinstance(key, str) or key.casefold() not in SUPPORTED_MARKETS:
+    if not isinstance(key, str):
         return None
     try:
         normalized_key = key.casefold()
+        if normalized_key == "source_market":
+            return _normalize_source_market(raw)
+        if normalized_key not in SUPPORTED_MARKETS:
+            return None
         title = _required_text(raw.get("title"), "market title").casefold()
         period = _required_text(raw.get("period"), "market period").casefold()
         scope = _required_text(raw.get("scope"), "market scope").casefold()
@@ -776,11 +1015,344 @@ def extract_visible_markets(
     return [dict(item) for item in raw if isinstance(item, Mapping)]
 
 
+def _generic_react_market_from_group(
+    raw: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Preserve one complete official group without inventing its semantics."""
+
+    market = raw.get("market")
+    odds = raw.get("odds")
+    if not isinstance(market, Mapping) or not isinstance(odds, list):
+        return None
+    market_id = str(market.get("id") or "").strip()
+    title = str(market.get("name") or "").strip()
+    if not market_id or not title:
+        return None
+    offer_kind = str(market.get("offerKind") or "standard").strip()
+    offer_description = str(
+        market.get("offerDescription") or ""
+    ).strip()
+    if offer_kind == "boosted" and not offer_description:
+        return None
+
+    outcomes: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for odd in odds:
+        if not isinstance(odd, Mapping) or odd.get("oddStatus") not in (None, 0):
+            continue
+        odd_id = str(odd.get("id") or "").strip()
+        name = str(odd.get("name") or "").strip()
+        if not odd_id or not name or odd_id in seen_ids:
+            continue
+        try:
+            price = _strict_number(odd.get("price"), "price", price=True)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        seen_ids.add(odd_id)
+        outcomes.append({
+            "key": f"playdoit_odd:{odd_id}",
+            "source_selection_id": odd_id,
+            "name": name,
+            "price": price,
+        })
+    if not outcomes:
+        return None
+
+    explicit_period = market.get("period")
+    if explicit_period is None:
+        explicit_period = market.get("periodName")
+    explicit_scope = market.get("scope")
+    if explicit_scope is None:
+        explicit_scope = market.get("scopeName")
+    return {
+        "key": "source_market",
+        "title": title,
+        "period": str(explicit_period or "source_unspecified").strip(),
+        "scope": str(explicit_scope or "source_unspecified").strip(),
+        "source_market_id": market_id,
+        "sport_market_id": (
+            str(market["sportMarketId"]).strip()
+            if market.get("sportMarketId") is not None
+            else None
+        ),
+        "offer_kind": offer_kind,
+        "offer_description": offer_description,
+        "outcomes": outcomes,
+    }
+
+
+def _react_detail_markets_from_group(
+    raw: Mapping[str, Any], home: str, away: str
+) -> list[dict[str, Any]]:
+    market = raw.get("market")
+    odds = raw.get("odds")
+    if not isinstance(market, Mapping) or not isinstance(odds, list):
+        return []
+    title_value = market.get("name")
+    if not isinstance(title_value, str) or not title_value.strip():
+        return []
+    title = title_value.strip()
+    normalized_title = title.casefold()
+    generic = _generic_react_market_from_group(raw)
+    if normalized_title in SUPPORTED_BOX_TITLES["h2h"]:
+        market_key = "h2h"
+    elif normalized_title in SUPPORTED_BOX_TITLES["totals"]:
+        market_key = "totals"
+    elif normalized_title in SUPPORTED_BOX_TITLES["spreads"]:
+        market_key = "spreads"
+    else:
+        return [generic] if generic is not None else []
+
+    period_value = market.get("period")
+    scope_value = market.get("scope")
+    explicit_canonical_scope = (
+        isinstance(period_value, str)
+        and period_value.strip().casefold() in SUPPORTED_MARKET_PERIODS
+        and isinstance(scope_value, str)
+        and scope_value.strip().casefold() in SUPPORTED_MARKET_SCOPES
+    )
+
+    outcomes = []
+    for odd in odds:
+        if not isinstance(odd, Mapping) or odd.get("oddStatus") not in (None, 0):
+            continue
+        name_value = odd.get("name")
+        if not isinstance(name_value, str) or not name_value.strip():
+            continue
+        name = name_value.strip()
+        normalized_name = name.casefold()
+        if market_key == "h2h":
+            key = _named_team_key(name, home, away)
+        elif market_key == "totals":
+            if odd.get("typeId") == 12 or normalized_name.startswith(
+                ("más", "mas", "over")
+            ):
+                key = "over"
+            elif odd.get("typeId") == 13 or normalized_name.startswith(
+                ("menos", "under")
+            ):
+                key = "under"
+            else:
+                key = None
+        elif normalized_name.startswith(home.casefold()):
+            key = "home"
+        elif normalized_name.startswith(away.casefold()):
+            key = "away"
+        else:
+            key = None
+        if key is None:
+            continue
+        outcome = {
+            "key": key,
+            "name": name,
+            "price": odd.get("price"),
+        }
+        if market_key == "totals":
+            outcome["line"] = odd.get("sv", market.get("sv"))
+        elif market_key == "spreads":
+            line_match = _SPREAD_SELECTION_LINE.search(name)
+            outcome["line"] = (
+                line_match.group(1) if line_match is not None else None
+            )
+        outcomes.append(outcome)
+
+    base = (
+        {
+            "key": market_key,
+            "title": title,
+            "period": period_value.strip().casefold(),
+            "scope": scope_value.strip().casefold(),
+        }
+        if explicit_canonical_scope
+        else {}
+    )
+    if market_key == "totals":
+        sides = {
+            key: [row for row in outcomes if row["key"] == key]
+            for key in ("over", "under")
+        }
+        if any(len(rows) != 1 for rows in sides.values()):
+            return []
+        try:
+            over_line = _strict_number(
+                sides["over"][0].get("line"), "total over line"
+            )
+            under_line = _strict_number(
+                sides["under"][0].get("line"), "total under line"
+            )
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if over_line != under_line:
+            return []
+        if not explicit_canonical_scope:
+            return [generic] if generic is not None else []
+        result = {
+            **base,
+            "outcomes": [sides["over"][0], sides["under"][0]],
+        }
+        result["line"] = sides["over"][0]["line"]
+        return [result]
+    if market_key == "h2h":
+        by_key = {
+            key: [row for row in outcomes if row["key"] == key]
+            for key in ("home", "draw", "away")
+        }
+        complete_two_way = (
+            len(by_key["home"]) == 1
+            and not by_key["draw"]
+            and len(by_key["away"]) == 1
+        )
+        complete_three_way = all(len(by_key[key]) == 1 for key in by_key)
+        if not (complete_two_way or complete_three_way):
+            return []
+        if not explicit_canonical_scope:
+            return [generic] if generic is not None else []
+        return [{**base, "outcomes": outcomes}]
+
+    paired: dict[float, dict[str, list[dict[str, Any]]]] = {}
+    for outcome in outcomes:
+        try:
+            selection_line = _strict_number(
+                outcome.get("line"), "spread selection line"
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+        canonical_line = (
+            selection_line
+            if outcome["key"] == "home"
+            else -selection_line
+        )
+        pair = paired.setdefault(
+            canonical_line, {"home": [], "away": []}
+        )
+        pair[outcome["key"]].append(outcome)
+
+    results = []
+    for pair in paired.values():
+        if len(pair["home"]) != 1 or len(pair["away"]) != 1:
+            continue
+        home_outcome = pair["home"][0]
+        results.append({
+            **base,
+            "line": home_outcome["line"],
+            "outcomes": [home_outcome, pair["away"][0]],
+        })
+    if not explicit_canonical_scope:
+        return [generic] if results and generic is not None else []
+    return results
+
+
+def extract_react_detail_groups(
+    driver: Any, event_id: str, home: str, away: str
+) -> list[dict[str, Any]]:
+    """Return groups only when React detail provenance matches one event."""
+
+    expected_event_id = str(event_id).strip()
+    if not expected_event_id:
+        return []
+    raw = driver.execute_script(
+        _EXTRACT_REACT_DETAIL_MARKETS_SCRIPT,
+        expected_event_id,
+        home,
+        away,
+    )
+    if (
+        not isinstance(raw, Mapping)
+        or raw.get("verified") is not True
+        or str(raw.get("source_event_id") or "").strip()
+        != expected_event_id
+        or not isinstance(raw.get("groups"), list)
+    ):
+        return []
+    return [
+        dict(item)
+        for item in raw["groups"]
+        if isinstance(item, Mapping)
+    ]
+
+
+def _merge_react_detail_groups(
+    accumulated: dict[str, dict[str, Any]],
+    observed: Iterable[Mapping[str, Any]],
+) -> None:
+    """Merge progressive React snapshots by official market and odd IDs."""
+
+    for row in observed:
+        market = row.get("market")
+        odds = row.get("odds")
+        if not isinstance(market, Mapping) or not isinstance(odds, list):
+            continue
+        market_id = str(market.get("id") or "").strip()
+        if not market_id:
+            continue
+        target = accumulated.setdefault(
+            market_id,
+            {"market": dict(market), "odds": []},
+        )
+        target_market = target.get("market")
+        if isinstance(target_market, dict):
+            target_market.update(
+                {
+                    key: value
+                    for key, value in market.items()
+                    if value is not None
+                }
+            )
+        target_odds = target.get("odds")
+        if not isinstance(target_odds, list):
+            target_odds = []
+        by_id = {
+            str(odd.get("id")): dict(odd)
+            for odd in target_odds
+            if isinstance(odd, Mapping) and odd.get("id") is not None
+        }
+        for odd in odds:
+            if isinstance(odd, Mapping) and odd.get("id") is not None:
+                by_id[str(odd["id"])] = dict(odd)
+        target["odds"] = list(by_id.values())
+
+
+def _react_detail_group_signature(
+    accumulated: Mapping[str, Mapping[str, Any]],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted(
+        (market_id, str(odd.get("id")))
+        for market_id, row in accumulated.items()
+        for odd in row.get("odds", [])
+        if isinstance(odd, Mapping) and odd.get("id") is not None
+    ))
+
+
+def _project_react_detail_groups(
+    accumulated: Mapping[str, Mapping[str, Any]],
+    home: str,
+    away: str,
+) -> list[dict[str, Any]]:
+    markets: list[dict[str, Any]] = []
+    for row in accumulated.values():
+        markets.extend(_react_detail_markets_from_group(row, home, away))
+    return markets
+
+
+def extract_react_detail_markets(
+    driver: Any, event_id: str, home: str, away: str
+) -> list[dict[str, Any]]:
+    """Extract exact currently rendered event-level React market records."""
+
+    markets = []
+    for item in extract_react_detail_groups(
+        driver, event_id, home, away
+    ):
+        markets.extend(_react_detail_markets_from_group(item, home, away))
+    return markets
+
+
 def extract_supported_markets(
     driver: Any,
     home: str,
     away: str,
     *,
+    event_id: str | None = None,
     wait_factory: Any = None,
     timeout: float = 8.0,
 ) -> list[dict[str, Any]]:
@@ -789,6 +1361,97 @@ def extract_supported_markets(
     active_wait_factory = wait_factory or WebDriverWait
 
     markets: list[dict[str, Any]] = []
+    accumulated_groups: dict[str, dict[str, Any]] = {}
+    last_signature: tuple[tuple[str, str], ...] | None = None
+    stable_signatures = 0
+    scroll_complete = True
+
+    expected_event_id = str(event_id or "").strip()
+
+    def react_detail_ready(active: Any) -> list[dict[str, Any]] | bool:
+        nonlocal markets, last_signature, stable_signatures, scroll_complete
+        observed = extract_react_detail_groups(
+            active, expected_event_id, home, away
+        )
+        _merge_react_detail_groups(accumulated_groups, observed)
+        signature = _react_detail_group_signature(accumulated_groups)
+        if signature and signature == last_signature:
+            stable_signatures += 1
+        else:
+            stable_signatures = 0
+        last_signature = signature
+        markets = _project_react_detail_groups(
+            accumulated_groups, home, away
+        )
+        try:
+            scroll_state = active.execute_script(
+                _ADVANCE_REACT_DETAIL_MARKETS_SCRIPT,
+                expected_event_id,
+            )
+            if isinstance(scroll_state, Mapping):
+                scroll_top = float(scroll_state.get("scrollTop") or 0)
+                scroll_height = float(scroll_state.get("scrollHeight") or 0)
+                client_height = float(scroll_state.get("clientHeight") or 0)
+                scroll_complete = (
+                    scroll_top + client_height >= scroll_height - 1
+                )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            pass
+        has_deep_market = any(
+            market.get("key") in {"totals", "spreads"}
+            for market in markets
+        )
+        has_source_market = any(
+            market.get("key") == "source_market" for market in markets
+        )
+        if (
+            stable_signatures >= 1
+            and scroll_complete
+            and (has_deep_market or has_source_market)
+        ):
+            return markets
+        return False
+
+    if expected_event_id:
+        try:
+            markets = active_wait_factory(driver, timeout).until(
+                react_detail_ready
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            pass
+    if markets and not any(
+        market.get("key") == "spreads" for market in markets
+    ):
+        try:
+            expanded = driver.execute_script(
+                _EXPAND_REACT_SPREAD_MARKET_SCRIPT,
+                sorted(SUPPORTED_BOX_TITLES["spreads"]),
+            ) is True
+            if expanded:
+                def spread_ready(active: Any) -> list[dict[str, Any]] | bool:
+                    result = react_detail_ready(active)
+                    return (
+                        result
+                        if result and any(
+                            market.get("key") == "spreads"
+                            for market in result
+                        )
+                        else False
+                    )
+
+                markets = active_wait_factory(driver, timeout).until(
+                    spread_ready
+                )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            pass
+    if markets:
+        return markets
     try:
         active_wait_factory(driver, timeout).until(
             lambda active: bool(_available_market_tabs(active))
@@ -996,16 +1659,126 @@ def _raw_event_from_snapshot(raw: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _enrich_event_from_detail(
+    driver: Any,
+    record: dict[str, Any],
+    *,
+    wait_factory: Any,
+    timeout: float,
+    detail_cache: dict[
+        tuple[str, str, str], tuple[dict[str, Any], ...]
+    ] | None,
+    detail_observed_at: datetime | None,
+) -> bool:
+    """Add bounded detail markets to one canonical raw record.
+
+    The return value reports whether the detail was entered and inspected.  A
+    caller holding verified snapshot markets can safely keep them when this
+    returns false; a summary without markets can be discarded by its caller.
+    """
+
+    event_id = str(record["event_id"]).strip()
+    home = str(record["home"]).strip()
+    away = str(record["away"]).strip()
+    if detail_observed_at is not None:
+        try:
+            observed = _mexico_observation(detail_observed_at)
+            starts_at = resolve_mexico_start(
+                str(record.get("date_label") or ""),
+                str(record.get("time_label") or ""),
+                observed,
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not (
+            observed + timedelta(minutes=5)
+            < starts_at
+            <= observed + timedelta(hours=48)
+        ):
+            return False
+    cache_key = (event_id, home.casefold(), away.casefold())
+    if detail_cache is not None and cache_key in detail_cache:
+        existing = record.get("markets")
+        if not isinstance(existing, list):
+            existing = []
+        record["markets"] = [
+            *existing,
+            *deepcopy(detail_cache[cache_key]),
+        ]
+        return True
+    try:
+        entered_detail = driver.execute_script(
+            _CLICK_EVENT_SCRIPT, event_id, home, away
+        ) is True
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        return False
+    if not entered_detail:
+        return False
+
+    inspected = False
+    try:
+        details = extract_supported_markets(
+            driver,
+            home,
+            away,
+            event_id=event_id,
+            wait_factory=wait_factory,
+            timeout=timeout,
+        )
+        existing = record.get("markets")
+        if not isinstance(existing, list):
+            existing = []
+        record["markets"] = [
+            *existing,
+            *(dict(item) for item in details if isinstance(item, Mapping)),
+        ]
+        if detail_cache is not None:
+            detail_cache[cache_key] = tuple(
+                deepcopy(dict(item))
+                for item in details
+                if isinstance(item, Mapping)
+            )
+        inspected = True
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        inspected = False
+    finally:
+        try:
+            driver.execute_script(_RETURN_TO_EVENTS_SCRIPT)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            pass
+        try:
+            active_wait_factory = wait_factory or WebDriverWait
+            active_wait_factory(driver, timeout).until(
+                lambda active: active.execute_script(
+                    _EVENT_LIST_READY_SCRIPT
+                ) is True
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            pass
+    return inspected
+
+
 def extract_playdoit_raw_events(
     driver: Any,
     *,
     wait_factory: Any = None,
     timeout: float = 8.0,
     rejections: list[str] | None = None,
+    detail_cache: dict[
+        tuple[str, str, str], tuple[dict[str, Any], ...]
+    ] | None = None,
+    detail_observed_at: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Capture structured raw records without positional prices or defaults."""
 
-    active_wait_factory = wait_factory or WebDriverWait
     try:
         summaries = driver.execute_script(_EVENT_SUMMARIES_SCRIPT)
     except (KeyboardInterrupt, SystemExit):
@@ -1020,6 +1793,14 @@ def extract_playdoit_raw_events(
             record = _raw_event_from_snapshot(summary)
             if record is None:
                 continue
+            _enrich_event_from_detail(
+                driver,
+                record,
+                wait_factory=wait_factory,
+                timeout=timeout,
+                detail_cache=detail_cache,
+                detail_observed_at=detail_observed_at,
+            )
             records.append(record)
             continue
         if not _complete_summary(summary):
@@ -1037,48 +1818,13 @@ def extract_playdoit_raw_events(
             if rejections is not None:
                 rejections.append(MissingStartTimeError.reason)
             continue
-        event_id = str(record["event_id"]).strip()
-        home = str(record["home"]).strip()
-        away = str(record["away"]).strip()
-        entered_detail = False
-        try:
-            entered_detail = driver.execute_script(
-                _CLICK_EVENT_SCRIPT, event_id, home, away
-            ) is True
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception:
-            continue
-        if not entered_detail:
-            continue
-        try:
-            record["markets"] = extract_supported_markets(
-                driver,
-                home,
-                away,
-                wait_factory=wait_factory,
-                timeout=timeout,
-            )
+        if _enrich_event_from_detail(
+            driver,
+            record,
+            wait_factory=wait_factory,
+            timeout=timeout,
+            detail_cache=detail_cache,
+            detail_observed_at=detail_observed_at,
+        ):
             records.append(record)
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception:
-            continue
-        finally:
-            try:
-                driver.execute_script(_RETURN_TO_EVENTS_SCRIPT)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except Exception:
-                pass
-            try:
-                active_wait_factory(driver, timeout).until(
-                    lambda active: active.execute_script(
-                        _EVENT_LIST_READY_SCRIPT
-                    ) is True
-                )
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except Exception:
-                pass
     return records

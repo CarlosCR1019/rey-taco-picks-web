@@ -36,6 +36,12 @@ def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
         "default": "false",
         "type": "boolean",
     }
+    assert dispatch["inputs"]["synchronize_password"] == {
+        "description": "Reset the database password to the configured GitHub secret",
+        "required": "true",
+        "default": "false",
+        "type": "boolean",
+    }
     assert workflow["permissions"] == {"contents": "read"}
     job = workflow["jobs"]["migrate"]
     assert job["runs-on"] == "ubuntu-latest"
@@ -47,6 +53,13 @@ def test_database_migrations_are_manual_dry_run_first_and_least_privilege():
     }
 
     steps = {step["name"]: step for step in job["steps"]}
+    password_sync = steps["Synchronize database password"]
+    assert password_sync["if"] == "${{ inputs.synchronize_password == true }}"
+    assert (
+        "api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/database/password"
+        in password_sync["run"]
+    )
+    assert "--request PATCH" in password_sync["run"]
     assert "--dry-run" in steps["Preview pending migrations"]["run"]
     pooler = steps["Resolve exact Supabase session pooler"]["run"]
     assert (

@@ -8,6 +8,11 @@ on:
         required: true
         default: false
         type: boolean
+      synchronize_password:
+        description: Reset the database password to the configured GitHub secret
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: rey-taco-database-migrations
@@ -38,6 +43,22 @@ jobs:
           test -n "$SUPABASE_ACCESS_TOKEN"
           test -n "$SUPABASE_DB_PASSWORD"
           test -n "$SUPABASE_PROJECT_REF"
+
+      - name: Synchronize database password
+        if: ${{ inputs.synchronize_password == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$(jq --null-input --compact-output \
+            --arg password "$SUPABASE_DB_PASSWORD" '{password: $password}')"
+          response="$(curl --fail --silent --show-error \
+            --request PATCH \
+            --header "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --data "$payload" \
+            "https://api.supabase.com/v1/projects/$SUPABASE_PROJECT_REF/database/password")"
+          jq --exit-status '.message | type == "string"' <<< "$response" >/dev/null
+          sleep 20
 
       - name: Pin Supabase CLI
         shell: bash

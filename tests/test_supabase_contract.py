@@ -60,6 +60,7 @@ VERTICAL_REMOTE_GUARD_SQL = (
     SQL.parent / "20260824200000_vertical_remote_publish_guard.sql"
 )
 TICKET_EVIDENCE_SQL = SQL.parent / "20260824210000_ticket_evidence.sql"
+TICKET_SOURCE_SQL = SQL.parent / "20260824220000_ticket_source_table.sql"
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -2400,6 +2401,44 @@ class SupabaseContractTests(unittest.TestCase):
 
         self.assertNotIn("ticket_evidence_reviews", text)
         self.assertNotIn("telegram_chat_id", text)
+
+    def test_ticket_source_table_is_private_and_supports_exact_evidence_query(self):
+        self.assertTrue(TICKET_SOURCE_SQL.exists())
+        text = " ".join(
+            TICKET_SOURCE_SQL.read_text(encoding="utf-8").lower().split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "create table if not exists public.tickets_ganadores", text
+        )
+        for fragment in (
+            "archivo text not null",
+            "caption text not null default 'ticket ganador'",
+            "file_id text not null",
+            "file_unique_id text not null default ''",
+            "telegram_chat_id bigint not null",
+            "received_at timestamptz not null default now()",
+        ):
+            self.assertIn(fragment, text)
+        self.assertIn(
+            "create index if not exists tickets_ganadores_admin_received_at_idx",
+            text,
+        )
+        self.assertIn(
+            "alter table public.tickets_ganadores enable row level security",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.tickets_ganadores from public, anon, authenticated, service_role",
+            text,
+        )
+        self.assertIn(
+            "grant select, insert on table public.tickets_ganadores to service_role",
+            text,
+        )
+        self.assertNotIn("create policy", text)
 
 
 if __name__ == "__main__":

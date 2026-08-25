@@ -2375,6 +2375,13 @@ class SupabaseContractTests(unittest.TestCase):
             "ocr_digest text not null check (ocr_digest ~ '^[0-9a-f]{64}$')",
             text,
         )
+        self.assertIn("story_receipt text not null default ''", text)
+        self.assertIn("consumed_at timestamptz", text)
+        self.assertIn(
+            "(story_receipt = '' and consumed_at is null) or "
+            "(story_receipt <> '' and consumed_at is not null)",
+            text,
+        )
         self.assertIn(
             "alter table public.ticket_evidence_reviews enable row level security",
             text,

@@ -26,10 +26,17 @@ create table if not exists public.ticket_evidence_reviews (
   pick_ids bigint[] not null default '{}',
   media_digest text not null check (media_digest ~ '^[0-9a-f]{64}$'),
   ocr_digest text not null check (ocr_digest ~ '^[0-9a-f]{64}$'),
+  story_receipt text not null default ''
+    check (story_receipt = '' or story_receipt ~ '^[A-Za-z0-9_:-]{1,256}$'),
+  consumed_at timestamptz,
   reviewed_at timestamptz not null default now(),
   check (
     (state = 'matched' and ticket_id <> '' and cardinality(pick_ids) in (1, 6))
     or (state = 'pending_review' and cardinality(pick_ids) = 0)
+  ),
+  check (
+    (story_receipt = '' and consumed_at is null)
+    or (story_receipt <> '' and consumed_at is not null)
   )
 );
 

@@ -456,6 +456,103 @@ class SupabaseTicketEvidenceRepository:
         if not valid:
             raise RuntimeError("ticket evidence review was not persisted")
 
+    def is_consumed(
+        self,
+        *,
+        evidence_key: str,
+        report: ResultReport,
+    ) -> bool:
+        from backend.result_reporting import ResultReport
+
+        normalized_key = _telegram_identity(evidence_key, required=True)
+        if (
+            not isinstance(report, ResultReport)
+            or report.kind != "final"
+            or not report.terminal
+        ):
+            raise ValueError("ticket evidence consumption requires a final report")
+        try:
+            rows = (
+                self._client.table("ticket_evidence_reviews")
+                .select("evidence_key,story_receipt,consumed_at")
+                .eq("evidence_key", normalized_key)
+                .eq("batch_id", _canonical_uuid(report.batch_id, field="batch_id"))
+                .eq("portfolio_date", _canonical_date(report.portfolio_date))
+                .eq("state", "matched")
+                .limit(2)
+                .execute()
+                .data
+            )
+        except Exception:
+            raise RuntimeError("ticket evidence consumption query failed") from None
+        if rows == []:
+            return False
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
+            raise RuntimeError("ticket evidence consumption query returned invalid data")
+        row = rows[0]
+        if set(row) != {"evidence_key", "story_receipt", "consumed_at"}:
+            raise RuntimeError("ticket evidence consumption query returned invalid data")
+        if row["evidence_key"] != normalized_key:
+            raise RuntimeError("ticket evidence consumption query returned invalid data")
+        receipt = row["story_receipt"]
+        consumed_at = row["consumed_at"]
+        if receipt == "" and consumed_at is None:
+            return False
+        if (
+            not isinstance(receipt, str)
+            or _SAFE_RECEIPT.fullmatch(receipt) is None
+            or consumed_at is None
+        ):
+            raise RuntimeError("ticket evidence consumption query returned invalid data")
+        _aware_timestamp(consumed_at)
+        return True
+
+    def record_story_receipt(
+        self,
+        *,
+        evidence_key: str,
+        report: ResultReport,
+        receipt: str,
+    ) -> None:
+        from backend.result_reporting import ResultReport
+
+        normalized_key = _telegram_identity(evidence_key, required=True)
+        if (
+            not isinstance(report, ResultReport)
+            or report.kind != "final"
+            or not report.terminal
+        ):
+            raise ValueError("ticket evidence receipt requires a final report")
+        if not isinstance(receipt, str) or _SAFE_RECEIPT.fullmatch(receipt) is None:
+            raise ValueError("ticket evidence receipt is invalid")
+        payload: dict[str, object] = {
+            "story_receipt": receipt,
+            "consumed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            rows = (
+                self._client.table("ticket_evidence_reviews")
+                .update(payload)
+                .eq("evidence_key", normalized_key)
+                .eq("batch_id", _canonical_uuid(report.batch_id, field="batch_id"))
+                .eq("portfolio_date", _canonical_date(report.portfolio_date))
+                .eq("state", "matched")
+                .eq("story_receipt", "")
+                .execute()
+                .data
+            )
+        except Exception:
+            raise RuntimeError("ticket evidence receipt was not persisted") from None
+        valid = (
+            isinstance(rows, list)
+            and len(rows) == 1
+            and isinstance(rows[0], Mapping)
+            and rows[0].get("evidence_key") == normalized_key
+            and rows[0].get("story_receipt") == receipt
+        )
+        if not valid:
+            raise RuntimeError("ticket evidence receipt was not persisted")
+
 
 def _canonical_uuid(value: object, *, field: str) -> str:
     if not isinstance(value, str) or value != value.strip() or value != value.lower():

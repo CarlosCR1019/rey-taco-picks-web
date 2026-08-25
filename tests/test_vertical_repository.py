@@ -933,6 +933,14 @@ class EvidenceQuery:
         self.client.calls.append(("order", column, desc))
         return self
 
+    def limit(self, count: int) -> "EvidenceQuery":
+        self.client.calls.append(("limit", count))
+        return self
+
+    def update(self, payload: dict[str, object]) -> "EvidenceQuery":
+        self.client.calls.append(("update", payload))
+        return self
+
     def upsert(
         self, payload: dict[str, object], *, on_conflict: str
     ) -> "EvidenceQuery":
@@ -1119,3 +1127,81 @@ def test_ticket_review_requires_one_confirmed_upsert_row() -> None:
             decision=EvidenceDecision("pending_review", "", (), "b" * 64),
             media_digest="c" * 64,
         )
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        ([], False),
+        (
+            [
+                {
+                    "evidence_key": "unique-1",
+                    "story_receipt": "",
+                    "consumed_at": None,
+                }
+            ],
+            False,
+        ),
+        (
+            [
+                {
+                    "evidence_key": "unique-1",
+                    "story_receipt": "story_media_1",
+                    "consumed_at": "2026-08-24T18:00:00+00:00",
+                }
+            ],
+            True,
+        ),
+    ],
+)
+def test_ticket_evidence_consumption_is_exact_and_idempotent(
+    rows: object,
+    expected: bool,
+) -> None:
+    client = EvidenceSupabase(rows)
+
+    result = evidence_repository(client).is_consumed(
+        evidence_key="unique-1",
+        report=evidence_report(),
+    )
+
+    assert result is expected
+    assert client.calls == [
+        ("table", "ticket_evidence_reviews"),
+        ("select", "evidence_key,story_receipt,consumed_at"),
+        ("eq", "evidence_key", "unique-1"),
+        ("eq", "batch_id", "44444444-4444-4444-8444-444444444444"),
+        ("eq", "portfolio_date", "2026-08-24"),
+        ("eq", "state", "matched"),
+        ("limit", 2),
+    ]
+
+
+def test_ticket_story_receipt_is_persisted_against_exact_evidence() -> None:
+    client = EvidenceSupabase(
+        [
+            {
+                "evidence_key": "unique-1",
+                "story_receipt": "story_media_1",
+            }
+        ]
+    )
+
+    evidence_repository(client).record_story_receipt(
+        evidence_key="unique-1",
+        report=evidence_report(),
+        receipt="story_media_1",
+    )
+
+    update = client.calls[1]
+    assert update[0] == "update"
+    assert update[1]["story_receipt"] == "story_media_1"
+    assert datetime.fromisoformat(str(update[1]["consumed_at"])).tzinfo is timezone.utc
+    assert client.calls[2:] == [
+        ("eq", "evidence_key", "unique-1"),
+        ("eq", "batch_id", "44444444-4444-4444-8444-444444444444"),
+        ("eq", "portfolio_date", "2026-08-24"),
+        ("eq", "state", "matched"),
+        ("eq", "story_receipt", ""),
+    ]

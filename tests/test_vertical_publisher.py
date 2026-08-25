@@ -3,22 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
-from typing import cast
+from typing import Callable, cast
 
 import pytest
 
 import backend.vertical_publisher as vertical_publisher
 from backend.social_poster import MetaSettings
 from backend.social_repository import MetaSocialBatch
+from backend.result_reporting import build_result_report
 from backend.telegram_publisher import TelegramDestination
+from backend.ticket_evidence import MatchedEvidence
 from backend.vertical_content import VerticalCard, build_public_pick_story
 from backend.vertical_meta import VerticalDelivery
 from backend.vertical_publisher import (
     notify_vertical_failures,
+    publish_final_stories,
     publish_pre_event_stories,
 )
 from backend.vertical_repository import TemporaryAsset, VerticalClaim
 from tests.test_social_poster import INSTAGRAM_ID, TOKEN, batch
+from tests.test_result_reporting import rows_with_states
 
 
 PORTFOLIO_DATE = "2026-08-24"
@@ -145,6 +149,262 @@ class FakeTelegram:
 
 def render(card: VerticalCard) -> bytes:
     return f"jpeg:{card.kind}".encode()
+
+
+def final_report():
+    return build_result_report(rows_with_states(*(["ganado"] * 6)), kind="final")
+
+
+def evidence() -> MatchedEvidence:
+    return MatchedEvidence(
+        "unique-photo-1",
+        "5329224423",
+        "c" * 64,
+        (1,),
+        b"original-ticket-jpeg",
+    )
+
+
+def test_final_result_publishes_summary_then_verified_pick_and_original_evidence() -> None:
+    repository = FakeStoryRepository()
+    meta = FakeMeta()
+    evidence_render_calls: list[tuple[bytes, VerticalCard]] = []
+    evidence_receipts: list[tuple[MatchedEvidence, str]] = []
+
+    result = publish_final_stories(
+        final_report(),
+        evidence=(evidence(),),
+        repository=repository,
+        transport=meta,
+        settings=configured_settings(),
+        renderer=render,
+        evidence_renderer=lambda jpeg, card: evidence_render_calls.append(
+            (jpeg, card)
+        )
+        or render(card),
+        evidence_receipt_recorder=lambda item, receipt: evidence_receipts.append(
+            (item, receipt)
+        ),
+    )
+
+    assert list(result) == [
+        "final_results_story",
+        "verified_result_story",
+        "ticket_evidence_story",
+    ]
+    assert list(result.values()) == ["success", "success", "success"]
+    assert [call.kind for call in repository.claim_calls] == list(result)
+    assert [kind for kind, _ in meta.calls] == list(result)
+    assert evidence_render_calls == [
+        (
+            b"original-ticket-jpeg",
+            next(
+                call
+                for call in repository.complete_calls
+                if cast(VerticalCard, call["package"]).kind
+                == "ticket_evidence_story"
+            )["package"],
+        )
+    ]
+    assert evidence_receipts == [
+        (evidence(), "receipt_ticket_evidence_story")
+    ]
+
+
+def test_evidence_receipt_failure_stays_pending_and_never_completes_delivery() -> None:
+    repository = FakeStoryRepository()
+
+    result = publish_final_stories(
+        final_report(),
+        evidence=(evidence(),),
+        repository=repository,
+        transport=FakeMeta(),
+        settings=configured_settings(),
+        renderer=render,
+        evidence_renderer=lambda _jpeg, card: render(card),
+        evidence_receipt_recorder=lambda _item, _receipt: (_ for _ in ()).throw(
+            RuntimeError("raw database secret")
+        ),
+    )
+
+    assert result["ticket_evidence_story"] == "pending_review"
+    completed_kinds = [
+        cast(VerticalCard, call["package"]).kind
+        for call in repository.complete_calls
+    ]
+    assert "ticket_evidence_story" not in completed_kinds
+
+
+def test_missing_evidence_does_not_block_final_result_summary() -> None:
+    result = publish_final_stories(
+        final_report(),
+        evidence=(),
+        repository=FakeStoryRepository(),
+        transport=FakeMeta(),
+        settings=configured_settings(),
+        renderer=render,
+        evidence_renderer=lambda _jpeg, card: render(card),
+    )
+
+    assert result == {"final_results_story": "success"}
+
+
+def test_final_runtime_collects_evidence_and_uses_original_ticket_renderer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+    client = object()
+    vertical_repository = object()
+    class RuntimeEvidenceRepository:
+        def __init__(self) -> None:
+            self.consumed_calls: list[tuple[str, object]] = []
+            self.receipt_calls: list[tuple[str, object, str]] = []
+
+        def is_consumed(self, *, evidence_key: str, report: object) -> bool:
+            self.consumed_calls.append((evidence_key, report))
+            return False
+
+        def record_story_receipt(
+            self,
+            *,
+            evidence_key: str,
+            report: object,
+            receipt: str,
+        ) -> None:
+            self.receipt_calls.append((evidence_key, report, receipt))
+
+    evidence_repository = RuntimeEvidenceRepository()
+    meta = object()
+
+    monkeypatch.setattr(
+        vertical_publisher,
+        "create_client",
+        lambda url, key: observed.update(client_args=(url, key)) or client,
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseVerticalRepository",
+        lambda **kwargs: observed.update(vertical_args=kwargs) or vertical_repository,
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseTicketEvidenceRepository",
+        lambda value, *, admin_chat_id: observed.update(
+            evidence_args=(value, admin_chat_id)
+        )
+        or evidence_repository,
+    )
+    monkeypatch.setattr(vertical_publisher, "VerticalMetaHttpTransport", lambda: meta)
+    monkeypatch.setattr(
+        vertical_publisher,
+        "collect_matched_evidence",
+        lambda report, **kwargs: observed.update(
+            collection=(report, kwargs)
+        )
+        or (evidence(),),
+    )
+
+    def publish(report, **kwargs):
+        observed["publish"] = (report, kwargs)
+        return {"final_results_story": "success"}
+
+    monkeypatch.setattr(vertical_publisher, "publish_final_stories", publish)
+
+    report = final_report()
+    result = vertical_publisher.publish_final_stories_from_runtime(
+        report,
+        environ=cli_values(
+            TELEGRAM_ADMIN_ID="123456",
+            DAILY_PORTFOLIO_DATE=report.portfolio_date,
+        ),
+    )
+
+    assert result == {"final_results_story": "success"}
+    assert observed["client_args"] == (
+        "https://project.supabase.co",
+        "service-role-secret",
+    )
+    assert observed["evidence_args"] == (client, 123456)
+    publish_report, publish_kwargs = cast(
+        tuple[object, dict[str, object]], observed["publish"]
+    )
+    assert publish_report == report
+    assert publish_kwargs["evidence"] == (evidence(),)
+    assert evidence_repository.consumed_calls == [
+        ("unique-photo-1", report)
+    ]
+    assert publish_kwargs["repository"] is vertical_repository
+    assert publish_kwargs["transport"] is meta
+    evidence_renderer = cast(
+        Callable[[bytes, VerticalCard], bytes], publish_kwargs["evidence_renderer"]
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "render_ticket_evidence_jpeg",
+        lambda jpeg, observed_label: observed.update(
+            rendered=(jpeg, observed_label)
+        )
+        or b"rendered",
+    )
+    card = build_public_pick_story(batch(), portfolio_date=PORTFOLIO_DATE)
+    assert evidence_renderer(b"original", card) == b"rendered"
+    assert observed["rendered"] == (
+        b"original",
+        "2026-08-24 · CDMX",
+    )
+    receipt_recorder = cast(
+        Callable[[MatchedEvidence, str], None],
+        publish_kwargs["evidence_receipt_recorder"],
+    )
+    receipt_recorder(evidence(), "story_media_1")
+    assert evidence_repository.receipt_calls == [
+        ("unique-photo-1", report, "story_media_1")
+    ]
+
+
+def test_final_runtime_alerts_admin_with_safe_vertical_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    telegram = FakeTelegram()
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseVerticalRepository",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(vertical_publisher, "create_client", lambda *_args: object())
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseTicketEvidenceRepository",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "collect_matched_evidence",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_final_stories",
+        lambda *_args, **_kwargs: {
+            "final_results_story": "delivery_failed"
+        },
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "TelegramHttpTransport",
+        lambda token: telegram if token == "telegram-secret" else None,
+    )
+
+    result = vertical_publisher.publish_final_stories_from_runtime(
+        final_report(),
+        environ=cli_values(TELEGRAM_ADMIN_ID="123456"),
+    )
+
+    assert result == {"final_results_story": "delivery_failed"}
+    assert telegram.messages == [
+        "⚠️ Rey Taco · contenido vertical incompleto\n"
+        "• final_results_story: delivery_failed"
+    ]
 
 
 def test_pre_event_publishes_public_then_teaser_and_records_each() -> None:

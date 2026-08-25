@@ -6,19 +6,34 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timezone
 import logging
+import re
 from typing import Protocol
 
+from supabase import create_client
+
 from backend.social_poster import MetaSettings, _runtime_values, resolve_run_key
+from backend.result_reporting import ResultReport
 from backend.social_repository import MetaSocialBatch, SupabaseSocialRepository
-from backend.story_renderer import render_story_jpeg
+from backend.story_renderer import render_story_jpeg, render_ticket_evidence_jpeg
 from backend.telegram_publisher import TelegramDestination, TelegramHttpTransport
+from backend.ticket_evidence import (
+    EvidenceInspector,
+    MatchedEvidence,
+    TelegramTicketFetcher,
+    collect_matched_evidence,
+    tesseract_ocr,
+)
 from backend.vertical_content import (
     VerticalCard,
+    build_final_results_story,
     build_public_pick_story,
+    build_ticket_evidence_card,
+    build_verified_result_story,
     build_vip_teaser_story,
 )
 from backend.vertical_meta import VerticalDelivery, VerticalMetaHttpTransport
 from backend.vertical_repository import (
+    SupabaseTicketEvidenceRepository,
     SupabaseVerticalRepository,
     TemporaryAsset,
     VerticalClaim,
@@ -109,6 +124,7 @@ def _publish_story(
     transport: VerticalTransport,
     settings: MetaSettings,
     renderer: Callable[[VerticalCard], bytes],
+    on_remote_success: Callable[[str], None] | None = None,
 ) -> str:
     """Claim and finish one story without exposing raw dependency errors."""
 
@@ -194,6 +210,16 @@ def _publish_story(
         if delivery.status == "pending_review":
             return "pending_review"
         if delivery.status == "success":
+            if on_remote_success is not None:
+                try:
+                    on_remote_success(delivery.receipt)
+                except Exception as exc:
+                    LOGGER.warning(
+                        "vertical receipt status=ambiguous kind=%s exception=%s",
+                        card.kind,
+                        type(exc).__name__,
+                    )
+                    return "pending_review"
             try:
                 repository.complete(
                     package=card,
@@ -271,6 +297,184 @@ def publish_pre_event_stories(
     return outcomes
 
 
+def publish_final_stories(
+    report: ResultReport,
+    *,
+    evidence: Sequence[MatchedEvidence],
+    repository: VerticalRepository,
+    transport: VerticalTransport,
+    settings: MetaSettings,
+    renderer: Callable[[VerticalCard], bytes],
+    evidence_renderer: Callable[[bytes, VerticalCard], bytes],
+    evidence_receipt_recorder: (
+        Callable[[MatchedEvidence, str], None] | None
+    ) = None,
+) -> dict[str, str]:
+    """Publish final results followed by one validated original ticket."""
+
+    if (
+        not isinstance(report, ResultReport)
+        or report.kind != "final"
+        or not report.terminal
+    ):
+        raise ValueError("final stories require a final report")
+    if not isinstance(evidence, Sequence) or isinstance(evidence, (str, bytes)):
+        raise ValueError("final story evidence must be a sequence")
+    if any(not isinstance(item, MatchedEvidence) for item in evidence):
+        raise ValueError("final story evidence is invalid")
+
+    def publish(
+        card: VerticalCard,
+        render: Callable[[VerticalCard], bytes],
+        *,
+        on_remote_success: Callable[[str], None] | None = None,
+    ) -> str:
+        if settings.dry_run:
+            try:
+                render(card)
+            except Exception as exc:
+                LOGGER.warning(
+                    "vertical render status=failed kind=%s exception=%s",
+                    card.kind,
+                    type(exc).__name__,
+                )
+                return "delivery_failed"
+            return "dry_run"
+        return _publish_story(
+            card,
+            repository=repository,
+            transport=transport,
+            settings=settings,
+            renderer=render,
+            on_remote_success=on_remote_success,
+        )
+
+    outcomes: dict[str, str] = {}
+    summary = build_final_results_story(report)
+    outcomes[summary.kind] = publish(summary, renderer)
+    if not evidence:
+        return outcomes
+
+    item = sorted(
+        evidence,
+        key=lambda value: (-len(value.pick_ids), value.evidence_id),
+    )[0]
+    if len(item.pick_ids) == 1:
+        matching_rows = tuple(
+            row for row in report.rows if int(row["id"]) == item.pick_ids[0]
+        )
+        if len(matching_rows) == 1 and matching_rows[0]["estado"] == "ganado":
+            verified = build_verified_result_story(
+                report,
+                pick_id=item.pick_ids[0],
+            )
+            outcomes[verified.kind] = publish(verified, renderer)
+    evidence_card = build_ticket_evidence_card(
+        report,
+        evidence_id=item.evidence_id,
+        media_digest=item.media_digest,
+    )
+    outcomes[evidence_card.kind] = publish(
+        evidence_card,
+        lambda card: evidence_renderer(item.jpeg, card),
+        on_remote_success=(
+            None
+            if evidence_receipt_recorder is None
+            else lambda receipt: evidence_receipt_recorder(item, receipt)
+        ),
+    )
+    return outcomes
+
+
+def publish_final_stories_from_runtime(
+    report: ResultReport,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build runtime adapters and publish one final vertical package."""
+
+    values = _runtime_values(environ)
+    supabase_url = _required_runtime_string(values, "SUPABASE_URL")
+    service_role_key = _required_runtime_string(
+        values,
+        "SUPABASE_SERVICE_ROLE_KEY",
+    )
+    settings = MetaSettings.from_mapping(values)
+    repository = SupabaseVerticalRepository(
+        url=supabase_url,
+        service_role_key=service_role_key,
+    )
+    matched: tuple[MatchedEvidence, ...] = ()
+    evidence_repository: SupabaseTicketEvidenceRepository | None = None
+    telegram_token = _required_runtime_string(values, "TELEGRAM_BOT_TOKEN")
+    raw_admin_id = _required_runtime_string(values, "TELEGRAM_ADMIN_ID")
+    admin_chat_id = 0
+    if not raw_admin_id:
+        raw_admin_id = _required_runtime_string(values, "TELEGRAM_CHAT_ID")
+    if telegram_token and raw_admin_id:
+        try:
+            if re.fullmatch(r"-?[0-9]{1,19}", raw_admin_id) is None:
+                raise ValueError("Telegram admin identity is invalid")
+            admin_chat_id = int(raw_admin_id)
+            evidence_repository = SupabaseTicketEvidenceRepository(
+                create_client(supabase_url, service_role_key),
+                admin_chat_id=admin_chat_id,
+            )
+            collected = collect_matched_evidence(
+                report,
+                repository=evidence_repository,
+                fetcher=TelegramTicketFetcher(telegram_token),
+                inspector=EvidenceInspector(ocr=tesseract_ocr),
+            )
+            matched = tuple(
+                item
+                for item in collected
+                if not evidence_repository.is_consumed(
+                    evidence_key=item.evidence_id,
+                    report=report,
+                )
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "ticket evidence status=pending_review exception=%s",
+                type(exc).__name__,
+            )
+    outcomes = publish_final_stories(
+        report,
+        evidence=matched,
+        repository=repository,
+        transport=VerticalMetaHttpTransport(),
+        settings=settings,
+        renderer=render_story_jpeg,
+        evidence_renderer=lambda jpeg, card: render_ticket_evidence_jpeg(
+            jpeg,
+            observed_label=f"{card.portfolio_date} · CDMX",
+        ),
+        evidence_receipt_recorder=(
+            None
+            if evidence_repository is None
+            else lambda item, receipt: evidence_repository.record_story_receipt(
+                evidence_key=item.evidence_id,
+                report=report,
+                receipt=receipt,
+            )
+        ),
+    )
+    if not settings.dry_run and telegram_token and admin_chat_id:
+        try:
+            notify_vertical_failures(
+                outcomes,
+                telegram=TelegramHttpTransport(telegram_token),
+                admin_chat_id=str(admin_chat_id),
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical alert status=failed exception=%s",
+                type(exc).__name__,
+            )
+    return outcomes
+
+
 def _validated_outcomes(outcomes: Mapping[str, str]) -> dict[str, str]:
     if not isinstance(outcomes, Mapping):
         raise ValueError("vertical outcomes must be safe")
@@ -336,6 +540,24 @@ def _exit_code(outcomes: Mapping[str, str], *, settings: MetaSettings) -> int:
     if not settings.token or not settings.instagram_user_id:
         return 0
     return int(incomplete)
+
+
+def require_healthy_vertical_outcomes(
+    outcomes: Mapping[str, str],
+    *,
+    settings: MetaSettings,
+) -> None:
+    """Raise one safe error for incomplete configured vertical delivery."""
+
+    safe_outcomes = _validated_outcomes(outcomes)
+    if _exit_code(safe_outcomes, settings=settings) == 0:
+        return
+    failures = ", ".join(
+        f"{name}={status}"
+        for name, status in sorted(safe_outcomes.items())
+        if status not in _HEALTHY_STATUSES
+    )
+    raise RuntimeError(f"vertical delivery incomplete: {failures}")
 
 
 def _parser() -> argparse.ArgumentParser:

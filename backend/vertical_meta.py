@@ -113,6 +113,7 @@ class VerticalMetaHttpTransport:
                 data=data,
                 timeout=30,
                 stream=True,
+                allow_redirects=False,
             ),
         )
         return read_meta_json(response)
@@ -132,6 +133,7 @@ class VerticalMetaHttpTransport:
                     headers=meta_auth_headers(settings.token),
                     timeout=30,
                     stream=True,
+                    allow_redirects=False,
                 ),
             )
             status, payload = read_meta_json(response)
@@ -189,6 +191,191 @@ class VerticalMetaHttpTransport:
             return VerticalDelivery(destination, "success", receipt)
         except Exception:
             return VerticalDelivery(destination, "pending_review")
+
+    def publish_instagram_reel(
+        self,
+        *,
+        video_url: str,
+        settings: MetaSettings,
+    ) -> VerticalDelivery:
+        destination: VerticalDestination = "instagram_reel"
+        if not settings.token or not settings.instagram_user_id:
+            return VerticalDelivery(destination, "not_configured")
+        if not _validated_vertical_url(video_url, suffix=".mp4"):
+            return VerticalDelivery(destination, "media_invalid")
+        try:
+            created = self._post(
+                meta_graph_url(settings, f"{settings.instagram_user_id}/media"),
+                settings,
+                {
+                    "video_url": video_url,
+                    "media_type": "REELS",
+                    "share_to_feed": "true",
+                },
+            )
+            container = _required_id(created, destination=destination)
+            if isinstance(container, VerticalDelivery):
+                return container
+            status = self._wait_for_container(
+                container,
+                settings=settings,
+                destination=destination,
+            )
+            if status is not None:
+                return status
+        except Exception:
+            return VerticalDelivery(destination, "delivery_failed")
+        try:
+            published = self._post(
+                meta_graph_url(settings, f"{settings.instagram_user_id}/media_publish"),
+                settings,
+                {"creation_id": container},
+            )
+        except Exception:
+            return VerticalDelivery(destination, "pending_review")
+        try:
+            receipt = _required_publish_id(published, destination=destination)
+            if isinstance(receipt, VerticalDelivery):
+                return receipt
+            return VerticalDelivery(destination, "success", receipt)
+        except Exception:
+            return VerticalDelivery(destination, "pending_review")
+
+    def publish_facebook_reel(
+        self,
+        *,
+        mp4: bytes,
+        settings: MetaSettings,
+        description: str,
+    ) -> VerticalDelivery:
+        destination: VerticalDestination = "facebook_reel"
+        if not settings.token or not settings.facebook_page_id:
+            return VerticalDelivery(destination, "not_configured")
+        if not _valid_mp4(mp4) or not _valid_description(description):
+            return VerticalDelivery(destination, "media_invalid")
+        try:
+            page_token = self._resolve_page_token(settings)
+            if isinstance(page_token, VerticalDelivery):
+                return page_token
+            start_response = cast(
+                MetaResponse,
+                self._session.post(
+                    meta_graph_url(
+                        settings,
+                        f"{settings.facebook_page_id}/video_reels",
+                    ),
+                    headers=meta_auth_headers(page_token),
+                    data={"upload_phase": "start"},
+                    timeout=30,
+                    stream=True,
+                    allow_redirects=False,
+                ),
+            )
+            start_status, start_payload = read_meta_json(start_response)
+            failure = _meta_failure(destination, start_status, start_payload)
+            if failure is not None:
+                return failure
+            start = _safe_reel_start(start_payload)
+            if start is None:
+                return VerticalDelivery(destination, "delivery_failed")
+            video_id, upload_url = start
+            if not _exact_rupload_url(
+                upload_url,
+                video_id=video_id,
+                version=settings.graph_version,
+            ):
+                return VerticalDelivery(destination, "delivery_failed")
+            upload_response = cast(
+                MetaResponse,
+                self._session.post(
+                    upload_url,
+                    headers={
+                        "Authorization": f"OAuth {page_token}",
+                        "offset": "0",
+                        "file_size": str(len(mp4)),
+                        "Content-Type": "application/octet-stream",
+                        "Accept-Encoding": "identity",
+                    },
+                    data=mp4,
+                    timeout=90,
+                    stream=True,
+                    allow_redirects=False,
+                ),
+            )
+            upload_status, upload_payload = read_meta_json(upload_response)
+            if (
+                upload_status < 200
+                or upload_status >= 300
+                or upload_payload != {"success": True}
+            ):
+                return VerticalDelivery(destination, "delivery_failed")
+            finish_response = cast(
+                MetaResponse,
+                self._session.post(
+                    meta_graph_url(
+                        settings,
+                        f"{settings.facebook_page_id}/video_reels",
+                    ),
+                    headers=meta_auth_headers(page_token),
+                    data={
+                        "upload_phase": "finish",
+                        "video_id": video_id,
+                        "video_state": "PUBLISHED",
+                        "description": description,
+                    },
+                    timeout=30,
+                    stream=True,
+                    allow_redirects=False,
+                ),
+            )
+            finish_status, finish_payload = read_meta_json(finish_response)
+        except Exception:
+            return VerticalDelivery(destination, "pending_review")
+        if meta_token_invalid(finish_payload):
+            return VerticalDelivery(destination, "token_invalid")
+        if finish_status < 200 or finish_status >= 300:
+            return VerticalDelivery(
+                destination,
+                "delivery_failed" if finish_status < 500 else "pending_review",
+            )
+        if finish_payload != {"success": True}:
+            return VerticalDelivery(destination, "pending_review")
+        return VerticalDelivery(destination, "success", video_id)
+
+    def _resolve_page_token(
+        self,
+        settings: MetaSettings,
+    ) -> str | VerticalDelivery:
+        destination: VerticalDestination = "facebook_reel"
+        response = cast(
+            MetaResponse,
+            self._session.get(
+                meta_graph_url(
+                    settings,
+                    f"{settings.facebook_page_id}?fields=access_token",
+                ),
+                headers=meta_auth_headers(settings.token),
+                timeout=30,
+                stream=True,
+                allow_redirects=False,
+            ),
+        )
+        status, payload = read_meta_json(response)
+        failure = _meta_failure(destination, status, payload)
+        if failure is not None:
+            return failure
+        if not isinstance(payload, Mapping) or set(payload) != {"access_token"}:
+            return VerticalDelivery(destination, "delivery_failed")
+        value = payload["access_token"]
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or len(value) > 4096
+            or any(unicode_category(char) in {"Cc", "Cf"} for char in value)
+        ):
+            return VerticalDelivery(destination, "delivery_failed")
+        return value
 
 
 def _required_id(
@@ -252,6 +439,65 @@ def _validated_vertical_url(value: object, *, suffix: str) -> bool:
         and port in {None, 443}
         and parsed.path.startswith("/storage/v1/object/public/social-vertical/")
         and parsed.path.endswith(suffix)
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _valid_mp4(value: object) -> bool:
+    return bool(
+        isinstance(value, bytes)
+        and 12 <= len(value) <= 50 * 1024 * 1024
+        and value[4:8] == b"ftyp"
+    )
+
+
+def _valid_description(value: object) -> bool:
+    return bool(
+        isinstance(value, str)
+        and value
+        and value == value.strip()
+        and len(value) <= 2200
+        and all(
+            character in {"\n", "\t"}
+            or unicode_category(character) not in {"Cc", "Cf"}
+            for character in value
+        )
+    )
+
+
+def _safe_reel_start(payload: object) -> tuple[str, str] | None:
+    if not isinstance(payload, Mapping) or set(payload) != {"video_id", "upload_url"}:
+        return None
+    video_id = payload["video_id"]
+    upload_url = payload["upload_url"]
+    if (
+        not isinstance(video_id, str)
+        or _SAFE_RECEIPT.fullmatch(video_id) is None
+        or not isinstance(upload_url, str)
+    ):
+        return None
+    return video_id, upload_url
+
+
+def _exact_rupload_url(
+    value: str,
+    *,
+    video_id: str,
+    version: str,
+) -> bool:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except (AttributeError, ValueError):
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname == "rupload.facebook.com"
+        and parsed.username is None
+        and parsed.password is None
+        and port in {None, 443}
+        and parsed.path == f"/video-upload/{version}/{video_id}"
         and not parsed.query
         and not parsed.fragment
     )

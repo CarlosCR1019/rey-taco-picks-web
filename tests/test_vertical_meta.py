@@ -191,6 +191,35 @@ def test_facebook_reel_runs_start_upload_finish_with_page_token(
     )
 
 
+def test_facebook_reel_accepts_upload_hash_metadata(
+    reel_settings: MetaSettings,
+) -> None:
+    upload_url = "https://rupload.facebook.com/video-upload/v26.0/fb-video"
+    session = FakeSession()
+    session.queue_gets(
+        FakeResponse(
+            200,
+            {"access_token": "page-token", "id": FACEBOOK_ID},
+        )
+    )
+    session.queue_posts(
+        FakeResponse(
+            200,
+            {"video_id": "fb-video", "upload_url": upload_url},
+        ),
+        FakeResponse(200, {"success": True, "h": "safe-upload-hash"}),
+        FakeResponse(200, {"success": True}),
+    )
+
+    result = VerticalMetaHttpTransport(session=session).publish_facebook_reel(
+        mp4=REEL_BYTES,
+        settings=reel_settings,
+        description="Resultados verificados",
+    )
+
+    assert result == VerticalDelivery("facebook_reel", "success", "fb-video")
+
+
 @pytest.mark.parametrize(
     "upload_url",
     [

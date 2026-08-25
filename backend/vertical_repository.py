@@ -5,14 +5,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 import re
 from typing import Literal, Protocol, cast
 from uuid import UUID, uuid4
+import warnings
 
+from PIL import Image, UnidentifiedImageError
 from supabase import create_client
 
 from backend.social_repository import (
+    _validate_upload_response,
     _validate_service_role_key,
+    _validated_public_url,
     _validated_supabase_url,
 )
 from backend.vertical_content import ReelPackage, VerticalCard
@@ -45,7 +50,27 @@ class _SupabaseRpc(Protocol):
     def execute(self) -> _SupabaseResponse: ...
 
 
+class _StorageBucket(Protocol):
+    def upload(
+        self,
+        *,
+        path: str,
+        file: bytes,
+        file_options: dict[str, str],
+    ) -> object: ...
+
+    def get_public_url(self, path: str) -> object: ...
+
+    def remove(self, paths: list[str]) -> object: ...
+
+
+class _Storage(Protocol):
+    def from_(self, bucket_name: str) -> _StorageBucket: ...
+
+
 class _SupabaseClient(Protocol):
+    storage: _Storage
+
     def rpc(
         self,
         function_name: str,
@@ -59,10 +84,18 @@ class VerticalClaim:
     attempt_id: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class TemporaryAsset:
+    object_key: str
+    url: str
+    mime_type: Literal["image/jpeg", "video/mp4"]
+
+
 class SupabaseVerticalRepository:
     """Service-role adapter for atomic vertical delivery claims."""
 
     BUCKET = "social-vertical"
+    MAX_STORY_BYTES = 5 * 1024 * 1024
 
     def __init__(
         self,
@@ -80,6 +113,51 @@ class SupabaseVerticalRepository:
             self._client = cast(_SupabaseClient, factory(self._url, service_role_key))
         except Exception:
             raise RuntimeError("could not create vertical repository client") from None
+
+    def upload_story(self, *, card: VerticalCard, jpeg: bytes) -> TemporaryAsset:
+        _validated_package(card)
+        _validate_story_jpeg(jpeg, max_bytes=self.MAX_STORY_BYTES)
+        object_key = (
+            f"stories/{card.portfolio_date}/{card.kind}-{card.digest}.jpg"
+        )
+        try:
+            bucket = self._client.storage.from_(self.BUCKET)
+            response = bucket.upload(
+                path=object_key,
+                file=jpeg,
+                file_options={"content-type": "image/jpeg", "upsert": "true"},
+            )
+        except Exception:
+            raise RuntimeError("temporary story upload failed") from None
+        _validate_upload_response(
+            response,
+            bucket=self.BUCKET,
+            object_key=object_key,
+        )
+        try:
+            raw_url = bucket.get_public_url(object_key)
+        except Exception:
+            raise RuntimeError("temporary story public URL failed") from None
+        url = _validated_public_url(
+            raw_url,
+            supabase_url=self._url,
+            bucket=self.BUCKET,
+            object_key=object_key,
+        )
+        return TemporaryAsset(object_key, url, "image/jpeg")
+
+    def delete_temporary(self, asset: TemporaryAsset) -> None:
+        if not isinstance(asset, TemporaryAsset) or not asset.object_key.startswith(
+            ("stories/", "reels/", "evidence/")
+        ):
+            raise ValueError("temporary asset key is invalid")
+        try:
+            result = self._client.storage.from_(self.BUCKET).remove(
+                [asset.object_key]
+            )
+        except Exception:
+            raise RuntimeError("temporary asset cleanup failed") from None
+        _validate_remove_response(result, asset.object_key)
 
     def claim(
         self,
@@ -161,6 +239,46 @@ def _canonical_uuid(value: object, *, field: str) -> str:
     if normalized != value:
         raise ValueError(f"{field} must be a canonical UUID")
     return normalized
+
+
+def _validate_story_jpeg(value: object, *, max_bytes: int) -> None:
+    if not isinstance(value, bytes):
+        raise ValueError("story jpeg must be immutable bytes")
+    if len(value) > max_bytes:
+        raise ValueError("story jpeg must not exceed 5 MiB")
+    if len(value) < 4 or not value.startswith(b"\xff\xd8") or not value.endswith(
+        b"\xff\xd9"
+    ):
+        raise ValueError("story jpeg must contain JPEG bytes")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(value)) as image:
+                if image.format != "JPEG":
+                    raise ValueError("story jpeg must use JPEG format")
+                if image.mode != "RGB":
+                    raise ValueError("story jpeg must use RGB mode")
+                if image.size != (1080, 1920):
+                    raise ValueError("story jpeg must be exactly 1080x1920")
+                image.load()
+    except (
+        OSError,
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ):
+        raise ValueError("story jpeg must contain valid JPEG bytes") from None
+
+
+def _validate_remove_response(value: object, object_key: str) -> None:
+    valid = (
+        isinstance(value, list)
+        and len(value) == 1
+        and isinstance(value[0], dict)
+        and value[0].get("name") == object_key
+    )
+    if not valid:
+        raise RuntimeError("temporary asset cleanup response was invalid")
 
 
 def _canonical_date(value: object) -> str:

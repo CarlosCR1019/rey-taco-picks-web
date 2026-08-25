@@ -1,18 +1,87 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 import re
 
+from PIL import Image
 import pytest
 
 from backend.vertical_content import VerticalCard
-from backend.vertical_repository import SupabaseVerticalRepository, VerticalClaim
+from backend.vertical_repository import (
+    SupabaseVerticalRepository,
+    TemporaryAsset,
+    VerticalClaim,
+)
 
 
 BATCH_ID = "22222222-2222-4222-8222-222222222222"
 ATTEMPT_ID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
+STORY_OBJECT_KEY = f"stories/2026-08-24/public_pick_story-{'a' * 64}.jpg"
+STORY_URL = (
+    "https://project.supabase.co/storage/v1/object/public/social-vertical/"
+    f"{STORY_OBJECT_KEY}"
+)
+
+
+@dataclass(frozen=True)
+class FakeUploadResponse:
+    path: str
+    full_path: str
+    fullPath: str
+
+
+class FakeBucket:
+    def __init__(self) -> None:
+        self.upload_calls: list[dict[str, object]] = []
+        self.remove_calls: list[list[str]] = []
+        self.upload_exception: Exception | None = None
+        self.public_url_exception: Exception | None = None
+        self.remove_exception: Exception | None = None
+        full_path = f"social-vertical/{STORY_OBJECT_KEY}"
+        self.upload_response: object = FakeUploadResponse(
+            STORY_OBJECT_KEY, full_path, full_path
+        )
+        self.public_url: object = STORY_URL
+        self.remove_response: object = [{"name": STORY_OBJECT_KEY}]
+
+    def upload(
+        self,
+        *,
+        path: str,
+        file: bytes,
+        file_options: dict[str, str],
+    ) -> object:
+        if self.upload_exception is not None:
+            raise self.upload_exception
+        self.upload_calls.append(
+            {"path": path, "file": file, "file_options": file_options}
+        )
+        return self.upload_response
+
+    def get_public_url(self, path: str) -> object:
+        if self.public_url_exception is not None:
+            raise self.public_url_exception
+        return self.public_url
+
+    def remove(self, paths: list[str]) -> object:
+        if self.remove_exception is not None:
+            raise self.remove_exception
+        self.remove_calls.append(paths)
+        return self.remove_response
+
+
+class FakeStorage:
+    def __init__(self) -> None:
+        self.bucket = FakeBucket()
+        self.from_calls: list[str] = []
+
+    def from_(self, bucket_name: str) -> FakeBucket:
+        self.from_calls.append(bucket_name)
+        return self.bucket
 
 
 class FakeResponse:
@@ -37,6 +106,7 @@ class FakeSupabase:
         self.rpc_calls: list[tuple[str, dict[str, object]]] = []
         self.rpc_exception: Exception | None = None
         self.execute_exception: Exception | None = None
+        self.storage = FakeStorage()
 
     def rpc(self, name: str, arguments: dict[str, object]) -> FakeRpc:
         if self.rpc_exception is not None:
@@ -75,6 +145,188 @@ def package(**overrides: object) -> VerticalCard:
     }
     values.update(overrides)
     return VerticalCard(**values)  # type: ignore[arg-type]
+
+
+def story_jpeg(
+    *, size: tuple[int, int] = (1080, 1920), mode: str = "RGB"
+) -> bytes:
+    output = BytesIO()
+    Image.new(mode, size).save(output, format="JPEG")
+    return output.getvalue()
+
+
+def test_upload_story_uses_digest_key_and_exact_public_url() -> None:
+    client = FakeSupabase()
+    repo = repository(client)
+    card = package()
+    jpeg = story_jpeg()
+
+    asset = repo.upload_story(card=card, jpeg=jpeg)
+
+    assert asset.object_key == STORY_OBJECT_KEY
+    assert asset.url == STORY_URL
+    assert asset.mime_type == "image/jpeg"
+    assert client.storage.from_calls == ["social-vertical"]
+    assert client.storage.bucket.upload_calls == [
+        {
+            "path": STORY_OBJECT_KEY,
+            "file": jpeg,
+            "file_options": {
+                "content-type": "image/jpeg",
+                "upsert": "true",
+            },
+        }
+    ]
+
+
+def test_delete_requires_the_same_bucket_and_exact_object_key() -> None:
+    client = FakeSupabase()
+    repo = repository(client)
+    asset = repo.upload_story(card=package(), jpeg=story_jpeg())
+    client.storage.from_calls.clear()
+
+    repo.delete_temporary(asset)
+
+    assert client.storage.from_calls == ["social-vertical"]
+    assert client.storage.bucket.remove_calls == [[asset.object_key]]
+
+
+@pytest.mark.parametrize(
+    ("jpeg", "message"),
+    [
+        (b"not-a-jpeg", "JPEG"),
+        (story_jpeg(size=(1080, 1919)), "1080x1920"),
+        (story_jpeg(mode="CMYK"), "RGB"),
+        (b"\xff\xd8" + b"x" * (5 * 1024 * 1024), "5 MiB"),
+    ],
+    ids=("not-jpeg", "wrong-size", "cmyk", "oversized"),
+)
+def test_upload_story_rejects_invalid_jpeg_before_storage(
+    jpeg: bytes, message: str
+) -> None:
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError, match=message):
+        repository(client).upload_story(card=package(), jpeg=jpeg)
+
+    assert client.storage.from_calls == []
+
+
+@pytest.mark.parametrize(
+    "jpeg",
+    [bytearray(b"jpeg"), memoryview(b"jpeg"), "jpeg"],
+    ids=("bytearray", "memoryview", "string"),
+)
+def test_upload_story_accepts_only_immutable_bytes(jpeg: object) -> None:
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError, match="immutable bytes"):
+        repository(client).upload_story(
+            card=package(),
+            jpeg=jpeg,  # type: ignore[arg-type]
+        )
+
+    assert client.storage.from_calls == []
+
+
+def test_upload_story_revalidates_card_identity_before_storage() -> None:
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError, match="digest"):
+        repository(client).upload_story(
+            card=package(digest="A" * 64),
+            jpeg=story_jpeg(),
+        )
+
+    assert client.storage.from_calls == []
+
+
+def test_upload_story_rejects_unexpected_upload_response() -> None:
+    client = FakeSupabase()
+    client.storage.bucket.upload_response = {"path": STORY_OBJECT_KEY}
+
+    with pytest.raises(RuntimeError, match="upload response"):
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+
+@pytest.mark.parametrize(
+    "public_url",
+    [
+        STORY_URL.replace("https://", "http://"),
+        STORY_URL.replace("project.supabase.co", "attacker.example"),
+        STORY_URL.replace("social-vertical", "other-bucket"),
+        STORY_URL + "?token=unexpected",
+    ],
+)
+def test_upload_story_requires_exact_public_url(public_url: object) -> None:
+    client = FakeSupabase()
+    client.storage.bucket.public_url = public_url
+
+    with pytest.raises(RuntimeError, match="public URL"):
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+
+@pytest.mark.parametrize("stage", ["upload", "public_url"])
+def test_upload_story_sanitizes_storage_exceptions(stage: str) -> None:
+    client = FakeSupabase()
+    setattr(
+        client.storage.bucket,
+        f"{stage}_exception",
+        RuntimeError("raw provider body service-secret"),
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert str(captured.value) in {
+        "temporary story upload failed",
+        "temporary story public URL failed",
+    }
+    assert "service-secret" not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "asset",
+    [
+        object(),
+        TemporaryAsset("private/file.jpg", STORY_URL, "image/jpeg"),
+    ],
+)
+def test_delete_rejects_non_temporary_assets_before_storage(asset: object) -> None:
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError, match="key is invalid"):
+        repository(client).delete_temporary(asset)  # type: ignore[arg-type]
+
+    assert client.storage.from_calls == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [None, [], [{"name": "stories/other.jpg"}], [{"name": STORY_OBJECT_KEY}] * 2],
+)
+def test_delete_requires_exact_remove_confirmation(response: object) -> None:
+    client = FakeSupabase()
+    client.storage.bucket.remove_response = response
+    asset = TemporaryAsset(STORY_OBJECT_KEY, STORY_URL, "image/jpeg")
+
+    with pytest.raises(RuntimeError, match="cleanup response"):
+        repository(client).delete_temporary(asset)
+
+
+def test_delete_sanitizes_storage_exception() -> None:
+    client = FakeSupabase()
+    client.storage.bucket.remove_exception = RuntimeError(
+        "raw provider body service-secret"
+    )
+    asset = TemporaryAsset(STORY_OBJECT_KEY, STORY_URL, "image/jpeg")
+
+    with pytest.raises(RuntimeError, match=r"^temporary asset cleanup failed$") as raised:
+        repository(client).delete_temporary(asset)
+
+    assert "service-secret" not in str(raised.value)
+    assert raised.value.__cause__ is None
 
 
 def claimed_client() -> FakeSupabase:

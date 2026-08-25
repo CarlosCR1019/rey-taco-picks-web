@@ -209,3 +209,10 @@ def test_runbook_documents_interactive_migration_recovery_and_rollback():
     assert "rollback" in normalized
     assert "no fuerza" in normalized
     assert "reinicio" in normalized
+
+
+def test_runbook_documents_hidden_task_inspection_and_manual_start():
+    text = source(RUNBOOK)
+    assert "tarea oculta" in text.lower()
+    assert 'Get-ScheduledTask -TaskName "Rey Taco Picks Interactive Runner"' in text
+    assert 'Start-ScheduledTask -TaskName "Rey Taco Picks Interactive Runner"' in text

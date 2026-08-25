@@ -2,20 +2,22 @@ import './style.css';
 import type { User } from '@supabase/supabase-js';
 import { renderShell } from './app/render';
 import { visibleHistory } from './app/history';
-import { publicCounterLabel, renderPublicCards } from './app/picks';
+import { publicCounterLabel } from './app/picks';
+import { renderTimeBoard } from './app/timeBoard';
 import { initDailyVerseBanner } from './dailyVerse';
-import { formatEvidenceSupport } from './domain/evidence';
 import { calculatePerformance } from './domain/metrics';
+import { currentMexicoBlockIndex, mexicoDateKey } from './domain/timeBlocks';
 import { statusLabel, type PickStatus } from './domain/picks';
 import { supabase } from './lib/supabase';
 import { getAdConfig, mountAd } from './services/ads';
 import { telegramLinkUrl } from './services/account';
 import { trackConversion, trackWhenVisible } from './services/analytics';
-import { escapeHtml, loadHistory, loadLocalPublicPicks, loadPublicPicks, loadSubscriberPicks, type PickRow } from './services/data';
+import { escapeHtml, loadDailyPublicPicks, loadHistory, loadLocalPublicPicks, loadSubscriberPicks, type PickRow } from './services/data';
 import { isSubscriberRpcActive } from './services/membership';
 
 type AppState = {
   picks: PickRow[];
+  publicBoard: PickRow[];
   history: PickRow[];
   pickFilter: string;
   historyFilter: string;
@@ -24,7 +26,7 @@ type AppState = {
 };
 
 const state: AppState = {
-  picks: [], history: [], pickFilter: 'all', historyFilter: 'all', user: null, isVip: false,
+  picks: [], publicBoard: [], history: [], pickFilter: 'all', historyFilter: 'all', user: null, isVip: false,
 };
 let membershipGeneration = 0;
 
@@ -48,31 +50,21 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
-function pickCard(row: PickRow): string {
-  const locked = row.visibility === 'premium' && !state.isVip;
-  return `
-    <article class="pick-card ${locked ? 'locked' : ''}">
-      <div class="pick-meta"><span>${escapeHtml(row.categoria)}</span><span>${formatDate(row.fecha_evento || row.fecha_generacion)} · CDMX</span></div>
-      <h3>${escapeHtml(row.partido)}</h3>
-      ${locked ? '<div class="locked-pick"><strong>♛ Selección VIP</strong><span>Inicia sesión con una membresía activa para verla.</span></div>' : `
-        <div class="selection-row"><span>Selección</span><strong>${escapeHtml(row.pick)}</strong><b>@ ${escapeHtml(row.cuota)}</b></div>
-        <p>${escapeHtml(row.razonamiento)}</p>
-      `}
-      <div class="pick-footer"><span>${escapeHtml(formatEvidenceSupport(row.confianza))}</span><span class="status status-${row.estado}">${statusLabel(row.estado as PickStatus)}</span></div>
-    </article>`;
-}
-
 function renderPicks(): void {
   const root = byId('picks-container');
   if (!root) return;
   const rows = state.picks.filter(row => state.pickFilter === 'all' || categoryKey(row.categoria) === state.pickFilter);
-  root.innerHTML = state.isVip
-    ? rows.length
-      ? rows.map(pickCard).join('')
-      : '<div class="state-card"><strong>No hay picks disponibles en este filtro.</strong><span>Vuelve más tarde; no publicamos selecciones solo para llenar espacio.</span></div>'
-    : renderPublicCards(rows);
+  const now = new Date();
+  root.innerHTML = renderTimeBoard(rows, {
+    dateKey: mexicoDateKey(now),
+    activeBlock: currentMexicoBlockIndex(now),
+    isVip: state.isVip,
+  });
   const updated = byId('picks-updated');
-  if (updated) updated.textContent = state.isVip ? 'Cartera VIP activa' : publicCounterLabel(rows.length);
+  if (updated) {
+    const pendingPublic = rows.filter(row => row.estado === 'pendiente' && row.visibility === 'public').length;
+    updated.textContent = state.isVip ? 'Cartera VIP activa' : publicCounterLabel(pendingPublic);
+  }
   byId<HTMLButtonElement>('inline-vip-button')?.addEventListener('click', startVipCheckout);
 }
 
@@ -96,17 +88,23 @@ function renderHistory(): void {
 async function refreshData(): Promise<void> {
   if (!supabase) {
     state.picks = await loadLocalPublicPicks();
+    state.publicBoard = state.picks;
     state.history = [];
     renderPicks();
     renderHistory();
     return;
   }
-  const [picks, history] = await Promise.all([loadPublicPicks(supabase), loadHistory(supabase)]);
-  state.picks = picks;
-  state.history = [...history, ...picks.filter(pick => !history.some(row => row.id === pick.id))];
+  const now = new Date();
+  const [board, history] = await Promise.all([
+    loadDailyPublicPicks(supabase, mexicoDateKey(now)),
+    loadHistory(supabase),
+  ]);
+  state.publicBoard = board;
+  state.picks = board;
+  state.history = history;
   renderPicks();
   renderHistory();
-  if (picks.length) trackConversion('free_pick_viewed');
+  if (board.some(row => row.estado === 'pendiente')) trackConversion('free_pick_viewed');
   if (history.length) trackConversion('history_viewed');
 }
 
@@ -114,7 +112,7 @@ async function checkMembership(user: User | null): Promise<void> {
   const generation = ++membershipGeneration;
   state.user = user;
   state.isVip = false;
-  state.picks = state.picks.filter(pick => pick.visibility === 'public');
+  state.picks = state.publicBoard;
   renderPicks();
   if (user && supabase) {
     const response = await supabase.rpc('is_active_subscriber', { check_user: user.id });
@@ -134,11 +132,12 @@ async function checkMembership(user: User | null): Promise<void> {
     trackConversion('subscription_confirmed');
     const premium = await loadSubscriberPicks(supabase);
     if (generation !== membershipGeneration) return;
-    if (premium.length) state.picks = premium;
+    state.picks = [
+      ...state.publicBoard,
+      ...premium.filter(pick => !state.publicBoard.some(row => row.id === pick.id)),
+    ];
   } else {
-    const publicPicks = supabase ? await loadPublicPicks(supabase) : await loadLocalPublicPicks();
-    if (generation !== membershipGeneration) return;
-    state.picks = publicPicks;
+    state.picks = state.publicBoard;
   }
   renderPicks();
 }

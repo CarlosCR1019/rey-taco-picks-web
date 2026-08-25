@@ -267,6 +267,40 @@ def test_upload_story_rejects_reel_package_before_storage() -> None:
     assert client.storage.from_calls == []
 
 
+def test_repository_uploads_validated_mp4_under_digest_key() -> None:
+    client = FakeSupabase()
+    reel = ReelPackage(
+        batch_id=BATCH_ID,
+        portfolio_date="2026-08-24",
+        digest="b" * 64,
+        caption="Cierre verificado",
+    )
+    object_key = f"reels/2026-08-24/daily_results_reel-{reel.digest}.mp4"
+    url = (
+        "https://project.supabase.co/storage/v1/object/public/"
+        f"social-vertical/{object_key}"
+    )
+    full_path = f"social-vertical/{object_key}"
+    client.storage.bucket.upload_response = FakeUploadResponse(
+        object_key,
+        full_path,
+        full_path,
+    )
+    client.storage.bucket.public_url = url
+    mp4 = b"\x00\x00\x00\x18ftypisom" + (b"\x00" * 64)
+
+    asset = repository(client).upload_reel(package=reel, mp4=mp4)
+
+    assert asset == TemporaryAsset(object_key, url, "video/mp4")
+    assert client.storage.bucket.upload_calls == [
+        {
+            "path": object_key,
+            "file": mp4,
+            "file_options": {"content-type": "video/mp4", "upsert": "true"},
+        }
+    ]
+
+
 def test_upload_story_rejects_unexpected_upload_response() -> None:
     client = FakeSupabase()
     client.storage.bucket.upload_response = {"path": STORY_OBJECT_KEY}

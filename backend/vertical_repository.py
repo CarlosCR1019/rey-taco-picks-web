@@ -119,6 +119,7 @@ class SupabaseVerticalRepository:
 
     BUCKET = "social-vertical"
     MAX_STORY_BYTES = 5 * 1024 * 1024
+    MAX_REEL_BYTES = 50 * 1024 * 1024
 
     def __init__(
         self,
@@ -179,6 +180,55 @@ class SupabaseVerticalRepository:
             _best_effort_remove(bucket, object_key)
             raise
         return TemporaryAsset(object_key, url, "image/jpeg")
+
+    def upload_reel(
+        self,
+        *,
+        package: ReelPackage,
+        mp4: bytes,
+    ) -> TemporaryAsset:
+        if not isinstance(package, ReelPackage):
+            raise ValueError("reel upload requires one ReelPackage")
+        _validated_package(package)
+        _validate_reel_mp4(mp4, max_bytes=self.MAX_REEL_BYTES)
+        object_key = (
+            f"reels/{package.portfolio_date}/"
+            f"daily_results_reel-{package.digest}.mp4"
+        )
+        try:
+            bucket = self._client.storage.from_(self.BUCKET)
+            response = bucket.upload(
+                path=object_key,
+                file=mp4,
+                file_options={"content-type": "video/mp4", "upsert": "true"},
+            )
+        except Exception:
+            raise RuntimeError("temporary reel upload failed") from None
+        try:
+            _validate_upload_response(
+                response,
+                bucket=self.BUCKET,
+                object_key=object_key,
+            )
+        except Exception:
+            _best_effort_remove(bucket, object_key)
+            raise
+        try:
+            raw_url = bucket.get_public_url(object_key)
+        except Exception:
+            _best_effort_remove(bucket, object_key)
+            raise RuntimeError("temporary reel public URL failed") from None
+        try:
+            url = _validated_public_url(
+                raw_url,
+                supabase_url=self._url,
+                bucket=self.BUCKET,
+                object_key=object_key,
+            )
+        except Exception:
+            _best_effort_remove(bucket, object_key)
+            raise
+        return TemporaryAsset(object_key, url, "video/mp4")
 
     def delete_temporary(self, asset: TemporaryAsset) -> None:
         object_key = _validated_temporary_asset(
@@ -593,6 +643,16 @@ def _validate_story_jpeg(value: object, *, max_bytes: int) -> None:
         Image.DecompressionBombWarning,
     ):
         raise ValueError("story jpeg must contain valid JPEG bytes") from None
+
+
+def _validate_reel_mp4(value: object, *, max_bytes: int) -> None:
+    if (
+        not isinstance(value, bytes)
+        or len(value) < 12
+        or len(value) > max_bytes
+        or value[4:8] != b"ftyp"
+    ):
+        raise ValueError("reel must contain bounded immutable MP4 bytes")
 
 
 def _validate_remove_response(value: object, object_key: str) -> None:

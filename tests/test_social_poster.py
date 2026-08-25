@@ -15,6 +15,13 @@ from PIL import Image
 import pytest
 import requests
 
+from backend.meta_http import (
+    meta_auth_headers,
+    meta_graph_url,
+    meta_token_invalid,
+    read_meta_json,
+    safe_meta_id,
+)
 import backend.social_poster as social_poster
 from backend.social_content import (
     SocialCaptions,
@@ -142,6 +149,25 @@ class FakeSession:
         if isinstance(response, BaseException):
             raise response
         return response
+
+
+def test_extracted_meta_helpers_preserve_feed_security_contract() -> None:
+    response = FakeResponse(payload={"id": "fb_photo:123"})
+
+    assert read_meta_json(response) == (200, {"id": "fb_photo:123"})
+    assert response.close_count == 1
+    assert safe_meta_id({"id": "fb_photo:123"}) == "fb_photo:123"
+    assert safe_meta_id({"id": "unsafe id!"}) is None
+    assert meta_token_invalid({"error": {"code": 190}}) is True
+    assert meta_auth_headers(TOKEN) == {
+        "Authorization": f"Bearer {TOKEN}",
+        "Accept-Encoding": "identity",
+    }
+    assert meta_graph_url(configured_settings(), "123/photos") == (
+        "https://graph.facebook.com/v26.0/123/photos"
+    )
+    with pytest.raises(ValueError):
+        meta_graph_url(configured_settings(), "../token")
 
 
 def configured_settings(**overrides: str) -> MetaSettings:
@@ -404,7 +430,6 @@ def test_facebook_permission_error_resolves_page_token_and_retries_once(
         "Authorization": f"Bearer {page_token}",
         "Accept-Encoding": "identity",
     }
-    combined = caplog.text + repr(session.post_calls) + repr(session.get_calls)
     assert page_token not in caplog.text
     assert TOKEN not in caplog.text
     assert page_token not in session.post_calls[0][0]

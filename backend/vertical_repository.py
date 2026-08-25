@@ -125,6 +125,8 @@ class SupabaseVerticalRepository:
             raise RuntimeError("could not create vertical repository client") from None
 
     def upload_story(self, *, card: VerticalCard, jpeg: bytes) -> TemporaryAsset:
+        if not isinstance(card, VerticalCard):
+            raise ValueError("story upload requires one VerticalCard")
         _validated_package(card)
         _validate_story_jpeg(jpeg, max_bytes=self.MAX_STORY_BYTES)
         object_key = (

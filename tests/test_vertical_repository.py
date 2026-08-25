@@ -8,7 +8,7 @@ import re
 from PIL import Image
 import pytest
 
-from backend.vertical_content import VerticalCard
+from backend.vertical_content import ReelPackage, VerticalCard
 from backend.vertical_repository import (
     SupabaseVerticalRepository,
     TemporaryAsset,
@@ -240,6 +240,24 @@ def test_upload_story_revalidates_card_identity_before_storage() -> None:
     with pytest.raises(ValueError, match="digest"):
         repository(client).upload_story(
             card=package(digest="A" * 64),
+            jpeg=story_jpeg(),
+        )
+
+    assert client.storage.from_calls == []
+
+
+def test_upload_story_rejects_reel_package_before_storage() -> None:
+    client = FakeSupabase()
+    reel = ReelPackage(
+        batch_id=BATCH_ID,
+        portfolio_date="2026-08-24",
+        digest="b" * 64,
+        caption="Cierre verificado",
+    )
+
+    with pytest.raises(ValueError, match="VerticalCard"):
+        repository(client).upload_story(
+            card=reel,  # type: ignore[arg-type]
             jpeg=story_jpeg(),
         )
 

@@ -74,6 +74,11 @@ describe('public pick data', () => {
     });
   });
 
+  it('normalizes the Playdoit display schedule to a sortable CDMX time', () => {
+    expect(normalizePick({ id: 10, horario: 'Hoy 15:15 hrs' }).horario).toBe('15:15');
+    expect(normalizePick({ id: 11, horario: 'Mañana 6:05 hrs' }).horario).toBe('06:05');
+  });
+
   it('escapes database text before rendering it as HTML', () => {
     expect(escapeHtml('<img src=x onerror=alert(1)>')).not.toContain('<img');
   });

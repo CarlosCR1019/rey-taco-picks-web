@@ -336,21 +336,22 @@ def main(
         for kind, status in safe_outcomes.items():
             LOGGER.info("vertical kind=%s status=%s", kind, status)
 
-        telegram_token = _required_runtime_string(values, "TELEGRAM_BOT_TOKEN")
-        admin_chat_id = _required_runtime_string(values, "TELEGRAM_CHAT_ID")
-        telegram: TelegramTransport | None = None
-        if telegram_token and admin_chat_id:
-            telegram = TelegramHttpTransport(telegram_token)
-        try:
-            notify_vertical_failures(
-                safe_outcomes,
-                telegram=telegram,
-                admin_chat_id=admin_chat_id,
-            )
-        except Exception as exc:
-            LOGGER.warning(
-                "vertical alert status=failed exception=%s", type(exc).__name__
-            )
+        if not settings.dry_run:
+            telegram_token = _required_runtime_string(values, "TELEGRAM_BOT_TOKEN")
+            admin_chat_id = _required_runtime_string(values, "TELEGRAM_CHAT_ID")
+            telegram: TelegramTransport | None = None
+            if telegram_token and admin_chat_id:
+                telegram = TelegramHttpTransport(telegram_token)
+            try:
+                notify_vertical_failures(
+                    safe_outcomes,
+                    telegram=telegram,
+                    admin_chat_id=admin_chat_id,
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "vertical alert status=failed exception=%s", type(exc).__name__
+                )
         return _exit_code(safe_outcomes, settings=settings)
     except Exception as exc:
         LOGGER.info(

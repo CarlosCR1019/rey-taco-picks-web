@@ -491,6 +491,49 @@ def test_main_returns_nonzero_for_configured_incomplete_story_and_alert_failure_
     assert TOKEN not in caplog.text
 
 
+def test_main_dry_run_render_failure_has_no_telegram_side_effect(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    FakeSocialRepository.instances = []
+    FakeSocialRepository.exact_batch = batch()
+    telegram_factory_calls: list[str] = []
+
+    monkeypatch.setattr(
+        vertical_publisher, "SupabaseSocialRepository", FakeSocialRepository
+    )
+    monkeypatch.setattr(
+        vertical_publisher, "SupabaseVerticalRepository", lambda **_kwargs: object()
+    )
+    monkeypatch.setattr(vertical_publisher, "VerticalMetaHttpTransport", object)
+    monkeypatch.setattr(
+        vertical_publisher,
+        "TelegramHttpTransport",
+        lambda token: telegram_factory_calls.append(token) or FakeTelegram(),
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_pre_event_stories",
+        lambda **_kwargs: {
+            "public_pick_story": "delivery_failed",
+            "vip_teaser_story": "dry_run",
+        },
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.vertical_publisher"):
+        result = vertical_publisher.main(
+            ["--mode", "pre-event"],
+            cli_values(META_DRY_RUN="true"),
+        )
+
+    assert result == 1
+    assert telegram_factory_calls == []
+    assert "public_pick_story status=delivery_failed" in caplog.text
+    assert "vip_teaser_story status=dry_run" in caplog.text
+    assert "telegram-secret" not in caplog.text
+    assert TOKEN not in caplog.text
+
+
 @pytest.mark.parametrize(
     "values",
     [

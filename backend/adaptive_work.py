@@ -102,7 +102,7 @@ class AdaptiveWorkClient:
             },
             method="POST",
         )
-        with self._opener(request, self._timeout) as response:
+        with self._opener(request, timeout=self._timeout) as response:
             status = getattr(response, "status", None)
             if not isinstance(status, int) or not 200 <= status < 300:
                 raise RuntimeError("adaptive work provider returned an invalid response")

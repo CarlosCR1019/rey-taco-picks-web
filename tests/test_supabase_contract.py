@@ -2064,9 +2064,9 @@ class SupabaseContractTests(unittest.TestCase):
             "case when entries.visibility = 'public' then null",
             release,
         )
-        self.assertIn("active_entry_count not between 1 and 6", release)
+        self.assertIn("active_batch_pick_count not between 1 and 6", release)
         self.assertIn(
-            "active_batch_pick_count <> active_entry_count",
+            "mapped_entry_count <> active_batch_pick_count",
             release,
         )
         self.assertIn(
@@ -2074,9 +2074,16 @@ class SupabaseContractTests(unittest.TestCase):
             release,
         )
         self.assertIn(
-            "synchronized_pick_count <> active_entry_count",
+            "synchronized_pick_count <> active_batch_pick_count",
             release,
         )
+        self.assertIn("entries.pick_id is not null", release)
+        self.assertIn("jsonb_typeof(entries.payload->'razonamiento')", release)
+        self.assertIn(
+            "char_length(btrim(entries.payload->>'razonamiento')) not between 10 and 500",
+            release,
+        )
+        self.assertIn("else btrim(entries.payload->>'razonamiento')", release)
         self.assertIn("public.resume_daily_pick_release(requested_run_key)", release)
         self.assertIn("legacy_result->'created'", release)
         self.assertIn("synchronized_result->'feed_eligible'", release)

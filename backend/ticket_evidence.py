@@ -8,6 +8,7 @@ from hashlib import sha256
 from io import BytesIO
 import json
 import logging
+from pathlib import Path
 import re
 from typing import Callable, Literal, Protocol
 import unicodedata
@@ -165,7 +166,10 @@ class EvidenceInspector:
             for row in report.rows
             if _event_and_score_match(text, row)
         )
-        if len(matched) not in {1, 6} or len(set(matched)) != len(matched):
+        if (
+            not 1 <= len(matched) <= min(6, len(report.rows))
+            or len(set(matched)) != len(matched)
+        ):
             return EvidenceDecision("pending_review", ticket.group(1), (), digest)
         return EvidenceDecision("matched", ticket.group(1), matched, digest)
 
@@ -351,4 +355,62 @@ def collect_matched_evidence(
             )
         elif decision.state == "pending_review":
             LOGGER.warning("ticket evidence status=pending_review")
+    return tuple(matched)
+
+
+def collect_local_matched_evidence(
+    report: ResultReport,
+    *,
+    tickets_dir: Path,
+    inspector: EvidenceInspector,
+    max_candidates: int = 50,
+) -> tuple[MatchedEvidence, ...]:
+    """Recover bounded, repository-owned ticket images for legacy evidence."""
+    if not isinstance(tickets_dir, Path):
+        raise ValueError("local ticket directory is invalid")
+    if (
+        type(max_candidates) is not int
+        or not 1 <= max_candidates <= 100
+    ):
+        raise ValueError("local ticket candidate limit is invalid")
+    manifest = tickets_dir / "manifest.json"
+    try:
+        raw_manifest = manifest.read_bytes()
+        if len(raw_manifest) > _MAX_METADATA_BYTES:
+            raise ValueError
+        names = json.loads(raw_manifest.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return ()
+    if not isinstance(names, list):
+        return ()
+
+    matched: list[MatchedEvidence] = []
+    seen_digests: set[str] = set()
+    for raw_name in names[:max_candidates]:
+        if (
+            not isinstance(raw_name, str)
+            or re.fullmatch(r"ticket_[0-9]{1,20}[.]jpg", raw_name) is None
+        ):
+            continue
+        try:
+            jpeg = (tickets_dir / raw_name).read_bytes()
+            _validate_jpeg_bytes(jpeg, max_bytes=_MAX_TICKET_BYTES)
+        except (OSError, ValueError):
+            continue
+        media_digest = sha256(jpeg).hexdigest()
+        if media_digest in seen_digests:
+            continue
+        decision = inspector.inspect(jpeg, report=report)
+        if decision.state != "matched":
+            continue
+        seen_digests.add(media_digest)
+        matched.append(
+            MatchedEvidence(
+                evidence_id=raw_name,
+                ticket_id=decision.ticket_id,
+                media_digest=media_digest,
+                pick_ids=decision.pick_ids,
+                jpeg=jpeg,
+            )
+        )
     return tuple(matched)

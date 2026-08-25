@@ -17,6 +17,10 @@ PANEL = "#101B31"
 GOLD = "#F5CF58"
 WHITE = "#F8FAFC"
 MUTED = "#AAB6CA"
+GREEN = "#32D583"
+GREEN_PANEL = "#103A2D"
+RED = "#FF6B6B"
+RED_PANEL = "#451F2A"
 
 _SIZE = (1080, 1920)
 _RESAMPLE = Image.Resampling.LANCZOS
@@ -120,17 +124,25 @@ def render_story_jpeg(card: VerticalCard) -> bytes:
         if y + panel_height > 1650:
             break
         draw.rounded_rectangle((58, y, 1022, y + panel_height), radius=18, fill=PANEL)
+        badge_label, badge_fill, badge_text = _row_badge(row.state)
         draw.rounded_rectangle(
-            (78, y + 22, 194, y + 156), radius=12, outline=GOLD, width=2
+            (78, y + 22, 194, y + 156),
+            radius=12,
+            fill=badge_fill,
+            outline=badge_text,
+            width=2,
         )
-        pick_label = f"PICK {row.pick_id}" if row.pick_id is not None else "PICK"
-        pick_width = draw.textlength(pick_label, font=meta_font)
-        draw.text((136 - pick_width / 2, y + 77), pick_label, fill=GOLD, font=meta_font)
+        badge_font = _font(16, bold=True)
+        badge_width = draw.textlength(badge_label, font=badge_font)
+        draw.text(
+            (136 - badge_width / 2, y + 78),
+            badge_label,
+            fill=badge_text,
+            font=badge_font,
+        )
         event = _fit_text(draw, row.event, event_font, 770)
         selection = _fit_text(draw, row.selection, detail_font, 770)
-        details = " · ".join(
-            value for value in (row.odds, row.state, row.score) if value
-        )
+        details = " · ".join(value for value in (row.odds, row.score) if value)
         details = _fit_text(draw, details, meta_font, 770)
         draw.text((224, y + 24), event, fill=WHITE, font=event_font)
         draw.text((224, y + 76), selection, fill=MUTED, font=detail_font)
@@ -152,6 +164,20 @@ def render_story_jpeg(card: VerticalCard) -> bytes:
         font=footer_font,
     )
     return _jpeg(image)
+
+
+def _row_badge(state: str) -> tuple[str, str, str]:
+    normalized = " ".join(str(state or "").split()).casefold()
+    if normalized == "ganado":
+        return "GANADO", GREEN_PANEL, GREEN
+    if normalized in {"perdido", "fallado"}:
+        return "PERDIDO", RED_PANEL, RED
+    if normalized in {"void", "nulo"}:
+        return "NULO", PANEL, MUTED
+    if normalized:
+        label = normalized.upper()
+        return (label[:9], PANEL, GOLD)
+    return "PICK", PANEL, GOLD
 
 
 def render_ticket_evidence_jpeg(ticket_jpeg: bytes, observed_label: str) -> bytes:

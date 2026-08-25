@@ -17,6 +17,7 @@ from backend.ticket_evidence import (
     EvidenceInspector,
     TelegramTicketFetcher,
     collect_matched_evidence,
+    collect_local_matched_evidence,
     tesseract_ocr,
 )
 from backend.vertical_repository import TicketCandidate
@@ -376,6 +377,19 @@ def test_exact_team_and_score_match_preserves_full_ticket_id() -> None:
     assert result.pick_ids == (101,)
 
 
+def test_inspector_accepts_a_truthful_multi_pick_ticket() -> None:
+    report = final_report()
+    result = EvidenceInspector(
+        ocr=lambda _: (
+            "Aryans Sports 5-0 Nbp Rainbow AC "
+            "Kalighat MS 0-2 East Bengal II ID: 5329224423"
+        )
+    ).inspect(jpeg_bytes(), report=report)
+
+    assert result.state == "matched"
+    assert result.pick_ids == (101, 102)
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -518,3 +532,26 @@ def test_collection_returns_only_matched_evidence() -> None:
     assert result[0].pick_ids == (101,)
     assert result[0].jpeg == raw
     assert repository.records[0][2] == sha256(raw).hexdigest()
+
+
+def test_local_collection_uses_manifest_jpegs_without_exposing_file_paths(tmp_path) -> None:
+    tickets = tmp_path / "tickets"
+    tickets.mkdir()
+    raw = jpeg_bytes()
+    (tickets / "ticket_1787585449.jpg").write_bytes(raw)
+    (tickets / "manifest.json").write_text(
+        json.dumps(["ticket_1787585449.jpg"]), encoding="utf-8"
+    )
+
+    result = collect_local_matched_evidence(
+        final_report_instance,
+        tickets_dir=tickets,
+        inspector=EvidenceInspector(
+            ocr=lambda _: "Aryans Sports 5-0 Nbp Rainbow AC ID: 5329224423"
+        ),
+    )
+
+    assert len(result) == 1
+    assert result[0].evidence_id == "ticket_1787585449.jpg"
+    assert result[0].ticket_id == "5329224423"
+    assert result[0].jpeg == raw

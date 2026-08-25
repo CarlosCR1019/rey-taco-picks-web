@@ -472,7 +472,7 @@ class SupabaseTicketEvidenceRepository:
         if decision.state == "matched":
             if (
                 not decision.ticket_id
-                or len(decision.pick_ids) not in {1, 6}
+                or not 1 <= len(decision.pick_ids) <= 6
                 or not set(decision.pick_ids).issubset(report_ids)
             ):
                 raise ValueError("ticket evidence review decision is invalid")

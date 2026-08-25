@@ -25,6 +25,7 @@ from backend.ticket_evidence import (
     MatchedEvidence,
     TelegramTicketFetcher,
     collect_matched_evidence,
+    collect_local_matched_evidence,
     tesseract_ocr,
 )
 from backend.vertical_content import (
@@ -731,6 +732,7 @@ def publish_final_stories_from_runtime(
     )
     matched: tuple[MatchedEvidence, ...] = ()
     story_evidence: tuple[MatchedEvidence, ...] = ()
+    telegram_evidence_matched = False
     evidence_repository: SupabaseTicketEvidenceRepository | None = None
     telegram_token = _required_runtime_string(values, "TELEGRAM_BOT_TOKEN")
     raw_admin_id = _required_runtime_string(values, "TELEGRAM_ADMIN_ID")
@@ -753,6 +755,7 @@ def publish_final_stories_from_runtime(
                 inspector=EvidenceInspector(ocr=tesseract_ocr),
             )
             matched = tuple(collected)
+            telegram_evidence_matched = bool(matched)
             if include_stories:
                 story_evidence = tuple(
                     item
@@ -765,6 +768,25 @@ def publish_final_stories_from_runtime(
         except Exception as exc:
             LOGGER.warning(
                 "ticket evidence status=pending_review exception=%s",
+                type(exc).__name__,
+            )
+    if not matched:
+        try:
+            matched = collect_local_matched_evidence(
+                report,
+                tickets_dir=(
+                    Path(__file__).resolve().parents[1]
+                    / "frontend"
+                    / "public"
+                    / "tickets"
+                ),
+                inspector=EvidenceInspector(ocr=tesseract_ocr),
+            )
+            if include_stories:
+                story_evidence = matched
+        except Exception as exc:
+            LOGGER.warning(
+                "local ticket evidence status=pending_review exception=%s",
                 type(exc).__name__,
             )
     meta_transport = VerticalMetaHttpTransport()
@@ -784,7 +806,10 @@ def publish_final_stories_from_runtime(
                 ),
                 evidence_receipt_recorder=(
                     None
-                    if evidence_repository is None
+                    if (
+                        evidence_repository is None
+                        or not telegram_evidence_matched
+                    )
                     else lambda item, receipt: evidence_repository.record_story_receipt(
                         evidence_key=item.evidence_id,
                         report=report,

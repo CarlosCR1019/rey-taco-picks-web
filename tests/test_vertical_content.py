@@ -160,7 +160,7 @@ def test_ticket_evidence_retains_full_media_digest_but_displays_prefix():
         media_digest=other_suffix,
     )
 
-    assert first.subtitle == second.subtitle == "Ticket ticket-1 · aaaaaaaaaaaa"
+    assert first.subtitle == second.subtitle == "Comprobante · aaaaaaaaaaaa"
     assert first.provenance == (same_prefix,)
     assert second.provenance == (other_suffix,)
     assert first.digest != second.digest
@@ -169,6 +169,24 @@ def test_ticket_evidence_retains_full_media_digest_but_displays_prefix():
         evidence_id="ticket-1",
         media_digest=same_prefix,
     )
+
+
+def test_ticket_evidence_identity_is_stable_across_local_and_telegram_sources():
+    report = final_report()
+
+    local = build_ticket_evidence_card(
+        report,
+        evidence_id="ticket_1787585449.jpg",
+        media_digest=MEDIA_DIGEST,
+    )
+    telegram = build_ticket_evidence_card(
+        report,
+        evidence_id="telegram-file-unique-id",
+        media_digest=MEDIA_DIGEST,
+    )
+
+    assert local.digest == telegram.digest
+    assert local.provenance == telegram.provenance == (MEDIA_DIGEST,)
 
 
 @pytest.mark.parametrize(
@@ -198,7 +216,7 @@ def test_ticket_evidence_normalizes_surrounding_evidence_id_whitespace():
         final_report(), evidence_id="ticket-1", media_digest=MEDIA_DIGEST
     )
 
-    assert normalized.subtitle.startswith("Ticket ticket-1 ·")
+    assert normalized.subtitle == "Comprobante · aaaaaaaaaaaa"
     assert normalized == canonical
 
 
@@ -216,7 +234,15 @@ def test_reel_cta_and_daily_reel_require_a_complete_final_six_pick_report():
     reel = build_daily_reel_package(report)
 
     assert cta.kind == "reel_cta_story"
-    assert cta.headline == "¿QUIERES LA PRÓXIMA CARTELERA?"
+    assert cta.headline == "¿QUIERES LA PRÓXIMA?"
+    assert len(cta.rows) == 3
+    assert [row.event for row in cta.rows] == [
+        "2 PICKS GRATIS",
+        "6 PICKS VIP",
+        "RESULTADOS PÚBLICOS",
+    ]
+    assert cta.template_version == 2
+    assert reel.template_version == 2
     assert "18+ · Apuesta con responsabilidad" in reel.caption
     assert "Consulta los seis resultados en reytacopicks.com" in reel.caption
 

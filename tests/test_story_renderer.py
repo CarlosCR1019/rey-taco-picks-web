@@ -12,7 +12,9 @@ from backend.story_renderer import (
     render_story_jpeg,
     render_ticket_evidence_jpeg,
 )
-from backend.vertical_content import build_public_pick_story
+from backend.result_reporting import build_result_report
+from backend.vertical_content import build_final_results_story, build_public_pick_story
+from tests.test_result_reporting import rows_with_states
 from tests.test_social_poster import batch
 
 
@@ -107,6 +109,25 @@ def test_render_story_jpeg_is_rgb_1080x1920_and_deterministic():
 def test_render_story_jpeg_rejects_non_vertical_cards():
     with pytest.raises(ValueError, match="requires one VerticalCard"):
         render_story_jpeg(object())
+
+
+def test_result_story_never_draws_internal_pick_ids(monkeypatch: pytest.MonkeyPatch):
+    report = build_result_report(rows_with_states(*(6 * ("ganado",))), kind="final")
+    card = build_final_results_story(report)
+    internal_ids = {str(row.pick_id) for row in card.rows}
+    drawn: list[str] = []
+    original = ImageDraw.ImageDraw.text
+
+    def recording_text(self, xy, text, *args, **kwargs):
+        drawn.append(str(text))
+        return original(self, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", recording_text)
+
+    render_story_jpeg(card)
+
+    assert not any(f"PICK {internal_id}" in drawn for internal_id in internal_ids)
+    assert drawn.count("GANADO") == 6
 
 
 def test_render_ticket_evidence_contains_all_source_corners_without_cropping():

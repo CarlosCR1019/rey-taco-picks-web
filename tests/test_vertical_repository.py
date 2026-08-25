@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import re
@@ -1144,6 +1144,48 @@ def test_ticket_review_upsert_uses_validated_exact_identity() -> None:
         "media_digest": "c" * 64,
         "ocr_digest": "b" * 64,
     }
+
+
+@pytest.mark.parametrize("pick_count", [2, 3, 4, 5, 6])
+def test_ticket_review_accepts_every_supported_multi_pick_ticket(
+    pick_count: int,
+) -> None:
+    from backend.ticket_evidence import EvidenceDecision
+
+    pick_ids = tuple(range(101, 101 + pick_count))
+    report = replace(
+        evidence_report(),
+        rows=tuple(
+            {
+                "id": pick_id,
+                "partido": f"Evento {pick_id}",
+                "resultado_marcador": "1-0",
+                "estado": "ganado",
+            }
+            for pick_id in pick_ids
+        ),
+    )
+    client = EvidenceSupabase([{"evidence_key": "unique-multi"}])
+
+    evidence_repository(client).record(
+        candidate=TicketCandidate(
+            "unique-multi",
+            "file-multi",
+            "unique-multi",
+            "2026-08-24T06:00:00+00:00",
+        ),
+        report=report,
+        decision=EvidenceDecision(
+            "matched",
+            "5329224423",
+            pick_ids,
+            "b" * 64,
+        ),
+        media_digest="c" * 64,
+    )
+
+    assert client.calls[1][0] == "upsert"
+    assert client.calls[1][1]["pick_ids"] == list(pick_ids)
 
 
 def test_ticket_review_requires_one_confirmed_upsert_row() -> None:

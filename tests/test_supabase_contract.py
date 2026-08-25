@@ -61,6 +61,9 @@ VERTICAL_REMOTE_GUARD_SQL = (
 )
 TICKET_EVIDENCE_SQL = SQL.parent / "20260824210000_ticket_evidence.sql"
 TICKET_SOURCE_SQL = SQL.parent / "20260824220000_ticket_source_table.sql"
+VERTICAL_TEMPLATE_REVISION_SQL = (
+    SQL.parent / "20260825130000_vertical_media_template_revision.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -2439,6 +2442,52 @@ class SupabaseContractTests(unittest.TestCase):
             text,
         )
         self.assertNotIn("create policy", text)
+
+    def test_vertical_template_revision_allows_one_corrected_reel_per_version(self):
+        text = " ".join(
+            VERTICAL_TEMPLATE_REVISION_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        claim = function_body(
+            VERTICAL_TEMPLATE_REVISION_SQL,
+            "public.claim_vertical_media_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_lease_expires_at timestamptz ) returns table(state text, attempt_id uuid)",
+        )
+        batches = function_body(
+            VERTICAL_TEMPLATE_REVISION_SQL,
+            "public.get_result_report_batches() returns jsonb",
+        )
+
+        self.assertIn(
+            "drop index if exists public.vertical_one_reel_per_day_destination",
+            text,
+        )
+        self.assertIn(
+            "on public.vertical_media_deliveries(portfolio_date, destination, template_version)",
+            text,
+        )
+        self.assertIn("where content_kind = 'daily_results_reel'", text)
+        reel_branch = claim[
+            claim.index("if requested_content_kind = 'daily_results_reel'") :
+        ]
+        self.assertIn("template_version = requested_template_version", reel_branch)
+        self.assertNotIn("set batch_id = requested_batch_id", claim)
+        self.assertIn(
+            "grant execute on function public.claim_vertical_media_delivery(uuid, date, text, text, text, integer, uuid, timestamptz) to service_role",
+            text,
+        )
+        self.assertIn("from public.daily_pick_releases as releases", batches)
+        self.assertIn(
+            "join public.picks as picks on picks.batch_id = released_batches.batch_id",
+            batches,
+        )
+        self.assertNotIn("entries.active", batches)
+        self.assertIn("where id = 1787559629973070", text)
+        self.assertIn("resultado_marcador = '4-0'", text)
+        self.assertIn(
+            "https://checklive.com/event-hougang-united-fc-ii-tampines-rovers-ii",
+            text,
+        )
 
 
 if __name__ == "__main__":

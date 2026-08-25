@@ -255,6 +255,32 @@ def test_missing_evidence_does_not_block_final_result_summary() -> None:
     assert result == {"final_results_story": "success"}
 
 
+def test_transient_remote_evidence_failure_keeps_same_story_ledger_identity() -> None:
+    claims: list[ClaimCall] = []
+    for item in (
+        replace(evidence(), evidence_id="ticket_1787585449.jpg"),
+        replace(evidence(), evidence_id="unique-photo-1"),
+    ):
+        repository = FakeStoryRepository()
+        publish_final_stories(
+            final_report(),
+            evidence=(item,),
+            repository=repository,
+            transport=FakeMeta(),
+            settings=configured_settings(),
+            renderer=render,
+            evidence_renderer=lambda _jpeg, card: render(card),
+        )
+        claims.extend(
+            call
+            for call in repository.claim_calls
+            if call.kind == "ticket_evidence_story"
+        )
+
+    assert len(claims) == 2
+    assert claims[0].digest == claims[1].digest
+
+
 def test_final_runtime_collects_evidence_and_uses_original_ticket_renderer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -434,6 +460,62 @@ def test_reel_only_reuses_valid_evidence_even_after_story_consumption(
         "facebook_reel": "success",
     }
     assert observed["evidence"] == (evidence(),)
+
+
+def test_local_evidence_does_not_require_a_telegram_review_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    class EvidenceRepository:
+        def record_story_receipt(self, **_kwargs: object) -> None:
+            pytest.fail("local evidence has no Telegram review row")
+
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseVerticalRepository",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(vertical_publisher, "create_client", lambda *_args: object())
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseTicketEvidenceRepository",
+        lambda *_args, **_kwargs: EvidenceRepository(),
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "collect_matched_evidence",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "collect_local_matched_evidence",
+        lambda *_args, **_kwargs: (evidence(),),
+    )
+    monkeypatch.setattr(vertical_publisher, "VerticalMetaHttpTransport", object)
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_final_stories",
+        lambda *_args, **kwargs: observed.update(kwargs) or {
+            "final_results_story": "success"
+        },
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_daily_reel_from_runtime",
+        lambda *_args, **_kwargs: {
+            "instagram_reel": "success",
+            "facebook_reel": "success",
+        },
+    )
+
+    vertical_publisher.publish_final_stories_from_runtime(
+        final_report(),
+        environ=cli_values(TELEGRAM_ADMIN_ID="123456"),
+    )
+
+    assert observed["evidence"] == (evidence(),)
+    assert observed["evidence_receipt_recorder"] is None
 
 
 def test_final_runtime_alerts_admin_with_safe_vertical_failure(

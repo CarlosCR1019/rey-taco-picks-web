@@ -114,6 +114,7 @@ def test_instagram_reel_uses_reels_container_and_share_to_feed(
     result = VerticalMetaHttpTransport(session=session).publish_instagram_reel(
         video_url=VIDEO_URL,
         settings=reel_settings,
+        description="Resultados verificados con transparencia.",
     )
 
     assert result == VerticalDelivery("instagram_reel", "success", "ig-reel")
@@ -121,6 +122,7 @@ def test_instagram_reel_uses_reels_container_and_share_to_feed(
         "video_url": VIDEO_URL,
         "media_type": "REELS",
         "share_to_feed": "true",
+        "caption": "Resultados verificados con transparencia.",
     }
     assert session.post_calls[1][1]["data"] == {"creation_id": "ig-container"}
 
@@ -234,10 +236,89 @@ def test_instagram_reel_publish_timeout_is_pending_review(
     result = VerticalMetaHttpTransport(session=session).publish_instagram_reel(
         video_url=VIDEO_URL,
         settings=reel_settings,
+        description="Resultados verificados",
     )
 
     assert result == VerticalDelivery("instagram_reel", "pending_review")
     assert "runtime-secret" not in repr(result)
+
+
+def test_instagram_reel_default_poll_waits_one_minute_between_checks(
+    reel_settings: MetaSettings,
+) -> None:
+    session = FakeSession()
+    session.queue_posts(
+        FakeResponse(200, {"id": "ig-container"}),
+        FakeResponse(200, {"id": "ig-reel"}),
+    )
+    session.queue_gets(
+        FakeResponse(200, {"status_code": "IN_PROGRESS"}),
+        FakeResponse(200, {"status_code": "FINISHED"}),
+    )
+    sleeps: list[float] = []
+
+    result = VerticalMetaHttpTransport(
+        session=session,
+        sleep=sleeps.append,
+    ).publish_instagram_reel(
+        video_url=VIDEO_URL,
+        settings=reel_settings,
+        description="Resultados verificados",
+    )
+
+    assert result == VerticalDelivery("instagram_reel", "success", "ig-reel")
+    assert sleeps == [60.0]
+
+
+def test_facebook_reel_accepts_matching_page_id_with_page_token(
+    reel_settings: MetaSettings,
+) -> None:
+    page_token = "page-access-secret"
+    upload_url = "https://rupload.facebook.com/video-upload/v26.0/fb-video"
+    session = FakeSession()
+    session.queue_gets(
+        FakeResponse(
+            200,
+            {"access_token": page_token, "id": FACEBOOK_ID},
+        )
+    )
+    session.queue_posts(
+        FakeResponse(
+            200,
+            {"video_id": "fb-video", "upload_url": upload_url},
+        ),
+        FakeResponse(200, {"success": True}),
+        FakeResponse(200, {"success": True}),
+    )
+
+    result = VerticalMetaHttpTransport(session=session).publish_facebook_reel(
+        mp4=REEL_BYTES,
+        settings=reel_settings,
+        description="Resultados verificados",
+    )
+
+    assert result == VerticalDelivery("facebook_reel", "success", "fb-video")
+
+
+def test_facebook_reel_rejects_mismatched_page_id_in_token_response(
+    reel_settings: MetaSettings,
+) -> None:
+    session = FakeSession()
+    session.queue_gets(
+        FakeResponse(
+            200,
+            {"access_token": "page-access-secret", "id": "another-page"},
+        )
+    )
+
+    result = VerticalMetaHttpTransport(session=session).publish_facebook_reel(
+        mp4=REEL_BYTES,
+        settings=reel_settings,
+        description="Resultados verificados",
+    )
+
+    assert result == VerticalDelivery("facebook_reel", "delivery_failed")
+    assert session.post_calls == []
 
 
 def test_facebook_reel_finish_timeout_is_pending_review(

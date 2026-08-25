@@ -13,7 +13,11 @@ from backend.social_repository import MetaSocialBatch
 from backend.result_reporting import build_result_report
 from backend.telegram_publisher import TelegramDestination
 from backend.ticket_evidence import MatchedEvidence
-from backend.vertical_content import VerticalCard, build_public_pick_story
+from backend.vertical_content import (
+    VerticalCard,
+    build_daily_reel_package,
+    build_public_pick_story,
+)
 from backend.vertical_meta import VerticalDelivery
 from backend.vertical_publisher import (
     frames_for_daily_reel,
@@ -548,11 +552,17 @@ class FakeReelRenderer:
 
 class FakeReelMeta:
     def __init__(self) -> None:
-        self.instagram_calls: list[str] = []
+        self.instagram_calls: list[tuple[str, str]] = []
         self.facebook_calls: list[bytes] = []
 
-    def publish_instagram_reel(self, *, video_url: str, settings: MetaSettings):
-        self.instagram_calls.append(video_url)
+    def publish_instagram_reel(
+        self,
+        *,
+        video_url: str,
+        settings: MetaSettings,
+        description: str,
+    ):
+        self.instagram_calls.append((video_url, description))
         return VerticalDelivery("instagram_reel", "success", "ig-reel")
 
     def publish_facebook_reel(
@@ -600,6 +610,13 @@ def test_daily_reel_renders_once_and_completes_destinations_independently() -> N
     assert repository.upload_calls == 1
     assert repository.begin_calls == ["instagram_reel", "facebook_reel"]
     assert repository.delete_calls == 1
+    assert meta.instagram_calls == [
+        (
+            "https://project.supabase.co/storage/v1/object/public/"
+            "social-vertical/reels/2026-08-24/reel.mp4",
+            build_daily_reel_package(final_report()).caption,
+        )
+    ]
 
 
 def test_daily_reel_dry_run_writes_local_preview_without_remote_side_effects(

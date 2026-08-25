@@ -121,7 +121,11 @@ class VerticalTransport(Protocol):
     ) -> VerticalDelivery: ...
 
     def publish_instagram_reel(
-        self, *, video_url: str, settings: MetaSettings
+        self,
+        *,
+        video_url: str,
+        settings: MetaSettings,
+        description: str,
     ) -> VerticalDelivery: ...
 
     def publish_facebook_reel(
@@ -472,6 +476,7 @@ def publish_daily_reel(
                     delivery = transport.publish_instagram_reel(
                         video_url=asset.url,
                         settings=settings,
+                        description=package.caption,
                     )
                 else:
                     delivery = transport.publish_facebook_reel(

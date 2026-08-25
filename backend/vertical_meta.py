@@ -86,7 +86,7 @@ class VerticalMetaHttpTransport:
         *,
         session: _HttpSession | None = None,
         sleep: Callable[[float], object] = time.sleep,
-        poll_interval: float = 2.0,
+        poll_interval: float = 60.0,
     ) -> None:
         if (
             isinstance(poll_interval, bool)
@@ -197,11 +197,15 @@ class VerticalMetaHttpTransport:
         *,
         video_url: str,
         settings: MetaSettings,
+        description: str,
     ) -> VerticalDelivery:
         destination: VerticalDestination = "instagram_reel"
         if not settings.token or not settings.instagram_user_id:
             return VerticalDelivery(destination, "not_configured")
-        if not _validated_vertical_url(video_url, suffix=".mp4"):
+        if not _validated_vertical_url(
+            video_url,
+            suffix=".mp4",
+        ) or not _valid_description(description):
             return VerticalDelivery(destination, "media_invalid")
         try:
             created = self._post(
@@ -211,6 +215,7 @@ class VerticalMetaHttpTransport:
                     "video_url": video_url,
                     "media_type": "REELS",
                     "share_to_feed": "true",
+                    "caption": description,
                 },
             )
             container = _required_id(created, destination=destination)
@@ -364,7 +369,14 @@ class VerticalMetaHttpTransport:
         failure = _meta_failure(destination, status, payload)
         if failure is not None:
             return failure
-        if not isinstance(payload, Mapping) or set(payload) != {"access_token"}:
+        if (
+            not isinstance(payload, Mapping)
+            or "access_token" not in payload
+            or not set(payload).issubset({"access_token", "id"})
+        ):
+            return VerticalDelivery(destination, "delivery_failed")
+        returned_page_id = payload.get("id")
+        if returned_page_id is not None and returned_page_id != settings.facebook_page_id:
             return VerticalDelivery(destination, "delivery_failed")
         value = payload["access_token"]
         if (

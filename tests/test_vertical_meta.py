@@ -234,7 +234,15 @@ def test_story_polling_is_bounded_to_five_attempts(
         (
             [FakeResponse(200, {"id": "container"}), FakeResponse(200, {})],
             [FakeResponse(200, {"status_code": "FINISHED"})],
-            "delivery_failed",
+            "pending_review",
+        ),
+        (
+            [
+                FakeResponse(200, {"id": "container"}),
+                FakeResponse(500, {"error": {"code": 2}}),
+            ],
+            [FakeResponse(200, {"status_code": "FINISHED"})],
+            "pending_review",
         ),
         (
             [
@@ -263,6 +271,26 @@ def test_story_failures_return_only_safe_statuses(
 
     assert delivery == VerticalDelivery("instagram_story", expected)
     assert "raw secret response" not in repr(delivery)
+
+
+def test_story_timeout_after_media_publish_is_pending_review_and_not_retried(
+    meta_settings: MetaSettings,
+) -> None:
+    session = FakeSession()
+    session.queue_posts(
+        FakeResponse(200, {"id": "container"}),
+        requests.Timeout("raw uncertain response runtime-secret"),
+    )
+    session.queue_gets(FakeResponse(200, {"status_code": "FINISHED"}))
+
+    delivery = VerticalMetaHttpTransport(session=session).publish_instagram_story(
+        image_url=STORY_URL,
+        settings=meta_settings,
+    )
+
+    assert delivery == VerticalDelivery("instagram_story", "pending_review")
+    assert len(session.post_calls) == 2
+    assert "runtime-secret" not in repr(delivery)
 
 
 def test_story_rejects_oversized_streamed_meta_response_and_closes(

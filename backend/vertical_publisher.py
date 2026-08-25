@@ -59,6 +59,8 @@ class VerticalRepository(Protocol):
         self, *, card: VerticalCard, jpeg: bytes
     ) -> TemporaryAsset: ...
 
+    def begin_remote_delivery(self, **kwargs: object) -> None: ...
+
     def complete(self, **kwargs: object) -> None: ...
 
     def delete_temporary(self, asset: TemporaryAsset) -> None: ...
@@ -80,7 +82,7 @@ def _record_failure(
     repository: VerticalRepository,
     attempt_id: str,
     error: str,
-) -> None:
+) -> bool:
     try:
         repository.complete(
             package=card,
@@ -90,12 +92,14 @@ def _record_failure(
             receipt="",
             error=error,
         )
+        return True
     except Exception as exc:
         LOGGER.warning(
             "vertical completion status=failed kind=%s exception=%s",
             card.kind,
             type(exc).__name__,
         )
+        return False
 
 
 def _publish_story(
@@ -132,40 +136,89 @@ def _publish_story(
 
     asset: TemporaryAsset | None = None
     try:
-        jpeg = renderer(card)
-        asset = repository.upload_story(card=card, jpeg=jpeg)
-        delivery = transport.publish_instagram_story(
-            image_url=asset.url,
-            settings=settings,
-        )
+        try:
+            jpeg = renderer(card)
+            asset = repository.upload_story(card=card, jpeg=jpeg)
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical delivery status=failed kind=%s exception=%s",
+                card.kind,
+                type(exc).__name__,
+            )
+            _record_failure(
+                card,
+                repository=repository,
+                attempt_id=claim.attempt_id,
+                error="delivery_failed",
+            )
+            return "delivery_failed"
+
+        try:
+            repository.begin_remote_delivery(
+                package=card,
+                destination="instagram_story",
+                attempt_id=claim.attempt_id,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical remote_transition status=failed kind=%s exception=%s",
+                card.kind,
+                type(exc).__name__,
+            )
+            _record_failure(
+                card,
+                repository=repository,
+                attempt_id=claim.attempt_id,
+                error="delivery_failed",
+            )
+            return "delivery_failed"
+
+        try:
+            delivery = transport.publish_instagram_story(
+                image_url=asset.url,
+                settings=settings,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical remote status=ambiguous kind=%s exception=%s",
+                card.kind,
+                type(exc).__name__,
+            )
+            return "pending_review"
         if (
             not isinstance(delivery, VerticalDelivery)
             or delivery.destination != "instagram_story"
         ):
-            raise RuntimeError("vertical transport returned invalid delivery")
-        success = delivery.status == "success"
-        repository.complete(
-            package=card,
-            destination="instagram_story",
-            attempt_id=claim.attempt_id,
-            success=success,
-            receipt=delivery.receipt if success else "",
-            error="" if success else delivery.status,
-        )
-        return delivery.status
-    except Exception as exc:
-        LOGGER.warning(
-            "vertical delivery status=failed kind=%s exception=%s",
-            card.kind,
-            type(exc).__name__,
-        )
-        _record_failure(
+            LOGGER.warning("vertical remote status=ambiguous kind=%s", card.kind)
+            return "pending_review"
+        if delivery.status == "pending_review":
+            return "pending_review"
+        if delivery.status == "success":
+            try:
+                repository.complete(
+                    package=card,
+                    destination="instagram_story",
+                    attempt_id=claim.attempt_id,
+                    success=True,
+                    receipt=delivery.receipt,
+                    error="",
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "vertical completion status=ambiguous kind=%s exception=%s",
+                    card.kind,
+                    type(exc).__name__,
+                )
+                return "pending_review"
+            return "success"
+
+        persisted = _record_failure(
             card,
             repository=repository,
             attempt_id=claim.attempt_id,
-            error="delivery_failed",
+            error=delivery.status,
         )
-        return "delivery_failed"
+        return delivery.status if persisted else "pending_review"
     finally:
         if asset is not None:
             try:

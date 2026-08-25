@@ -238,17 +238,63 @@ class SupabaseVerticalRepository:
         arguments = _validated_completion(
             package, destination, attempt_id, success, receipt, error
         )
-        try:
-            raw = (
-                self._client.rpc("complete_vertical_media_delivery", arguments)
-                .execute()
-                .data
-            )
-        except Exception:
-            raise RuntimeError("vertical completion failed") from None
-        value = _one_exact(raw, {"completed"})
-        if value.get("completed") is not True:
-            raise RuntimeError("vertical completion was not persisted")
+        for index in range(2):
+            try:
+                raw = (
+                    self._client.rpc("complete_vertical_media_delivery", arguments)
+                    .execute()
+                    .data
+                )
+            except Exception:
+                if index == 0:
+                    continue
+                raise RuntimeError("vertical completion failed") from None
+            try:
+                value = _one_exact(raw, {"completed"})
+            except RuntimeError:
+                if index == 0:
+                    continue
+                raise
+            if value.get("completed") is True:
+                return
+            if index == 1:
+                raise RuntimeError("vertical completion was not persisted")
+        raise RuntimeError("vertical completion failed")
+
+    def begin_remote_delivery(
+        self,
+        *,
+        package: VerticalCard | ReelPackage,
+        destination: str,
+        attempt_id: str,
+    ) -> None:
+        arguments = _validated_remote_transition(
+            package,
+            destination,
+            attempt_id,
+        )
+        for index in range(2):
+            try:
+                raw = (
+                    self._client.rpc("begin_vertical_remote_delivery", arguments)
+                    .execute()
+                    .data
+                )
+            except Exception:
+                if index == 0:
+                    continue
+                raise RuntimeError("vertical remote transition failed") from None
+            try:
+                value = _one_exact(raw, {"started"})
+            except RuntimeError:
+                if index == 0:
+                    continue
+                raise
+            if value.get("started") is True:
+                return
+            if index == 1:
+                raise RuntimeError("vertical remote transition was not persisted")
+        raise RuntimeError("vertical remote transition failed")
 
 
 def _canonical_uuid(value: object, *, field: str) -> str:
@@ -425,6 +471,25 @@ def _validated_completion(
         "requested_success": success,
         "requested_receipt": receipt if success else "",
         "requested_error": "" if success else error,
+    }
+
+
+def _validated_remote_transition(
+    package: VerticalCard | ReelPackage,
+    destination: str,
+    attempt_id: str,
+) -> dict[str, object]:
+    batch_id, _, kind, digest, template_version = _validated_package(package)
+    return {
+        "requested_batch_id": batch_id,
+        "requested_content_kind": kind,
+        "requested_destination": _destination(destination),
+        "requested_content_digest": digest,
+        "requested_template_version": template_version,
+        "requested_attempt_id": _canonical_uuid(
+            attempt_id,
+            field="attempt_id",
+        ),
     }
 
 

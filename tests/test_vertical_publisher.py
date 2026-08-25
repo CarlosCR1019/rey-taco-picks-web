@@ -11,7 +11,7 @@ import backend.vertical_publisher as vertical_publisher
 from backend.social_poster import MetaSettings
 from backend.social_repository import MetaSocialBatch
 from backend.telegram_publisher import TelegramDestination
-from backend.vertical_content import VerticalCard
+from backend.vertical_content import VerticalCard, build_public_pick_story
 from backend.vertical_meta import VerticalDelivery
 from backend.vertical_publisher import (
     notify_vertical_failures,
@@ -49,9 +49,12 @@ class FakeStoryRepository:
         self.states: dict[str, str] = {}
         self.claim_calls: list[ClaimCall] = []
         self.uploaded_kinds: list[str] = []
+        self.remote_started_kinds: list[str] = []
         self.complete_calls: list[dict[str, object]] = []
         self.deleted_kinds: list[str] = []
         self.cleanup_error = False
+        self.begin_error = False
+        self.complete_error = False
 
     def claim(self, **kwargs: object) -> VerticalClaim:
         kind = cast(str, kwargs["content_kind"])
@@ -66,6 +69,8 @@ class FakeStoryRepository:
             )
         )
         state = self.states.get(kind, "claimed")
+        if state == "pending_review":
+            state = "ambiguous"
         return VerticalClaim(
             cast(object, state),  # type: ignore[arg-type]
             ATTEMPT_ID if state == "claimed" else None,
@@ -84,8 +89,19 @@ class FakeStoryRepository:
             "image/jpeg",
         )
 
+    def begin_remote_delivery(self, **kwargs: object) -> None:
+        card = cast(VerticalCard, kwargs["package"])
+        self.remote_started_kinds.append(card.kind)
+        if self.begin_error:
+            raise RuntimeError("raw begin response secret")
+        self.states[card.kind] = "pending_review"
+
     def complete(self, **kwargs: object) -> None:
         self.complete_calls.append(dict(kwargs))
+        if self.complete_error:
+            raise RuntimeError("raw completion response secret")
+        card = cast(VerticalCard, kwargs["package"])
+        self.states[card.kind] = "complete" if kwargs["success"] else "failed"
 
     def delete_temporary(self, asset: TemporaryAsset) -> None:
         kind = asset.object_key.split("/")[-1].split("-")[0]
@@ -155,6 +171,10 @@ def test_pre_event_publishes_public_then_teaser_and_records_each() -> None:
     assert meta.calls == [
         ("public_pick_story", "instagram_story"),
         ("vip_teaser_story", "instagram_story"),
+    ]
+    assert repository.remote_started_kinds == [
+        "public_pick_story",
+        "vip_teaser_story",
     ]
     assert [call["success"] for call in repository.complete_calls] == [True, True]
     assert [call["receipt"] for call in repository.complete_calls] == [
@@ -245,6 +265,65 @@ def test_render_exception_records_safe_failure_and_still_attempts_teaser() -> No
     }
     assert repository.complete_calls[0]["error"] == "delivery_failed"
     assert repository.uploaded_kinds == ["vip_teaser_story"]
+
+
+def test_remote_transition_failure_never_calls_meta_and_finishes_safely() -> None:
+    repository = FakeStoryRepository()
+    repository.begin_error = True
+    meta = FakeMeta()
+    card = build_public_pick_story(batch(), portfolio_date=PORTFOLIO_DATE)
+
+    result = vertical_publisher._publish_story(
+        card,
+        repository=repository,
+        transport=meta,
+        settings=configured_settings(),
+        renderer=render,
+    )
+
+    assert result == "delivery_failed"
+    assert repository.remote_started_kinds == ["public_pick_story"]
+    assert meta.calls == []
+    assert repository.complete_calls == [
+        {
+            "package": card,
+            "destination": "instagram_story",
+            "attempt_id": ATTEMPT_ID,
+            "success": False,
+            "receipt": "",
+            "error": "delivery_failed",
+        }
+    ]
+
+
+def test_lost_success_completion_never_republishes_or_records_failure() -> None:
+    repository = FakeStoryRepository()
+    repository.complete_error = True
+    meta = FakeMeta()
+    card = build_public_pick_story(batch(), portfolio_date=PORTFOLIO_DATE)
+
+    first = vertical_publisher._publish_story(
+        card,
+        repository=repository,
+        transport=meta,
+        settings=configured_settings(),
+        renderer=render,
+    )
+    second = vertical_publisher._publish_story(
+        card,
+        repository=repository,
+        transport=meta,
+        settings=configured_settings(),
+        renderer=render,
+    )
+
+    assert first == "pending_review"
+    assert second == "ambiguous"
+    assert meta.calls == [("public_pick_story", "instagram_story")]
+    assert len(repository.complete_calls) == 1
+    assert repository.complete_calls[0]["success"] is True
+    assert repository.complete_calls[0]["receipt"] == "receipt_public_pick_story"
+    assert repository.states["public_pick_story"] == "pending_review"
 
 
 def test_cleanup_failure_does_not_erase_successful_meta_receipt(

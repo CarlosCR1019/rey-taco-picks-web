@@ -56,6 +56,9 @@ VERTICAL_MEDIA_DELIVERY_SQL = (
 DAILY_RELEASE_VISIBILITY_SYNC_SQL = (
     SQL.parent / "20260824190000_daily_release_visibility_sync.sql"
 )
+VERTICAL_REMOTE_GUARD_SQL = (
+    SQL.parent / "20260824200000_vertical_remote_publish_guard.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -2275,6 +2278,63 @@ class SupabaseContractTests(unittest.TestCase):
                 text,
             )
             self.assertEqual(grants, [("execute", "service_role")])
+
+    def test_vertical_remote_guard_prevents_ambiguous_republication(self):
+        begin = function_body(
+            VERTICAL_REMOTE_GUARD_SQL,
+            "public.begin_vertical_remote_delivery( requested_batch_id uuid, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid ) returns table(started boolean)",
+        )
+        claim = function_body(
+            VERTICAL_REMOTE_GUARD_SQL,
+            "public.claim_vertical_media_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_lease_expires_at timestamptz ) returns table(state text, attempt_id uuid)",
+        )
+        complete = function_body(
+            VERTICAL_REMOTE_GUARD_SQL,
+            "public.complete_vertical_media_delivery( requested_batch_id uuid, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_success boolean, requested_receipt text, requested_error text ) returns table(completed boolean)",
+        )
+
+        self.assertIn("state = 'pending_review'", begin)
+        self.assertIn("state = 'claimed'", begin)
+        self.assertIn("attempt_id = requested_attempt_id", begin)
+        self.assertIn("selected.state = 'pending_review'", begin)
+        self.assertIn("selected.attempt_id = requested_attempt_id", begin)
+        self.assertIn("return query select true", begin)
+
+        pending_review = claim.index("selected.state = 'pending_review'")
+        reclaim = claim.index("set state = 'claimed'")
+        self.assertLess(pending_review, reclaim)
+        self.assertIn(
+            "return query select 'ambiguous'::text, null::uuid",
+            claim[pending_review:reclaim],
+        )
+
+        self.assertIn("state in ('claimed', 'pending_review')", complete)
+        self.assertIn("attempt_id = requested_attempt_id", complete)
+        self.assertIn("selected.state = 'complete'", complete)
+        self.assertIn("selected.receipt = requested_receipt", complete)
+        self.assertIn("selected.attempt_id = requested_attempt_id", complete)
+        self.assertIn("return query select true", complete)
+
+    def test_vertical_remote_guard_rpcs_remain_service_role_only(self):
+        text = " ".join(
+            VERTICAL_REMOTE_GUARD_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        signatures = (
+            "public.claim_vertical_media_delivery(uuid, date, text, text, text, integer, uuid, timestamptz)",
+            "public.begin_vertical_remote_delivery(uuid, text, text, text, integer, uuid)",
+            "public.complete_vertical_media_delivery(uuid, text, text, text, integer, uuid, boolean, text, text)",
+        )
+        for signature in signatures:
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated, service_role",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature} to service_role",
+                text,
+            )
 
 
 if __name__ == "__main__":

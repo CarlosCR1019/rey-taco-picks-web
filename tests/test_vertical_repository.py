@@ -691,6 +691,46 @@ def test_claim_sanitizes_sdk_exceptions(stage: str) -> None:
     assert raised.value.__cause__ is None
 
 
+def test_begin_remote_delivery_uses_exact_attempt_scoped_rpc() -> None:
+    client = FakeSupabase()
+    client.responses["begin_vertical_remote_delivery"] = [{"started": True}]
+
+    repository(client).begin_remote_delivery(
+        package=package(),
+        destination="instagram_story",
+        attempt_id="33333333-3333-4333-8333-333333333333",
+    )
+
+    assert client.rpc_calls == [
+        (
+            "begin_vertical_remote_delivery",
+            {
+                "requested_batch_id": BATCH_ID,
+                "requested_content_kind": "public_pick_story",
+                "requested_destination": "instagram_story",
+                "requested_content_digest": "a" * 64,
+                "requested_template_version": 1,
+                "requested_attempt_id": "33333333-3333-4333-8333-333333333333",
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("response", [{"started": False}, [{"started": 1}], []])
+def test_begin_remote_delivery_requires_exact_persisted_transition(
+    response: object,
+) -> None:
+    client = FakeSupabase()
+    client.responses["begin_vertical_remote_delivery"] = response
+
+    with pytest.raises(RuntimeError, match=r"vertical (?:RPC|remote transition)"):
+        repository(client).begin_remote_delivery(
+            package=package(),
+            destination="instagram_story",
+            attempt_id="33333333-3333-4333-8333-333333333333",
+        )
+
+
 def test_complete_uses_exact_rpc_shape_for_safe_success() -> None:
     client = FakeSupabase()
     client.responses["complete_vertical_media_delivery"] = [{"completed": True}]
@@ -718,6 +758,37 @@ def test_complete_uses_exact_rpc_shape_for_safe_success() -> None:
             },
         )
     ]
+
+
+def test_complete_retries_once_when_the_first_confirmation_is_lost() -> None:
+    client = FakeSupabase()
+    execute_calls = 0
+
+    class FlakyRpc:
+        def execute(self) -> FakeResponse:
+            nonlocal execute_calls
+            execute_calls += 1
+            if execute_calls == 1:
+                raise RuntimeError("raw lost response service-secret")
+            return FakeResponse([{"completed": True}])
+
+    def rpc(name: str, arguments: dict[str, object]) -> FlakyRpc:
+        client.rpc_calls.append((name, arguments))
+        return FlakyRpc()
+
+    client.rpc = rpc  # type: ignore[method-assign]
+
+    repository(client).complete(
+        package=package(),
+        destination="instagram_story",
+        attempt_id="33333333-3333-4333-8333-333333333333",
+        success=True,
+        receipt="receipt_123",
+    )
+
+    assert execute_calls == 2
+    assert len(client.rpc_calls) == 2
+    assert client.rpc_calls[0] == client.rpc_calls[1]
 
 
 def test_complete_uses_exact_rpc_shape_for_allowlisted_failure() -> None:

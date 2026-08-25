@@ -29,6 +29,7 @@ VerticalStatus = Literal[
     "token_invalid",
     "delivery_failed",
     "media_invalid",
+    "pending_review",
 ]
 VerticalDestination = Literal[
     "instagram_story",
@@ -58,6 +59,7 @@ class VerticalDelivery:
             "token_invalid",
             "delivery_failed",
             "media_invalid",
+            "pending_review",
         }:
             raise ValueError("invalid vertical status")
         if not isinstance(self.receipt, str):
@@ -170,17 +172,23 @@ class VerticalMetaHttpTransport:
             )
             if status is not None:
                 return status
+        except Exception:
+            return VerticalDelivery(destination, "delivery_failed")
+        try:
             published = self._post(
                 meta_graph_url(settings, f"{settings.instagram_user_id}/media_publish"),
                 settings,
                 {"creation_id": container},
             )
-            receipt = _required_id(published, destination=destination)
+        except Exception:
+            return VerticalDelivery(destination, "pending_review")
+        try:
+            receipt = _required_publish_id(published, destination=destination)
             if isinstance(receipt, VerticalDelivery):
                 return receipt
             return VerticalDelivery(destination, "success", receipt)
         except Exception:
-            return VerticalDelivery(destination, "delivery_failed")
+            return VerticalDelivery(destination, "pending_review")
 
 
 def _required_id(
@@ -193,6 +201,22 @@ def _required_id(
     receipt = safe_meta_id(payload)
     if receipt is None:
         return VerticalDelivery(destination, "delivery_failed")
+    return receipt
+
+
+def _required_publish_id(
+    response: tuple[int, object], *, destination: VerticalDestination
+) -> str | VerticalDelivery:
+    status, payload = response
+    if meta_token_invalid(payload):
+        return VerticalDelivery(destination, "token_invalid")
+    if 400 <= status < 500:
+        return VerticalDelivery(destination, "delivery_failed")
+    if status < 200 or status >= 300:
+        return VerticalDelivery(destination, "pending_review")
+    receipt = safe_meta_id(payload)
+    if receipt is None:
+        return VerticalDelivery(destination, "pending_review")
     return receipt
 
 

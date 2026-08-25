@@ -50,6 +50,9 @@ SETTLED_ROUND_ROLLOVER_SQL = (
 RESULT_REPORT_RECEIPT_LENGTH_SQL = (
     SQL.parent / "20260824170000_result_report_receipt_length.sql"
 )
+VERTICAL_MEDIA_DELIVERY_SQL = (
+    SQL.parent / "20260824180000_vertical_media_delivery.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -2042,6 +2045,138 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("daily_pick_releases", claim)
         self.assertIn("picks.batch_id = requested_batch_id", claim)
         self.assertNotIn("daily_pick_entries", claim)
+
+    def test_vertical_media_migration_is_transactional_and_pins_public_bucket(self):
+        self.assertTrue(VERTICAL_MEDIA_DELIVERY_SQL.exists())
+        text = " ".join(
+            VERTICAL_MEDIA_DELIVERY_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)",
+            text,
+        )
+        self.assertIn(
+            "values ('social-vertical', 'social-vertical', true, 52428800, array['image/jpeg','video/mp4'])",
+            text,
+        )
+        bucket = text[text.index("insert into storage.buckets"):]
+        self.assertIn("on conflict (id) do update", bucket)
+        for assignment in (
+            "name = excluded.name",
+            "public = excluded.public",
+            "file_size_limit = excluded.file_size_limit",
+            "allowed_mime_types = excluded.allowed_mime_types",
+        ):
+            self.assertIn(assignment, bucket)
+
+    def test_vertical_media_ledger_has_exact_identity_and_allowlists(self):
+        text = " ".join(
+            VERTICAL_MEDIA_DELIVERY_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertIn(
+            "create table if not exists public.vertical_media_deliveries", text
+        )
+        for kind in (
+            "public_pick_story",
+            "vip_teaser_story",
+            "final_results_story",
+            "verified_result_story",
+            "ticket_evidence_story",
+            "reel_cta_story",
+            "daily_results_reel",
+        ):
+            self.assertIn(f"'{kind}'", text)
+        for destination in ("instagram_story", "instagram_reel", "facebook_reel"):
+            self.assertIn(f"'{destination}'", text)
+        self.assertIn("content_digest ~ '^[0-9a-f]{64}$'", text)
+        self.assertIn("template_version > 0", text)
+        self.assertIn(
+            "unique (batch_id, content_kind, destination, content_digest, template_version)",
+            text,
+        )
+        self.assertIn(
+            "create unique index if not exists vertical_one_reel_per_day_destination",
+            text,
+        )
+        self.assertIn(
+            "on public.vertical_media_deliveries(portfolio_date, destination)", text
+        )
+        self.assertIn("where content_kind = 'daily_results_reel'", text)
+
+    def test_vertical_claim_and_completion_are_atomic_and_attempt_scoped(self):
+        claim = function_body(
+            VERTICAL_MEDIA_DELIVERY_SQL,
+            "public.claim_vertical_media_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_lease_expires_at timestamptz ) returns table(state text, attempt_id uuid)",
+        )
+        complete = function_body(
+            VERTICAL_MEDIA_DELIVERY_SQL,
+            "public.complete_vertical_media_delivery( requested_batch_id uuid, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_success boolean, requested_receipt text, requested_error text ) returns table(completed boolean)",
+        )
+
+        self.assertIn("insert into public.vertical_media_deliveries", claim)
+        self.assertIn("on conflict do nothing", claim)
+        self.assertEqual(claim.count("for update"), 2)
+        self.assertIn("selected.state = 'complete'", claim)
+        self.assertIn("selected.state = 'claimed'", claim)
+        self.assertIn("selected.lease_expires_at > now()", claim)
+        self.assertIn("state = 'claimed'", claim)
+        self.assertIn("attempt_id = requested_attempt_id", claim)
+        self.assertIn("lease_expires_at = requested_lease_expires_at", claim)
+
+        self.assertIn("state = 'claimed'", complete)
+        self.assertIn("attempt_id = requested_attempt_id", complete)
+        self.assertIn("content_digest = requested_content_digest", complete)
+        self.assertIn("template_version = requested_template_version", complete)
+        self.assertIn("get diagnostics affected_rows = row_count", complete)
+        self.assertIn("return query select affected_rows = 1", complete)
+        self.assertIn("requested_error not in (", complete)
+        self.assertIn("requested_receipt !~ '^[a-za-z0-9_:-]+$'", complete)
+
+    def test_vertical_ledger_and_rpcs_are_service_role_only(self):
+        text = " ".join(
+            VERTICAL_MEDIA_DELIVERY_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        self.assertIn(
+            "alter table public.vertical_media_deliveries enable row level security",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.vertical_media_deliveries from public, anon, authenticated, service_role",
+            text,
+        )
+        self.assertNotIn(
+            "grant select, insert, update, delete on table public.vertical_media_deliveries to service_role",
+            text,
+        )
+        signatures = (
+            "public.claim_vertical_media_delivery(uuid, date, text, text, text, integer, uuid, timestamptz)",
+            "public.complete_vertical_media_delivery(uuid, text, text, text, integer, uuid, boolean, text, text)",
+        )
+        for signature in signatures:
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated, service_role",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature} to service_role",
+                text,
+            )
+            grants = re.findall(
+                rf"\bgrant\s+([^;]+?)\s+on\s+function\s+"
+                rf"{function_signature_pattern(signature)}\s+to\s+([^;]+);",
+                text,
+            )
+            self.assertEqual(grants, [("execute", "service_role")])
 
 
 if __name__ == "__main__":

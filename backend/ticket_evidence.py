@@ -85,21 +85,15 @@ class TelegramTicketFetcher:
                 f"https://api.telegram.org/bot{self._token}/{method}",
                 data=payload,
                 timeout=30,
+                stream=True,
                 allow_redirects=False,
             )
-            try:
-                raw = response.content
-                if (
-                    response.status_code != 200
-                    or not isinstance(raw, bytes)
-                    or len(raw) > _MAX_METADATA_BYTES
-                ):
-                    raise RuntimeError("Telegram file metadata failed")
-                parsed = json.loads(raw.decode("utf-8"))
-            finally:
-                close = getattr(response, "close", None)
-                if callable(close):
-                    close()
+            raw = _bounded_response_bytes(
+                response,
+                max_bytes=_MAX_METADATA_BYTES,
+                error="Telegram file metadata failed",
+            )
+            parsed = json.loads(raw.decode("utf-8"))
         except Exception:
             raise RuntimeError("Telegram file metadata failed") from None
         if (
@@ -130,10 +124,16 @@ class TelegramTicketFetcher:
 class EvidenceInspector:
     PRIVATE = re.compile(
         r"\b(?:saldo|nombre|tel[eé]fono|correo|e-?mail|usuario|clabe|"
-        r"direcci[oó]n|domicilio|cuenta)\b",
+        r"direcci[oó]n|domicilio|cuenta|contacto|titular|beneficiario)\b",
         re.I,
     )
     TICKET_ID = re.compile(r"\bID\s*[:#]?\s*([0-9]{6,20})\b", re.I)
+    PRIVATE_VALUE = re.compile(
+        r"(?:[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|"
+        r"(?<!\d)(?:\+?52[\s().-]*)?(?:\d[\s().-]*){10}(?!\d)|"
+        r"(?<!\d)\d{16,18}(?!\d))",
+        re.I,
+    )
 
     def __init__(self, *, ocr: Callable[[bytes], str]) -> None:
         if not callable(ocr):
@@ -153,7 +153,12 @@ class EvidenceInspector:
             return EvidenceDecision("pending_review", "", (), _EMPTY_DIGEST)
         digest = sha256(text.encode("utf-8")).hexdigest()
         ticket = self.TICKET_ID.search(text)
-        if self.PRIVATE.search(text) or ticket is None:
+        privacy_text = self.TICKET_ID.sub("", text)
+        if (
+            self.PRIVATE.search(text)
+            or self.PRIVATE_VALUE.search(privacy_text)
+            or ticket is None
+        ):
             return EvidenceDecision("pending_review", "", (), digest)
         matched = tuple(
             int(row["id"])
@@ -225,20 +230,47 @@ def _safe_telegram_path(payload: Mapping[str, object]) -> str:
 
 
 def _bounded_jpeg(response: object, *, max_bytes: int) -> bytes:
+    value = _bounded_response_bytes(
+        response,
+        max_bytes=max_bytes,
+        error="Telegram ticket download failed",
+    )
     try:
-        try:
-            if getattr(response, "status_code", None) != 200:
-                raise RuntimeError("Telegram ticket download failed")
-            data = bytearray()
-            for chunk in response.iter_content(64 * 1024):
-                if not isinstance(chunk, bytes) or len(data) + len(chunk) > max_bytes:
-                    raise RuntimeError("Telegram ticket download failed")
-                data.extend(chunk)
-            value = bytes(data)
-            _validate_jpeg_bytes(value, max_bytes=max_bytes)
-            return value
-        except Exception:
-            raise RuntimeError("Telegram ticket download failed") from None
+        _validate_jpeg_bytes(value, max_bytes=max_bytes)
+        return value
+    except Exception:
+        raise RuntimeError("Telegram ticket download failed") from None
+
+
+def _bounded_response_bytes(
+    response: object,
+    *,
+    max_bytes: int,
+    error: str,
+) -> bytes:
+    try:
+        if getattr(response, "status_code", None) != 200:
+            raise RuntimeError(error)
+        headers = getattr(response, "headers", {})
+        raw_length = headers.get("Content-Length") if isinstance(headers, Mapping) else None
+        if raw_length is not None:
+            try:
+                declared_length = int(raw_length)
+            except (TypeError, ValueError):
+                raise RuntimeError(error) from None
+            if declared_length < 0 or declared_length > max_bytes:
+                raise RuntimeError(error)
+        iterator = getattr(response, "iter_content", None)
+        if not callable(iterator):
+            raise RuntimeError(error)
+        data = bytearray()
+        for chunk in iterator(64 * 1024):
+            if not isinstance(chunk, bytes) or len(data) + len(chunk) > max_bytes:
+                raise RuntimeError(error)
+            data.extend(chunk)
+        return bytes(data)
+    except Exception:
+        raise RuntimeError(error) from None
     finally:
         close = getattr(response, "close", None)
         if callable(close):

@@ -177,6 +177,7 @@ class FakeTelegramSession:
         *,
         data: dict[str, str],
         timeout: int,
+        stream: bool,
         allow_redirects: bool,
     ):
         self.post_calls.append(
@@ -184,12 +185,14 @@ class FakeTelegramSession:
                 "url": url,
                 "data": data,
                 "timeout": timeout,
+                "stream": stream,
                 "allow_redirects": allow_redirects,
             }
         )
+        raw = json.dumps({"ok": True, "result": self.metadata}).encode("utf-8")
         return HttpResponse(
             200,
-            json.dumps({"ok": True, "result": self.metadata}).encode("utf-8"),
+            chunks=(raw[:17], raw[17:]),
         )
 
     def get(
@@ -229,6 +232,7 @@ def test_fetcher_uses_get_file_then_exact_telegram_file_host(
             "url": "https://api.telegram.org/botbot-secret/getFile",
             "data": {"file_id": "file-1"},
             "timeout": 30,
+            "stream": True,
             "allow_redirects": False,
         }
     ]
@@ -295,9 +299,11 @@ def test_fetcher_rejects_invalid_bounded_metadata(raw: bytes) -> None:
             *,
             data: dict[str, str],
             timeout: int,
+            stream: bool,
             allow_redirects: bool,
         ):
-            return HttpResponse(200, raw)
+            assert stream is True
+            return HttpResponse(200, chunks=(raw,))
 
     session = MetadataSession(metadata={}, download=HttpResponse(200))
 
@@ -317,6 +323,7 @@ def test_fetcher_sanitizes_network_exception_and_never_logs_token(
             *,
             data: dict[str, str],
             timeout: int,
+            stream: bool,
             allow_redirects: bool,
         ):
             raise RuntimeError("bot-secret upstream body")
@@ -339,6 +346,9 @@ def test_fetcher_sanitizes_network_exception_and_never_logs_token(
         "Saldo 1200 Carlos 5551234567",
         "Nombre Carlos Gutiérrez",
         "Dirección Av. Reforma 123",
+        "Contacto 55 5123 4567",
+        "Referencia 012180015228133759",
+        "Pago a carlos@example.com",
     ],
 )
 def test_privacy_terms_force_pending_review(private_text: str) -> None:

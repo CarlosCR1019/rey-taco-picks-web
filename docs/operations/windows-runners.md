@@ -27,7 +27,8 @@ recuperación a la PC opuesta.
 1. Ejecutar `Test-ReyTacoRunnerHost.ps1` y resolver cualquier `WARN`.
 2. Ejecutar `Initialize-ReyTacoPythonToolcache.ps1` como administrador.
 3. Instalar un runner nuevo o convertir el existente.
-4. Iniciar manualmente la tarea `Rey Taco Picks Interactive Runner`.
+4. Iniciar manualmente la tarea `Rey Taco Picks Interactive Runner` con los
+   comandos de la sección siguiente.
 5. Ejecutar `Invoke-ReyTacoDryRun.ps1` y exigir `RESULT=DRY_RUN_SAFE`.
 6. Confirmar en GitHub que el runner aparece `Idle`.
 7. Pedir confirmación separada antes de ejecutar un workflow real.
@@ -35,6 +36,22 @@ recuperación a la PC opuesta.
 9. Repetir el mismo procedimiento en la PC de respaldo.
 
 No se fuerza reinicio ni cierre de sesión para comprobar el paso 8.
+
+## Tarea oculta y recuperación manual
+
+`Rey Taco Picks Interactive Runner` es una tarea oculta intencionalmente para
+mantener el runner y PowerShell en segundo plano. Por eso puede no aparecer en
+la vista predeterminada del Programador de tareas. Para inspeccionarla o
+iniciarla manualmente, abrir PowerShell como administrador y ejecutar:
+
+```powershell
+Get-ScheduledTask -TaskName "Rey Taco Picks Interactive Runner" |
+    Select-Object TaskName, State
+Start-ScheduledTask -TaskName "Rey Taco Picks Interactive Runner"
+```
+
+Después, confirmar que GitHub muestra el runner como `Idle`. No desocultar la
+tarea ni cambiar su configuración sólo para usar la interfaz del Programador.
 
 ## Validación del host
 

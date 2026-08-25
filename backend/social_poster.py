@@ -1,10 +1,9 @@
 """Publish one exact audited public pick through the Meta Graph API."""
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-import json
 import logging
 import math
 import os
@@ -21,6 +20,14 @@ from dotenv import dotenv_values
 from PIL import Image, UnidentifiedImageError
 import requests
 
+from backend.meta_http import (
+    MetaResponse,
+    meta_auth_headers,
+    meta_graph_url,
+    meta_token_invalid,
+    read_meta_json,
+    safe_meta_id,
+)
 from backend.render_html_banner import render_social_jpeg
 from backend.social_background import CloudflareBackgroundProvider
 from backend.social_content import SocialCaptions, SocialContent, build_fallback_captions
@@ -37,8 +44,6 @@ BACKEND_DIR = Path(__file__).resolve().parent
 _GRAPH_VERSION = re.compile(r"^v[0-9]+[.][0-9]+$")
 _ASCII_ID = re.compile(r"^[0-9]+$")
 _SAFE_RECEIPT = re.compile(r"^[A-Za-z0-9_:-]{1,200}$")
-_MAX_META_RESPONSE_BYTES = 256 * 1024
-_META_RESPONSE_CHUNK_BYTES = 64 * 1024
 
 MetaStatus = Literal[
     "success", "skipped", "not_configured", "token_invalid", "delivery_failed"
@@ -181,15 +186,6 @@ def _has_forbidden_control(value: str, *, allow_newline: bool = False) -> bool:
     )
 
 
-class _HttpResponse(Protocol):
-    status_code: int
-    headers: Mapping[str, str]
-
-    def iter_content(self, chunk_size: int) -> Iterable[bytes]: ...
-
-    def close(self) -> None: ...
-
-
 class _HttpSession(Protocol):
     def post(self, url: str, **kwargs: object) -> object: ...
 
@@ -253,11 +249,11 @@ class MetaHttpTransport:
                         _log_meta_http_failure(
                             destination, status=status, payload=payload
                         )
-            if _is_token_invalid(payload):
+            if meta_token_invalid(payload):
                 return self._result(destination, "token_invalid")
             if status < 200 or status >= 300:
                 return self._result(destination, "delivery_failed")
-            receipt = _safe_id(payload)
+            receipt = safe_meta_id(payload)
             if receipt is None:
                 return self._result(destination, "delivery_failed")
             return self._result(destination, "success", receipt=receipt)
@@ -273,7 +269,7 @@ class MetaHttpTransport:
         access_token: str,
     ) -> tuple[int, object]:
         response = cast(
-            _HttpResponse,
+            MetaResponse,
             self._session.post(
                 self._graph_url(settings, f"{settings.facebook_page_id}/photos"),
                 headers=self._headers_for_token(access_token),
@@ -283,13 +279,13 @@ class MetaHttpTransport:
                 stream=True,
             ),
         )
-        return _response_payload(response)
+        return read_meta_json(response)
 
     def _resolve_page_access_token(
         self, settings: MetaSettings
     ) -> tuple[str, MetaStatus | None]:
         response = cast(
-            _HttpResponse,
+            MetaResponse,
             self._session.get(
                 self._graph_url(
                     settings,
@@ -300,10 +296,10 @@ class MetaHttpTransport:
                 stream=True,
             ),
         )
-        status, payload = _response_payload(response)
+        status, payload = read_meta_json(response)
         if status < 200 or status >= 300:
             _log_meta_http_failure("facebook", status=status, payload=payload)
-            return "", "token_invalid" if _is_token_invalid(payload) else "delivery_failed"
+            return "", "token_invalid" if meta_token_invalid(payload) else "delivery_failed"
         page_token = _safe_page_access_token(payload)
         if page_token is None:
             return "", "delivery_failed"
@@ -319,7 +315,7 @@ class MetaHttpTransport:
             return self._result(destination, "delivery_failed")
         try:
             create_response = cast(
-                _HttpResponse,
+                MetaResponse,
                 self._session.post(
                     self._graph_url(settings, f"{settings.instagram_user_id}/media"),
                     headers=self._headers(settings),
@@ -328,17 +324,17 @@ class MetaHttpTransport:
                     stream=True,
                 ),
             )
-            status, payload = _response_payload(create_response)
+            status, payload = read_meta_json(create_response)
             failed = self._http_failure(destination, status=status, payload=payload)
             if failed is not None:
                 return failed
-            container_id = _safe_id(payload)
+            container_id = safe_meta_id(payload)
             if container_id is None:
                 return self._result(destination, "delivery_failed")
 
             for poll_index in range(5):
                 poll_response = cast(
-                    _HttpResponse,
+                    MetaResponse,
                     self._session.get(
                         self._graph_url(settings, f"{container_id}?fields=status_code"),
                         headers=self._headers(settings),
@@ -346,7 +342,7 @@ class MetaHttpTransport:
                         stream=True,
                     ),
                 )
-                poll_status, poll_payload = _response_payload(poll_response)
+                poll_status, poll_payload = read_meta_json(poll_response)
                 failed = self._http_failure(
                     destination, status=poll_status, payload=poll_payload
                 )
@@ -366,7 +362,7 @@ class MetaHttpTransport:
                 self._sleep(self._poll_interval)
 
             publish_response = cast(
-                _HttpResponse,
+                MetaResponse,
                 self._session.post(
                     self._graph_url(settings, f"{settings.instagram_user_id}/media_publish"),
                     headers=self._headers(settings),
@@ -375,13 +371,13 @@ class MetaHttpTransport:
                     stream=True,
                 ),
             )
-            publish_status, publish_payload = _response_payload(publish_response)
+            publish_status, publish_payload = read_meta_json(publish_response)
             failed = self._http_failure(
                 destination, status=publish_status, payload=publish_payload
             )
             if failed is not None:
                 return failed
-            receipt = _safe_id(publish_payload)
+            receipt = safe_meta_id(publish_payload)
             if receipt is None:
                 return self._result(destination, "delivery_failed")
             return self._result(destination, "success", receipt=receipt)
@@ -394,23 +390,18 @@ class MetaHttpTransport:
 
     @staticmethod
     def _headers_for_token(access_token: str) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {access_token}",
-            # iter_content yields decoded bytes; identity keeps Content-Length
-            # comparable to the bytes counted by the bounded parser.
-            "Accept-Encoding": "identity",
-        }
+        return meta_auth_headers(access_token)
 
     @staticmethod
     def _graph_url(settings: MetaSettings, path: str) -> str:
-        return f"https://graph.facebook.com/{settings.graph_version}/{path}"
+        return meta_graph_url(settings, path)
 
     def _http_failure(
         self, destination: Destination, *, status: int, payload: object
     ) -> MetaDelivery | None:
         if status < 200 or status >= 300:
             _log_meta_http_failure(destination, status=status, payload=payload)
-        if _is_token_invalid(payload):
+        if meta_token_invalid(payload):
             return self._result(destination, "token_invalid")
         if status < 200 or status >= 300:
             return self._result(destination, "delivery_failed")
@@ -437,57 +428,6 @@ class MetaHttpTransport:
         else:
             LOGGER.info("meta destination=%s status=%s", destination, status)
         return result
-
-
-def _response_payload(response: _HttpResponse) -> tuple[int, object]:
-    try:
-        status = response.status_code
-        if type(status) is not int:
-            raise ValueError("invalid HTTP status")
-        headers = response.headers
-        if not isinstance(headers, Mapping):
-            raise ValueError("invalid response headers")
-        declared_text = headers.get("Content-Length")
-        declared_length: int | None = None
-        if declared_text is not None:
-            if (
-                not isinstance(declared_text, str)
-                or re.fullmatch(r"(?:0|[1-9][0-9]*)", declared_text) is None
-            ):
-                raise ValueError("invalid Content-Length")
-            declared_length = int(declared_text)
-            if declared_length > _MAX_META_RESPONSE_BYTES:
-                raise ValueError("Meta response body is oversized")
-        body = bytearray()
-        chunks = response.iter_content(chunk_size=_META_RESPONSE_CHUNK_BYTES)
-        for chunk in chunks:
-            if not isinstance(chunk, bytes):
-                raise ValueError("invalid Meta response chunk")
-            if not chunk:
-                continue
-            remaining = _MAX_META_RESPONSE_BYTES - len(body)
-            if declared_length is not None:
-                remaining = min(remaining, declared_length - len(body))
-            if len(chunk) > remaining:
-                raise ValueError("Meta response body is oversized")
-            body.extend(chunk)
-        if declared_length is not None and len(body) != declared_length:
-            raise ValueError("Meta response Content-Length mismatch")
-        payload = json.loads(bytes(body).decode("utf-8"))
-        if not isinstance(payload, Mapping):
-            raise ValueError("invalid JSON response")
-        return status, payload
-    finally:
-        response.close()
-
-
-def _is_token_invalid(payload: object) -> bool:
-    if not isinstance(payload, Mapping):
-        return False
-    error = payload.get("error")
-    if not isinstance(error, Mapping):
-        return False
-    return error.get("code") == 190
 
 
 def _is_permission_error(payload: object) -> bool:
@@ -533,15 +473,6 @@ def _log_meta_http_failure(
         error_code,
         error_subcode,
     )
-
-
-def _safe_id(payload: object) -> str | None:
-    if not isinstance(payload, Mapping):
-        return None
-    value = payload.get("id")
-    if not isinstance(value, str) or _SAFE_RECEIPT.fullmatch(value) is None:
-        return None
-    return value
 
 
 def _valid_caption(value: object) -> bool:

@@ -14,12 +14,20 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend.football_result_source import ApiFootballResultsClient, SupabaseResultStore
-from backend.result_report_publisher import SupabaseResultArtifactStore, publish_result_report
+from backend.result_report_publisher import (
+    SupabaseResultArtifactStore,
+    publish_result_report,
+    require_healthy_result_reports,
+)
 from backend.result_report_repository import SupabaseResultReportRepository
 from backend.result_reporting import build_result_report
 from backend.results_domain import EventResult, PlayerResult, find_matching_event, grade_pick, match_event, parse_market_identity, unit_result
 from backend.social_poster import MetaHttpTransport, MetaSettings
 from backend.telegram_publisher import TelegramHttpTransport
+from backend.vertical_publisher import (
+    publish_final_stories_from_runtime,
+    require_healthy_vertical_outcomes,
+)
 
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
@@ -362,6 +370,18 @@ def _parlay_decision(pick, events, statuses):
         'resultado_verificado_at': datetime.now(timezone.utc).isoformat(),
     }
 
+def load_active_pending_picks(client):
+    """Return only current active picks that are still awaiting a result."""
+    response = (
+        client.table("picks")
+        .select("*")
+        .eq("estado", "pendiente")
+        .eq("active", True)
+        .execute()
+    )
+    return response.data
+
+
 def verificar_picks():
     """Verifica los picks pendientes contra resultados reales."""
     print("\n" + "="*60)
@@ -374,8 +394,7 @@ def verificar_picks():
     
     # Obtener picks pendientes
     try:
-        res = supabase.table("picks").select("*").eq("estado", "pendiente").execute()
-        picks_pendientes = res.data
+        picks_pendientes = load_active_pending_picks(supabase)
     except Exception as e:
         print(f"❌ Error leyendo picks: {e}")
         return
@@ -471,6 +490,7 @@ def publish_available_result_reports():
     )
 
     published: dict[str, dict[str, str]] = {}
+    vertical_published: list[dict[str, str]] = []
     for rows in batches:
         report = _report_for_mode(rows, mode=mode)
         if report is None:
@@ -487,6 +507,20 @@ def publish_available_result_reports():
         published[f"{report.batch_id}:{report.kind}"] = outcomes
         summary = ", ".join(f"{name}={status}" for name, status in outcomes.items())
         print(f"   📣 Reporte {report.kind}: {summary}")
+        if report.kind == "final":
+            try:
+                vertical = publish_final_stories_from_runtime(report)
+            except Exception:
+                vertical = {"final_results_story": "delivery_failed"}
+            vertical_published.append(vertical)
+            vertical_summary = ", ".join(
+                f"{name}={status}" for name, status in vertical.items()
+            )
+            print(f"   📱 Historias finales: {vertical_summary or 'sin evidencia'}")
+    require_healthy_result_reports(published)
+    if meta_settings is not None:
+        for outcomes in vertical_published:
+            require_healthy_vertical_outcomes(outcomes, settings=meta_settings)
     return published
 
 

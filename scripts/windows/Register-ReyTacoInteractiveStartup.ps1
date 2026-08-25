@@ -52,10 +52,14 @@ $Principal = New-ScheduledTaskPrincipal `
     -LogonType Interactive `
     -RunLevel Limited
 $Settings = New-ScheduledTaskSettingsSet `
+    -Hidden `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew `
-    -StartWhenAvailable
+    -StartWhenAvailable `
+    -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit ([TimeSpan]::Zero)
 
 [void](Register-ScheduledTask `
     -TaskName $TaskName `

@@ -14,7 +14,6 @@ DELIVERY_RECOVERY_WORKFLOW = (
 SERVICE_ROLE_EXPRESSION = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
 RUN_KEY_EXPRESSION = "residential:${{ github.run_id }}"
 RESIDENTIAL_RUNNER = ["self-hosted", "Windows", "X64", "playdoit-residential"]
-RECOVERY_LABEL_EXPRESSION = "${{ needs.collect_primary.outputs.recovery_label }}"
 
 
 def _workflow(path: Path) -> dict:
@@ -145,28 +144,23 @@ def test_collector_jobs_use_only_residential_windows_runners():
     jobs = workflow["jobs"]
 
     assert jobs["collect_primary"]["runs-on"] == RESIDENTIAL_RUNNER
-    assert jobs["collect_recovery"]["runs-on"] == [
-        *RESIDENTIAL_RUNNER,
-        RECOVERY_LABEL_EXPRESSION,
-    ]
+    assert jobs["collect_recovery"]["runs-on"] == RESIDENTIAL_RUNNER
     assert jobs["deliver_cloud"]["runs-on"] == "ubuntu-latest"
 
 
-def test_recovery_targets_the_opposite_interactive_runner():
+def test_recovery_can_use_whichever_interactive_runner_is_online():
     workflow = _workflow(COLLECTOR_WORKFLOW)
     primary = workflow["jobs"]["collect_primary"]
     recovery = workflow["jobs"]["collect_recovery"]
 
     assert primary["env"]["REY_TACO_BROWSER_MODE"] == "interactive"
     assert recovery["env"]["REY_TACO_BROWSER_MODE"] == "interactive"
-    assert primary["outputs"]["recovery_label"] == (
-        "${{ steps.recovery_route.outputs.recovery_label }}"
+    assert "recovery_label" not in primary["outputs"]
+    assert all(
+        step["name"] != "Choose opposite recovery runner"
+        for step in primary["steps"]
     )
-    route = _step(primary, "Choose opposite recovery runner")
-    assert route["if"] == "always()"
-    assert "rey-taco-carlos" in route["run"]
-    assert "rey-taco-respaldo" in route["run"]
-    assert RECOVERY_LABEL_EXPRESSION in recovery["runs-on"]
+    assert recovery["runs-on"] == RESIDENTIAL_RUNNER
 
 
 def test_recovery_reuses_run_key_and_runs_only_after_primary_failure():
@@ -209,7 +203,11 @@ def test_delivery_recovery_is_manual_validated_and_idempotent():
 
     assert set(workflow["on"]) == {"workflow_dispatch"}
     inputs = workflow["on"]["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"source_run_id", "portfolio_date"}
+    assert set(inputs) == {
+        "source_run_id",
+        "portfolio_date",
+        "enable_same_day_round_feed",
+    }
     assert all(value["required"] == "true" for value in inputs.values())
     assert workflow["permissions"] == {"contents": "read"}
 
@@ -338,6 +336,68 @@ def test_result_verifier_receives_detailed_stats_key_only_as_a_secret():
     )
     assert "API_FOOTBALL_KEY" not in verifier.get("env", {})
     assert "python backend/verificar_resultados.py" == verify_step["run"]
+
+
+def test_result_verifier_can_apply_explicit_manual_score_evidence():
+    workflow = _workflow(VERIFIER_WORKFLOW)
+    dispatch = workflow["on"]["workflow_dispatch"]
+    assert dispatch["inputs"]["manual_result_evidence_json"] == {
+        "description": "Reviewed final-score evidence JSON; leave blank for automatic verification",
+        "required": "false",
+        "default": "",
+        "type": "string",
+    }
+
+    verifier = workflow["jobs"]["verificar"]
+    step = _step(verifier, "Apply reviewed result evidence")
+    assert step["if"] == "${{ inputs.manual_result_evidence_json != '' }}"
+    assert step["env"]["SUPABASE_URL"] == "${{ secrets.SUPABASE_URL }}"
+    assert step["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
+    assert step["env"]["MANUAL_RESULT_EVIDENCE_JSON"] == (
+        "${{ inputs.manual_result_evidence_json }}"
+    )
+    assert step["run"] == "python -m backend.manual_result_evidence"
+
+
+def test_result_verifier_can_open_a_verified_settled_round():
+    workflow = _workflow(VERIFIER_WORKFLOW)
+    dispatch = workflow["on"]["workflow_dispatch"]
+    assert dispatch["inputs"]["rollover_settled_portfolio_date"] == {
+        "description": "Open a new round after six audited final picks (YYYY-MM-DD)",
+        "required": "false",
+        "default": "",
+        "type": "string",
+    }
+
+    verifier = workflow["jobs"]["verificar"]
+    step = _step(verifier, "Open verified settled round")
+    assert step["if"] == "${{ inputs.rollover_settled_portfolio_date != '' }}"
+    assert step["env"]["SUPABASE_URL"] == "${{ secrets.SUPABASE_URL }}"
+    assert step["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
+    assert step["env"]["ROLLOVER_SETTLED_PORTFOLIO_DATE"] == (
+        "${{ inputs.rollover_settled_portfolio_date }}"
+    )
+    assert step["run"] == "python -m backend.settled_round_rollover"
+
+
+def test_delivery_recovery_can_promote_one_exact_same_day_round_feed():
+    workflow = _workflow(DELIVERY_RECOVERY_WORKFLOW)
+    dispatch = workflow["on"]["workflow_dispatch"]
+    assert dispatch["inputs"]["enable_same_day_round_feed"] == {
+        "description": "Promote this exact verified round to Facebook and Instagram",
+        "required": "true",
+        "default": "false",
+        "type": "boolean",
+    }
+
+    job = workflow["jobs"]["recover_delivery"]
+    step = _step(job, "Promote exact same-day round feed")
+    assert step["if"] == "${{ inputs.enable_same_day_round_feed == true }}"
+    assert step["env"]["ENABLE_ROUND_FEED_RUN_KEY"] == (
+        "residential:${{ inputs.source_run_id }}"
+    )
+    assert step["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
+    assert step["run"] == "python -m backend.round_feed_eligibility"
 
 
 def test_result_report_secrets_are_scoped_to_the_verifier_step():
@@ -564,6 +624,13 @@ def test_cloud_only_ten_oclock_release_reuses_stale_gate_before_delivery():
     assert "actions/runs/$env:GITHUB_RUN_ID" in gate["run"]
     assert "backend.adaptive_schedule" in gate["run"]
     assert "backend.daily_portfolio --created-at" in gate["run"]
+    assert "$run.created_at -is [datetime]" in gate["run"]
+    assert "$run.created_at -is [datetimeoffset]" in gate["run"]
+    assert "[DateTimeOffset]::TryParse" in gate["run"]
+    assert ".ToUniversalTime().ToString(" in gate["run"]
+    assert "[Globalization.CultureInfo]::InvariantCulture" in gate["run"]
+    assert '$gateArgs += @("--created-at", $createdAt)' in gate["run"]
+    assert "([string]$run.created_at)" not in gate["run"]
     assert '"eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
     assert '"portfolio_date=invalid" >> $env:GITHUB_OUTPUT' in gate["run"]
     assert install["if"] == "steps.cloud_window.outputs.eligible == 'true'"

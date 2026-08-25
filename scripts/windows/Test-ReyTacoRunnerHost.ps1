@@ -103,6 +103,24 @@ Add-Check -Name "python_3_11" -Class "SETUP" -Passed $HasPython311 `
         "Instalar Python 3.11 x64"
     })
 
+$FfmpegCommand = Get-Command -Name "ffmpeg" -ErrorAction SilentlyContinue
+Add-Check -Name "ffmpeg" -Class "SETUP" -Passed ($null -ne $FfmpegCommand) `
+    -Detail $(if ($null -ne $FfmpegCommand) { "FFmpeg encontrado" } else {
+        "Instalar FFmpeg y agregarlo al PATH"
+    })
+
+$FfprobeCommand = Get-Command -Name "ffprobe" -ErrorAction SilentlyContinue
+Add-Check -Name "ffprobe" -Class "SETUP" -Passed ($null -ne $FfprobeCommand) `
+    -Detail $(if ($null -ne $FfprobeCommand) { "FFprobe encontrado" } else {
+        "Instalar FFprobe y agregarlo al PATH"
+    })
+
+$TesseractCommand = Get-Command -Name "tesseract" -ErrorAction SilentlyContinue
+Add-Check -Name "tesseract" -Class "SETUP" -Passed ($null -ne $TesseractCommand) `
+    -Detail $(if ($null -ne $TesseractCommand) { "Tesseract encontrado" } else {
+        "Instalar Tesseract OCR y agregarlo al PATH"
+    })
+
 $NeverSleepOnAC = $false
 try {
     $SleepQuery = powercfg.exe /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE

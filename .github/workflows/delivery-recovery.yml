@@ -11,6 +11,11 @@ on:
         description: Mexico portfolio date (YYYY-MM-DD)
         required: true
         type: string
+      enable_same_day_round_feed:
+        description: Promote this exact verified round to Facebook and Instagram
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: rey-taco-delivery-recovery-${{ inputs.source_run_id }}
@@ -52,8 +57,19 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install local result media tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-spa
+
       - name: Install dependencies
         run: python -m pip install -r backend/requirements.txt
+
+      - name: Promote exact same-day round feed
+        if: ${{ inputs.enable_same_day_round_feed == true }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ENABLE_ROUND_FEED_RUN_KEY: residential:${{ inputs.source_run_id }}
+        run: python -m backend.round_feed_eligibility
 
       - name: Preflight exact recovery state
         id: recovery_plan
@@ -105,6 +121,21 @@ jobs:
           CLOUDFLARE_AI_API_TOKEN: ${{ secrets.CLOUDFLARE_AI_API_TOKEN }}
         run: python -m backend.social_poster
 
+      - name: Recover final vertical media
+        id: vertical_recovery
+        if: always() && steps.recovery_plan.conclusion == 'success'
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          META_SYSTEM_USER_ACCESS_TOKEN: ${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          META_GRAPH_VERSION: v26.0
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m backend.vertical_publisher --mode recover --live
+
       - name: Verify independent recovery outcomes
         if: always()
         shell: bash
@@ -114,6 +145,7 @@ jobs:
           SOCIAL_PLAN: ${{ steps.recovery_plan.outputs.social_recovery }}
           TELEGRAM_OUTCOME: ${{ steps.telegram_recovery.outcome }}
           SOCIAL_OUTCOME: ${{ steps.social_recovery.outcome }}
+          VERTICAL_OUTCOME: ${{ steps.vertical_recovery.outcome }}
         run: |
           set -euo pipefail
           failed=false
@@ -130,6 +162,9 @@ jobs:
             echo "social_recovery=ambiguous"
             failed=true
           elif [[ "$SOCIAL_PLAN" == "eligible" && "$SOCIAL_OUTCOME" != "success" ]]; then
+            failed=true
+          fi
+          if [[ "$VERTICAL_OUTCOME" != "success" ]]; then
             failed=true
           fi
           [[ "$failed" == "false" ]]

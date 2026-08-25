@@ -28,4 +28,10 @@ describe('responsive navigation contract', () => {
     expect(discovery).toMatch(/grid-column:\s*1\s*\/\s*-1/);
     expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.vip-discovery\s*\{[^}]*flex-direction:\s*column/);
   });
+
+  it('shows every original winning ticket without cropping its evidence', () => {
+    const ticketImage = styleSheet.match(/\.victory-card img\s*\{([^}]*)\}/)?.[1] ?? '';
+
+    expect(ticketImage).toMatch(/object-fit:\s*contain/);
+  });
 });

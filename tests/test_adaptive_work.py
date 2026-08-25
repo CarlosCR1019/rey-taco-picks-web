@@ -23,7 +23,7 @@ class Response:
 def test_client_posts_exact_date_to_service_role_rpc_without_query_secret():
     calls = []
 
-    def opener(request, timeout):
+    def opener(request, *, timeout):
         calls.append((request, timeout))
         return Response({
             "needs_collection": True,
@@ -65,7 +65,7 @@ def test_client_rejects_malformed_status(payload):
         AdaptiveWorkClient(
             "https://example.supabase.co",
             "secret",
-            opener=lambda _request, _timeout: Response(payload),
+            opener=lambda _request, *, timeout: Response(payload),
         ).status("2026-08-23")
 
 

@@ -44,6 +44,26 @@ DAILY_RELEASE_PGCRYPTO_PATH_SQL = (
 RESULT_REPORT_DELIVERY_SQL = (
     SQL.parent / "20260824150000_result_report_delivery.sql"
 )
+SETTLED_ROUND_ROLLOVER_SQL = (
+    SQL.parent / "20260824160000_settled_daily_round_rollover.sql"
+)
+RESULT_REPORT_RECEIPT_LENGTH_SQL = (
+    SQL.parent / "20260824170000_result_report_receipt_length.sql"
+)
+VERTICAL_MEDIA_DELIVERY_SQL = (
+    SQL.parent / "20260824180000_vertical_media_delivery.sql"
+)
+DAILY_RELEASE_VISIBILITY_SYNC_SQL = (
+    SQL.parent / "20260824190000_daily_release_visibility_sync.sql"
+)
+VERTICAL_REMOTE_GUARD_SQL = (
+    SQL.parent / "20260824200000_vertical_remote_publish_guard.sql"
+)
+TICKET_EVIDENCE_SQL = SQL.parent / "20260824210000_ticket_evidence.sql"
+TICKET_SOURCE_SQL = SQL.parent / "20260824220000_ticket_source_table.sql"
+VERTICAL_TEMPLATE_REVISION_SQL = (
+    SQL.parent / "20260825130000_vertical_media_template_revision.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -1950,6 +1970,524 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("attempt_id = requested_attempt_id", complete)
         self.assertIn("report_digest = requested_report_digest", complete)
         self.assertIn("state = 'in_progress'", complete)
+
+    def test_result_report_receipts_allow_256_safe_characters_without_invalid_regex(self):
+        self.assertTrue(RESULT_REPORT_RECEIPT_LENGTH_SQL.exists())
+        text = " ".join(
+            RESULT_REPORT_RECEIPT_LENGTH_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertIn(
+            "char_length(requested_receipt) not between 1 and 256",
+            text,
+        )
+        self.assertIn("requested_receipt !~ '^[a-za-z0-9_:-]+$'", text)
+        self.assertNotIn("{1,256}", text)
+        self.assertIn(
+            "revoke all on function public.complete_result_report_delivery(uuid, text, text, text, uuid, boolean, text, text) from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.complete_result_report_delivery(uuid, text, text, text, uuid, boolean, text, text) to service_role",
+            text,
+        )
+
+    def test_settled_daily_round_rollover_requires_verified_final_results(self):
+        self.assertTrue(SETTLED_ROUND_ROLLOVER_SQL.exists())
+        text = " ".join(
+            SETTLED_ROUND_ROLLOVER_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "add column if not exists round_number integer not null default 1",
+            text,
+        )
+        self.assertIn(
+            "rename to stage_daily_pick_portfolio_one_round_v1",
+            text,
+        )
+        self.assertIn(
+            "rename to release_daily_pick_portfolio_one_round_v1",
+            text,
+        )
+
+        stage = function_body(
+            SETTLED_ROUND_ROLLOVER_SQL,
+            "public.stage_daily_pick_portfolio( requested_run_key text, requested_portfolio_date date, requested_source_hash text, requested_picks jsonb ) returns jsonb",
+        )
+        self.assertIn("pg_advisory_xact_lock", stage)
+        self.assertIn("released_pick_count between 1 and 6", stage)
+        self.assertIn("verified_final_count = released_pick_count", stage)
+        self.assertIn("picks.estado in ('ganado', 'perdido', 'void')", stage)
+        self.assertIn("picks.resultado_verificado_at is not null", stage)
+        self.assertIn("delete from public.daily_pick_entries", stage)
+        self.assertIn("round_number = round_number + 1", stage)
+        self.assertIn("batch_id = null", stage)
+        self.assertIn("public.stage_daily_pick_portfolio_one_round_v1(", stage)
+
+        release = function_body(
+            SETTLED_ROUND_ROLLOVER_SQL,
+            "public.release_daily_pick_portfolio( requested_run_key text, requested_portfolio_date date ) returns jsonb",
+        )
+        self.assertIn("public.release_daily_pick_portfolio_one_round_v1(", release)
+        self.assertIn("feed_eligible = first_release_in_round", release)
+        self.assertIn("'{feed_eligible}'", release)
+
+    def test_daily_release_synchronizes_persisted_visibility_before_returning(self):
+        self.assertTrue(DAILY_RELEASE_VISIBILITY_SYNC_SQL.exists())
+        text = " ".join(
+            DAILY_RELEASE_VISIBILITY_SYNC_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "rename to release_daily_pick_portfolio_visibility_unsynced_v1",
+            text,
+        )
+        release = function_body(
+            DAILY_RELEASE_VISIBILITY_SYNC_SQL,
+            "public.release_daily_pick_portfolio( requested_run_key text, requested_portfolio_date date ) returns jsonb",
+        )
+        self.assertIn(
+            "public.release_daily_pick_portfolio_visibility_unsynced_v1(",
+            release,
+        )
+        self.assertIn("update public.picks as persisted", release)
+        self.assertIn("from public.daily_pick_entries as entries", release)
+        self.assertIn("persisted.id = entries.pick_id", release)
+        self.assertIn("persisted.batch_id = released_batch_id", release)
+        self.assertIn("entries.portfolio_date = requested_portfolio_date", release)
+        self.assertIn("entries.active", release)
+        self.assertIn("visibility = entries.visibility", release)
+        self.assertIn(
+            "case when entries.visibility = 'public' then null",
+            release,
+        )
+        self.assertIn("active_batch_pick_count not between 1 and 6", release)
+        self.assertIn(
+            "mapped_entry_count <> active_batch_pick_count",
+            release,
+        )
+        self.assertIn(
+            "get diagnostics synchronized_pick_count = row_count",
+            release,
+        )
+        self.assertIn(
+            "synchronized_pick_count <> active_batch_pick_count",
+            release,
+        )
+        self.assertIn("entries.pick_id is not null", release)
+        self.assertIn("jsonb_typeof(entries.payload->'razonamiento')", release)
+        self.assertIn(
+            "char_length(btrim(entries.payload->>'razonamiento')) not between 10 and 500",
+            release,
+        )
+        self.assertIn("else btrim(entries.payload->>'razonamiento')", release)
+        self.assertIn("public.resume_daily_pick_release(requested_run_key)", release)
+        self.assertIn("legacy_result->'created'", release)
+        self.assertIn("synchronized_result->'feed_eligible'", release)
+        self.assertLess(
+            release.index("update public.picks as persisted"),
+            release.index("public.resume_daily_pick_release(requested_run_key)"),
+        )
+
+    def test_daily_release_visibility_sync_keeps_service_only_boundary(self):
+        text = " ".join(
+            DAILY_RELEASE_VISIBILITY_SYNC_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        old_signature = (
+            "public.release_daily_pick_portfolio_visibility_unsynced_v1(text, date)"
+        )
+        current_signature = "public.release_daily_pick_portfolio(text, date)"
+
+        self.assertIn(
+            "set search_path = pg_catalog, extensions, public, pg_temp",
+            text,
+        )
+        self.assertIn(
+            f"revoke all on function {old_signature} "
+            "from public, anon, authenticated, service_role",
+            text,
+        )
+        self.assertIn(
+            f"revoke all on function {current_signature} "
+            "from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            f"grant execute on function {current_signature} to service_role",
+            text,
+        )
+        self.assertNotIn(
+            f"grant execute on function {old_signature}",
+            text,
+        )
+
+    def test_result_reports_survive_daily_round_rollover(self):
+        batches = function_body(
+            SETTLED_ROUND_ROLLOVER_SQL,
+            "public.get_result_report_batches() returns jsonb",
+        )
+        claim = function_body(
+            SETTLED_ROUND_ROLLOVER_SQL,
+            "public.claim_result_report_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_report_kind text, requested_destination text, requested_report_digest text, requested_attempt_id uuid ) returns jsonb",
+        )
+
+        self.assertIn("daily_pick_releases", batches)
+        self.assertIn("select distinct", batches)
+        self.assertIn("picks.batch_id = batches.batch_id", batches)
+        self.assertNotIn("daily_pick_entries", batches)
+        self.assertIn("daily_pick_releases", claim)
+        self.assertIn("picks.batch_id = requested_batch_id", claim)
+        self.assertNotIn("daily_pick_entries", claim)
+
+    def test_vertical_media_migration_is_transactional_and_pins_public_bucket(self):
+        self.assertTrue(VERTICAL_MEDIA_DELIVERY_SQL.exists())
+        text = " ".join(
+            VERTICAL_MEDIA_DELIVERY_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)",
+            text,
+        )
+        self.assertIn(
+            "values ('social-vertical', 'social-vertical', true, 52428800, array['image/jpeg','video/mp4'])",
+            text,
+        )
+        bucket = text[text.index("insert into storage.buckets"):]
+        self.assertIn("on conflict (id) do update", bucket)
+        for assignment in (
+            "name = excluded.name",
+            "public = excluded.public",
+            "file_size_limit = excluded.file_size_limit",
+            "allowed_mime_types = excluded.allowed_mime_types",
+        ):
+            self.assertIn(assignment, bucket)
+
+    def test_vertical_media_ledger_has_exact_identity_and_allowlists(self):
+        text = " ".join(
+            VERTICAL_MEDIA_DELIVERY_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertIn(
+            "create table if not exists public.vertical_media_deliveries", text
+        )
+        for kind in (
+            "public_pick_story",
+            "vip_teaser_story",
+            "final_results_story",
+            "verified_result_story",
+            "ticket_evidence_story",
+            "reel_cta_story",
+            "daily_results_reel",
+        ):
+            self.assertIn(f"'{kind}'", text)
+        for destination in ("instagram_story", "instagram_reel", "facebook_reel"):
+            self.assertIn(f"'{destination}'", text)
+        self.assertIn("content_digest ~ '^[0-9a-f]{64}$'", text)
+        self.assertIn("template_version > 0", text)
+        self.assertIn(
+            "unique (batch_id, content_kind, destination, content_digest, template_version)",
+            text,
+        )
+        self.assertIn(
+            "create unique index if not exists vertical_one_reel_per_day_destination",
+            text,
+        )
+        self.assertIn(
+            "on public.vertical_media_deliveries(portfolio_date, destination)", text
+        )
+        self.assertIn("where content_kind = 'daily_results_reel'", text)
+
+    def test_vertical_claim_and_completion_are_atomic_and_attempt_scoped(self):
+        claim = function_body(
+            VERTICAL_MEDIA_DELIVERY_SQL,
+            "public.claim_vertical_media_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_lease_expires_at timestamptz ) returns table(state text, attempt_id uuid)",
+        )
+        complete = function_body(
+            VERTICAL_MEDIA_DELIVERY_SQL,
+            "public.complete_vertical_media_delivery( requested_batch_id uuid, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_success boolean, requested_receipt text, requested_error text ) returns table(completed boolean)",
+        )
+
+        self.assertIn("insert into public.vertical_media_deliveries", claim)
+        self.assertIn("on conflict do nothing", claim)
+        self.assertEqual(claim.count("for update"), 2)
+        self.assertIn("selected.state = 'complete'", claim)
+        self.assertIn("selected.state = 'claimed'", claim)
+        self.assertIn("selected.lease_expires_at > now()", claim)
+        self.assertIn("state = 'claimed'", claim)
+        self.assertIn("attempt_id = requested_attempt_id", claim)
+        self.assertIn("lease_expires_at = requested_lease_expires_at", claim)
+
+        self.assertIn("state = 'claimed'", complete)
+        self.assertIn("attempt_id = requested_attempt_id", complete)
+        self.assertIn("content_digest = requested_content_digest", complete)
+        self.assertIn("template_version = requested_template_version", complete)
+        self.assertIn("get diagnostics affected_rows = row_count", complete)
+        self.assertIn("return query select affected_rows = 1", complete)
+        self.assertIn("requested_error not in (", complete)
+        self.assertIn("requested_receipt !~ '^[a-za-z0-9_:-]+$'", complete)
+
+    def test_vertical_ledger_and_rpcs_are_service_role_only(self):
+        text = " ".join(
+            VERTICAL_MEDIA_DELIVERY_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        self.assertIn(
+            "alter table public.vertical_media_deliveries enable row level security",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.vertical_media_deliveries from public, anon, authenticated, service_role",
+            text,
+        )
+        self.assertNotIn(
+            "grant select, insert, update, delete on table public.vertical_media_deliveries to service_role",
+            text,
+        )
+        signatures = (
+            "public.claim_vertical_media_delivery(uuid, date, text, text, text, integer, uuid, timestamptz)",
+            "public.complete_vertical_media_delivery(uuid, text, text, text, integer, uuid, boolean, text, text)",
+        )
+        for signature in signatures:
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated, service_role",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature} to service_role",
+                text,
+            )
+            grants = re.findall(
+                rf"\bgrant\s+([^;]+?)\s+on\s+function\s+"
+                rf"{function_signature_pattern(signature)}\s+to\s+([^;]+);",
+                text,
+            )
+            self.assertEqual(grants, [("execute", "service_role")])
+
+    def test_vertical_remote_guard_prevents_ambiguous_republication(self):
+        begin = function_body(
+            VERTICAL_REMOTE_GUARD_SQL,
+            "public.begin_vertical_remote_delivery( requested_batch_id uuid, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid ) returns table(started boolean)",
+        )
+        claim = function_body(
+            VERTICAL_REMOTE_GUARD_SQL,
+            "public.claim_vertical_media_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_lease_expires_at timestamptz ) returns table(state text, attempt_id uuid)",
+        )
+        complete = function_body(
+            VERTICAL_REMOTE_GUARD_SQL,
+            "public.complete_vertical_media_delivery( requested_batch_id uuid, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_success boolean, requested_receipt text, requested_error text ) returns table(completed boolean)",
+        )
+
+        self.assertIn("state = 'pending_review'", begin)
+        self.assertIn("state = 'claimed'", begin)
+        self.assertIn("attempt_id = requested_attempt_id", begin)
+        self.assertIn("selected.state = 'pending_review'", begin)
+        self.assertIn("selected.attempt_id = requested_attempt_id", begin)
+        self.assertIn("return query select true", begin)
+
+        pending_review = claim.index("selected.state = 'pending_review'")
+        reclaim = claim.index("set state = 'claimed'")
+        self.assertLess(pending_review, reclaim)
+        self.assertIn(
+            "return query select 'ambiguous'::text, null::uuid",
+            claim[pending_review:reclaim],
+        )
+
+        self.assertIn("state in ('claimed', 'pending_review')", complete)
+        self.assertIn("attempt_id = requested_attempt_id", complete)
+        self.assertIn("selected.state = 'complete'", complete)
+        self.assertIn("selected.receipt = requested_receipt", complete)
+        self.assertIn("selected.attempt_id = requested_attempt_id", complete)
+        self.assertIn("return query select true", complete)
+
+    def test_vertical_remote_guard_rpcs_remain_service_role_only(self):
+        text = " ".join(
+            VERTICAL_REMOTE_GUARD_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        signatures = (
+            "public.claim_vertical_media_delivery(uuid, date, text, text, text, integer, uuid, timestamptz)",
+            "public.begin_vertical_remote_delivery(uuid, text, text, text, integer, uuid)",
+            "public.complete_vertical_media_delivery(uuid, text, text, text, integer, uuid, boolean, text, text)",
+        )
+        for signature in signatures:
+            self.assertIn(
+                f"revoke all on function {signature} from public, anon, authenticated, service_role",
+                text,
+            )
+            self.assertIn(
+                f"grant execute on function {signature} to service_role",
+                text,
+            )
+
+    def test_ticket_evidence_migration_is_additive_and_service_role_only(self):
+        self.assertTrue(TICKET_EVIDENCE_SQL.exists())
+        text = " ".join(
+            TICKET_EVIDENCE_SQL.read_text(encoding="utf-8").lower().split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn("alter table if exists public.tickets_ganadores", text)
+        for column in (
+            "add column if not exists telegram_chat_id bigint",
+            "add column if not exists file_unique_id text",
+            "add column if not exists received_at timestamptz not null default now()",
+        ):
+            self.assertIn(column, text)
+        self.assertIn("to_regclass('public.tickets_ganadores')", text)
+        self.assertIn(
+            "create index if not exists tickets_ganadores_admin_received_at_idx",
+            text,
+        )
+        self.assertIn(
+            "create table if not exists public.ticket_evidence_reviews", text
+        )
+        self.assertIn("evidence_key text primary key", text)
+        self.assertIn(
+            "state text not null check (state in ('matched','pending_review'))",
+            text,
+        )
+        self.assertIn("ticket_id text not null default ''", text)
+        self.assertIn("pick_ids bigint[] not null default '{}'", text)
+        self.assertIn(
+            "media_digest text not null check (media_digest ~ '^[0-9a-f]{64}$')",
+            text,
+        )
+        self.assertIn(
+            "ocr_digest text not null check (ocr_digest ~ '^[0-9a-f]{64}$')",
+            text,
+        )
+        self.assertIn("story_receipt text not null default ''", text)
+        self.assertIn("consumed_at timestamptz", text)
+        self.assertIn(
+            "(story_receipt = '' and consumed_at is null) or "
+            "(story_receipt <> '' and consumed_at is not null)",
+            text,
+        )
+        self.assertIn(
+            "alter table public.ticket_evidence_reviews enable row level security",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.ticket_evidence_reviews from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant select, insert, update on table public.ticket_evidence_reviews to service_role",
+            text,
+        )
+
+    def test_applied_vertical_migration_does_not_gain_ticket_schema(self):
+        text = VERTICAL_MEDIA_DELIVERY_SQL.read_text(encoding="utf-8").lower()
+
+        self.assertNotIn("ticket_evidence_reviews", text)
+        self.assertNotIn("telegram_chat_id", text)
+
+    def test_ticket_source_table_is_private_and_supports_exact_evidence_query(self):
+        self.assertTrue(TICKET_SOURCE_SQL.exists())
+        text = " ".join(
+            TICKET_SOURCE_SQL.read_text(encoding="utf-8").lower().split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "create table if not exists public.tickets_ganadores", text
+        )
+        for fragment in (
+            "archivo text not null",
+            "caption text not null default 'ticket ganador'",
+            "file_id text not null",
+            "file_unique_id text not null default ''",
+            "telegram_chat_id bigint not null",
+            "received_at timestamptz not null default now()",
+        ):
+            self.assertIn(fragment, text)
+        self.assertIn(
+            "create index if not exists tickets_ganadores_admin_received_at_idx",
+            text,
+        )
+        self.assertIn(
+            "alter table public.tickets_ganadores enable row level security",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.tickets_ganadores from public, anon, authenticated, service_role",
+            text,
+        )
+        self.assertIn(
+            "grant select, insert on table public.tickets_ganadores to service_role",
+            text,
+        )
+        self.assertNotIn("create policy", text)
+
+    def test_vertical_template_revision_allows_one_corrected_reel_per_version(self):
+        text = " ".join(
+            VERTICAL_TEMPLATE_REVISION_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        claim = function_body(
+            VERTICAL_TEMPLATE_REVISION_SQL,
+            "public.claim_vertical_media_delivery( requested_batch_id uuid, requested_portfolio_date date, requested_content_kind text, requested_destination text, requested_content_digest text, requested_template_version integer, requested_attempt_id uuid, requested_lease_expires_at timestamptz ) returns table(state text, attempt_id uuid)",
+        )
+        batches = function_body(
+            VERTICAL_TEMPLATE_REVISION_SQL,
+            "public.get_result_report_batches() returns jsonb",
+        )
+
+        self.assertIn(
+            "drop index if exists public.vertical_one_reel_per_day_destination",
+            text,
+        )
+        self.assertIn(
+            "on public.vertical_media_deliveries(portfolio_date, destination, template_version)",
+            text,
+        )
+        self.assertIn("where content_kind = 'daily_results_reel'", text)
+        reel_branch = claim[
+            claim.index("if requested_content_kind = 'daily_results_reel'") :
+        ]
+        self.assertIn("template_version = requested_template_version", reel_branch)
+        self.assertNotIn("set batch_id = requested_batch_id", claim)
+        self.assertIn(
+            "grant execute on function public.claim_vertical_media_delivery(uuid, date, text, text, text, integer, uuid, timestamptz) to service_role",
+            text,
+        )
+        self.assertIn("from public.daily_pick_releases as releases", batches)
+        self.assertIn(
+            "join public.picks as picks on picks.batch_id = released_batches.batch_id",
+            batches,
+        )
+        self.assertNotIn("entries.active", batches)
+        self.assertIn("where id = 1787559629973070", text)
+        self.assertIn("resultado_marcador = '4-0'", text)
+        self.assertIn(
+            "https://checklive.com/event-hougang-united-fc-ii-tampines-rovers-ii",
+            text,
+        )
 
 
 if __name__ == "__main__":

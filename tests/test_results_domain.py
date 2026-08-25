@@ -32,6 +32,11 @@ class ResultDomainTests(unittest.TestCase):
         event = EventResult("Club Leon", "Monterrey", 1, 0, True)
         self.assertFalse(match_event("Club America vs Monterrey", event))
 
+    def test_provider_aliases_allow_plural_suffix_and_sponsor_tokens(self):
+        event = EventResult("Aryan", "Rainbow", 5, 0, True)
+
+        self.assertTrue(match_event("Aryans Sports vs Nbp Rainbow AC", event))
+
     def test_incomplete_events_are_not_selected(self):
         live = EventResult("Tigres UANL", "Club America", 2, 1, False)
         self.assertIsNone(find_matching_event("Tigres vs America", [live]))
@@ -140,6 +145,25 @@ class ResultDomainTests(unittest.TestCase):
         self.assertEqual(
             grade_pick(
                 "America +1.5", self.final, market_identity=away_spread
+            ),
+            "ganado",
+        )
+
+    def test_h2h_team_match_ignores_shared_reserve_suffix(self):
+        event = EventResult(
+            "BG Tampines Rovers Reserve",
+            "Hougang United FC Reserve",
+            2,
+            0,
+            True,
+        )
+        h2h = MarketIdentity("playdoit", "h2h", "full_game", None)
+
+        self.assertEqual(
+            grade_pick(
+                "BG Tampines Rovers Reserve",
+                event,
+                market_identity=h2h,
             ),
             "ganado",
         )

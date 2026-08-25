@@ -1,0 +1,1283 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
+import re
+
+from PIL import Image
+import pytest
+
+from backend.result_reporting import ResultReport
+from backend.vertical_content import ReelPackage, VerticalCard
+from backend.vertical_repository import (
+    SupabaseVerticalRepository,
+    SupabaseTicketEvidenceRepository,
+    TemporaryAsset,
+    TicketCandidate,
+    VerticalClaim,
+)
+
+
+BATCH_ID = "22222222-2222-4222-8222-222222222222"
+ATTEMPT_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+STORY_OBJECT_KEY = f"stories/2026-08-24/public_pick_story-{'a' * 64}.jpg"
+STORY_URL = (
+    "https://project.supabase.co/storage/v1/object/public/social-vertical/"
+    f"{STORY_OBJECT_KEY}"
+)
+EVIDENCE_OBJECT_KEY = f"evidence/2026-08-24/5329224423-{'c' * 64}.jpg"
+EVIDENCE_URL = (
+    "https://project.supabase.co/storage/v1/object/public/social-vertical/"
+    f"{EVIDENCE_OBJECT_KEY}"
+)
+
+
+@dataclass(frozen=True)
+class FakeUploadResponse:
+    path: str
+    full_path: str
+    fullPath: str
+
+
+class FakeBucket:
+    def __init__(self) -> None:
+        self.upload_calls: list[dict[str, object]] = []
+        self.remove_calls: list[list[str]] = []
+        self.upload_exception: Exception | None = None
+        self.public_url_exception: Exception | None = None
+        self.remove_exception: Exception | None = None
+        full_path = f"social-vertical/{STORY_OBJECT_KEY}"
+        self.upload_response: object = FakeUploadResponse(
+            STORY_OBJECT_KEY, full_path, full_path
+        )
+        self.public_url: object = STORY_URL
+        self.remove_response: object = [{"name": STORY_OBJECT_KEY}]
+
+    def upload(
+        self,
+        *,
+        path: str,
+        file: bytes,
+        file_options: dict[str, str],
+    ) -> object:
+        if self.upload_exception is not None:
+            raise self.upload_exception
+        self.upload_calls.append(
+            {"path": path, "file": file, "file_options": file_options}
+        )
+        return self.upload_response
+
+    def get_public_url(self, path: str) -> object:
+        if self.public_url_exception is not None:
+            raise self.public_url_exception
+        return self.public_url
+
+    def remove(self, paths: list[str]) -> object:
+        self.remove_calls.append(paths)
+        if self.remove_exception is not None:
+            raise self.remove_exception
+        return self.remove_response
+
+
+class FakeStorage:
+    def __init__(self) -> None:
+        self.bucket = FakeBucket()
+        self.from_calls: list[str] = []
+
+    def from_(self, bucket_name: str) -> FakeBucket:
+        self.from_calls.append(bucket_name)
+        return self.bucket
+
+
+class FakeResponse:
+    def __init__(self, data: object) -> None:
+        self.data = data
+
+
+class FakeRpc:
+    def __init__(self, client: "FakeSupabase", name: str) -> None:
+        self.client = client
+        self.name = name
+
+    def execute(self) -> FakeResponse:
+        if self.client.execute_exception is not None:
+            raise self.client.execute_exception
+        return FakeResponse(self.client.responses[self.name])
+
+
+class FakeSupabase:
+    def __init__(self) -> None:
+        self.responses: dict[str, object] = {}
+        self.rpc_calls: list[tuple[str, dict[str, object]]] = []
+        self.rpc_exception: Exception | None = None
+        self.execute_exception: Exception | None = None
+        self.storage = FakeStorage()
+
+    def rpc(self, name: str, arguments: dict[str, object]) -> FakeRpc:
+        if self.rpc_exception is not None:
+            raise self.rpc_exception
+        self.rpc_calls.append((name, arguments))
+        return FakeRpc(self, name)
+
+
+def repository(client: FakeSupabase) -> SupabaseVerticalRepository:
+    calls: list[tuple[str, str]] = []
+
+    def factory(url: str, key: str) -> FakeSupabase:
+        calls.append((url, key))
+        return client
+
+    result = SupabaseVerticalRepository(
+        url="https://project.supabase.co",
+        service_role_key="service-secret",
+        client_factory=factory,
+    )
+    assert calls == [("https://project.supabase.co", "service-secret")]
+    return result
+
+
+def package(**overrides: object) -> VerticalCard:
+    values: dict[str, object] = {
+        "kind": "public_pick_story",
+        "batch_id": BATCH_ID,
+        "portfolio_date": "2026-08-24",
+        "headline": "PICK PÚBLICO DEL DÍA",
+        "subtitle": "Hoy",
+        "rows": (),
+        "cta": "Consulta",
+        "digest": "a" * 64,
+        "template_version": 1,
+    }
+    values.update(overrides)
+    return VerticalCard(**values)  # type: ignore[arg-type]
+
+
+def story_jpeg(
+    *, size: tuple[int, int] = (1080, 1920), mode: str = "RGB"
+) -> bytes:
+    output = BytesIO()
+    Image.new(mode, size).save(output, format="JPEG")
+    return output.getvalue()
+
+
+def test_upload_story_uses_digest_key_and_exact_public_url() -> None:
+    client = FakeSupabase()
+    repo = repository(client)
+    card = package()
+    jpeg = story_jpeg()
+
+    asset = repo.upload_story(card=card, jpeg=jpeg)
+
+    assert asset.object_key == STORY_OBJECT_KEY
+    assert asset.url == STORY_URL
+    assert asset.mime_type == "image/jpeg"
+    assert client.storage.from_calls == ["social-vertical"]
+    assert client.storage.bucket.upload_calls == [
+        {
+            "path": STORY_OBJECT_KEY,
+            "file": jpeg,
+            "file_options": {
+                "content-type": "image/jpeg",
+                "upsert": "true",
+            },
+        }
+    ]
+
+
+def test_delete_requires_the_same_bucket_and_exact_object_key() -> None:
+    client = FakeSupabase()
+    repo = repository(client)
+    asset = repo.upload_story(card=package(), jpeg=story_jpeg())
+    client.storage.from_calls.clear()
+
+    repo.delete_temporary(asset)
+
+    assert client.storage.from_calls == ["social-vertical"]
+    assert client.storage.bucket.remove_calls == [[asset.object_key]]
+
+
+@pytest.mark.parametrize(
+    ("jpeg", "message"),
+    [
+        (b"not-a-jpeg", "JPEG"),
+        (story_jpeg(size=(1080, 1919)), "1080x1920"),
+        (story_jpeg(mode="CMYK"), "RGB"),
+        (b"\xff\xd8" + b"x" * (5 * 1024 * 1024), "5 MiB"),
+    ],
+    ids=("not-jpeg", "wrong-size", "cmyk", "oversized"),
+)
+def test_upload_story_rejects_invalid_jpeg_before_storage(
+    jpeg: bytes, message: str
+) -> None:
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError, match=message):
+        repository(client).upload_story(card=package(), jpeg=jpeg)
+
+    assert client.storage.from_calls == []
+
+
+@pytest.mark.parametrize(
+    "jpeg",
+    [bytearray(b"jpeg"), memoryview(b"jpeg"), "jpeg"],
+    ids=("bytearray", "memoryview", "string"),
+)
+def test_upload_story_accepts_only_immutable_bytes(jpeg: object) -> None:
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError, match="immutable bytes"):
+        repository(client).upload_story(
+            card=package(),
+            jpeg=jpeg,  # type: ignore[arg-type]
+        )
+
+    assert client.storage.from_calls == []
+
+
+def test_upload_story_revalidates_card_identity_before_storage() -> None:
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError, match="digest"):
+        repository(client).upload_story(
+            card=package(digest="A" * 64),
+            jpeg=story_jpeg(),
+        )
+
+    assert client.storage.from_calls == []
+
+
+def test_upload_story_rejects_reel_package_before_storage() -> None:
+    client = FakeSupabase()
+    reel = ReelPackage(
+        batch_id=BATCH_ID,
+        portfolio_date="2026-08-24",
+        digest="b" * 64,
+        caption="Cierre verificado",
+    )
+
+    with pytest.raises(ValueError, match="VerticalCard"):
+        repository(client).upload_story(
+            card=reel,  # type: ignore[arg-type]
+            jpeg=story_jpeg(),
+        )
+
+    assert client.storage.from_calls == []
+
+
+def test_repository_uploads_validated_mp4_under_digest_key() -> None:
+    client = FakeSupabase()
+    reel = ReelPackage(
+        batch_id=BATCH_ID,
+        portfolio_date="2026-08-24",
+        digest="b" * 64,
+        caption="Cierre verificado",
+    )
+    object_key = f"reels/2026-08-24/daily_results_reel-{reel.digest}.mp4"
+    url = (
+        "https://project.supabase.co/storage/v1/object/public/"
+        f"social-vertical/{object_key}"
+    )
+    full_path = f"social-vertical/{object_key}"
+    client.storage.bucket.upload_response = FakeUploadResponse(
+        object_key,
+        full_path,
+        full_path,
+    )
+    client.storage.bucket.public_url = url
+    mp4 = b"\x00\x00\x00\x18ftypisom" + (b"\x00" * 64)
+
+    asset = repository(client).upload_reel(package=reel, mp4=mp4)
+
+    assert asset == TemporaryAsset(object_key, url, "video/mp4")
+    assert client.storage.bucket.upload_calls == [
+        {
+            "path": object_key,
+            "file": mp4,
+            "file_options": {"content-type": "video/mp4", "upsert": "true"},
+        }
+    ]
+
+
+def test_upload_story_rejects_unexpected_upload_response() -> None:
+    client = FakeSupabase()
+    client.storage.bucket.upload_response = {"path": STORY_OBJECT_KEY}
+
+    with pytest.raises(RuntimeError, match="upload response"):
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert client.storage.bucket.remove_calls == [[STORY_OBJECT_KEY]]
+
+
+@pytest.mark.parametrize(
+    "public_url",
+    [
+        STORY_URL.replace("https://", "http://"),
+        STORY_URL.replace("project.supabase.co", "attacker.example"),
+        STORY_URL.replace("social-vertical", "other-bucket"),
+        STORY_URL + "?token=unexpected",
+    ],
+)
+def test_upload_story_requires_exact_public_url(public_url: object) -> None:
+    client = FakeSupabase()
+    client.storage.bucket.public_url = public_url
+
+    with pytest.raises(RuntimeError, match="public URL"):
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert client.storage.bucket.remove_calls == [[STORY_OBJECT_KEY]]
+
+
+def test_upload_story_cleans_up_when_public_url_lookup_fails() -> None:
+    client = FakeSupabase()
+    client.storage.bucket.public_url_exception = RuntimeError(
+        "raw provider body service-secret"
+    )
+
+    with pytest.raises(
+        RuntimeError, match=r"^temporary story public URL failed$"
+    ) as raised:
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert raised.value.__cause__ is None
+    assert client.storage.bucket.remove_calls == [[STORY_OBJECT_KEY]]
+
+
+def test_upload_story_cleanup_failure_does_not_mask_original_error() -> None:
+    client = FakeSupabase()
+    client.storage.bucket.upload_response = {"path": STORY_OBJECT_KEY}
+    client.storage.bucket.remove_exception = RuntimeError(
+        "raw cleanup body service-secret"
+    )
+
+    with pytest.raises(RuntimeError, match="upload response") as raised:
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert client.storage.bucket.remove_calls == [[STORY_OBJECT_KEY]]
+    assert "service-secret" not in str(raised.value)
+
+
+@pytest.mark.parametrize("stage", ["upload", "public_url"])
+def test_upload_story_sanitizes_storage_exceptions(stage: str) -> None:
+    client = FakeSupabase()
+    setattr(
+        client.storage.bucket,
+        f"{stage}_exception",
+        RuntimeError("raw provider body service-secret"),
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert str(captured.value) in {
+        "temporary story upload failed",
+        "temporary story public URL failed",
+    }
+    assert "service-secret" not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "asset",
+    [
+        object(),
+        TemporaryAsset("private/file.jpg", STORY_URL, "image/jpeg"),
+    ],
+)
+def test_delete_rejects_non_temporary_assets_before_storage(asset: object) -> None:
+    client = FakeSupabase()
+
+    with pytest.raises(ValueError, match="temporary asset"):
+        repository(client).delete_temporary(asset)  # type: ignore[arg-type]
+
+    assert client.storage.from_calls == []
+
+
+@pytest.mark.parametrize(
+    ("object_key", "mime_type"),
+    [
+        (
+            f"reels/2026-08-24/daily_results_reel-{'b' * 64}.mp4",
+            "video/mp4",
+        ),
+    ],
+)
+def test_delete_accepts_canonical_reel_asset(
+    object_key: str,
+    mime_type: str,
+) -> None:
+    client = FakeSupabase()
+    client.storage.bucket.remove_response = [{"name": object_key}]
+    url = (
+        "https://project.supabase.co/storage/v1/object/public/social-vertical/"
+        f"{object_key}"
+    )
+    asset = TemporaryAsset(object_key, url, mime_type)  # type: ignore[arg-type]
+
+    repository(client).delete_temporary(asset)
+
+    assert client.storage.bucket.remove_calls == [[object_key]]
+
+
+@pytest.mark.parametrize(
+    ("object_key", "url", "mime_type"),
+    [
+        ("stories/../private.jpg", STORY_URL, "image/jpeg"),
+        (
+            f"stories/2026-8-24/public_pick_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-02-30/public_pick_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories//2026-08-24/public_pick_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/unknown_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/public_pick_story-{'A' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/public_pick_story-{'a' * 64}.jpg/extra",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/public_pick_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "video/mp4",
+        ),
+        (
+            f"reels/2026-08-24/daily_results_reel-{'b' * 64}.jpg",
+            STORY_URL,
+            "video/mp4",
+        ),
+        (
+            f"evidence/2026-08-24/ticket%2Fsecret-{'c' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            EVIDENCE_OBJECT_KEY,
+            EVIDENCE_URL,
+            "image/jpeg",
+        ),
+        (
+            STORY_OBJECT_KEY,
+            STORY_URL.replace("social-vertical", "other-bucket"),
+            "image/jpeg",
+        ),
+        (STORY_OBJECT_KEY, STORY_URL + "?token=unexpected", "image/jpeg"),
+        (
+            STORY_OBJECT_KEY,
+            STORY_URL.replace(STORY_OBJECT_KEY, "stories/2026-08-24/other.jpg"),
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/public_pick_story-{'a' * 63}\x00.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+    ],
+    ids=(
+        "traversal",
+        "noncanonical-date",
+        "invalid-calendar-date",
+        "ambiguous-double-separator",
+        "unknown-story-kind",
+        "uppercase-digest",
+        "suffix-path",
+        "story-mime-mismatch",
+        "reel-extension-mismatch",
+        "encoded-evidence-separator",
+        "unsupported-evidence-prefix",
+        "wrong-url-bucket",
+        "url-query",
+        "wrong-url-key",
+        "control-character",
+    ),
+)
+def test_delete_rejects_noncanonical_or_incoherent_asset_before_storage(
+    object_key: str,
+    url: str,
+    mime_type: str,
+) -> None:
+    client = FakeSupabase()
+    asset = TemporaryAsset(object_key, url, mime_type)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="temporary asset"):
+        repository(client).delete_temporary(asset)
+
+    assert client.storage.from_calls == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [None, [], [{"name": "stories/other.jpg"}], [{"name": STORY_OBJECT_KEY}] * 2],
+)
+def test_delete_requires_exact_remove_confirmation(response: object) -> None:
+    client = FakeSupabase()
+    client.storage.bucket.remove_response = response
+    asset = TemporaryAsset(STORY_OBJECT_KEY, STORY_URL, "image/jpeg")
+
+    with pytest.raises(RuntimeError, match="cleanup response"):
+        repository(client).delete_temporary(asset)
+
+
+def test_delete_sanitizes_storage_exception() -> None:
+    client = FakeSupabase()
+    client.storage.bucket.remove_exception = RuntimeError(
+        "raw provider body service-secret"
+    )
+    asset = TemporaryAsset(STORY_OBJECT_KEY, STORY_URL, "image/jpeg")
+
+    with pytest.raises(RuntimeError, match=r"^temporary asset cleanup failed$") as raised:
+        repository(client).delete_temporary(asset)
+
+    assert "service-secret" not in str(raised.value)
+    assert raised.value.__cause__ is None
+
+
+def claimed_client() -> FakeSupabase:
+    client = FakeSupabase()
+    client.responses["claim_vertical_media_delivery"] = []
+    return client
+
+
+def set_claim_response(client: FakeSupabase, state: str, attempt_id: object) -> None:
+    client.responses["claim_vertical_media_delivery"] = [
+        {"state": state, "attempt_id": attempt_id}
+    ]
+
+
+def test_constructor_reuses_https_and_service_role_validation() -> None:
+    with pytest.raises(ValueError, match="HTTPS origin"):
+        SupabaseVerticalRepository(
+            url="http://project.supabase.co",
+            service_role_key="service-secret",
+            client_factory=lambda *_: FakeSupabase(),
+        )
+    with pytest.raises(ValueError, match="anonymous"):
+        SupabaseVerticalRepository(
+            url="https://project.supabase.co",
+            service_role_key="anon",
+            client_factory=lambda *_: FakeSupabase(),
+        )
+
+
+def test_claim_uses_exact_content_destination_digest_and_attempt() -> None:
+    client = claimed_client()
+    repo = repository(client)
+    original_rpc = client.rpc
+
+    def rpc(name: str, arguments: dict[str, object]) -> FakeRpc:
+        if name == "claim_vertical_media_delivery":
+            set_claim_response(client, "claimed", arguments["requested_attempt_id"])
+        return original_rpc(name, arguments)
+
+    client.rpc = rpc  # type: ignore[method-assign]
+    before = datetime.now(timezone.utc)
+    claim = repo.claim(
+        batch_id=BATCH_ID,
+        portfolio_date="2026-08-24",
+        content_kind="public_pick_story",
+        destination="instagram_story",
+        digest="a" * 64,
+        template_version=1,
+    )
+    after = datetime.now(timezone.utc)
+
+    assert claim == VerticalClaim("claimed", claim.attempt_id)
+    assert claim.attempt_id is not None
+    assert ATTEMPT_ID_PATTERN.fullmatch(claim.attempt_id)
+    assert len(client.rpc_calls) == 1
+    name, arguments = client.rpc_calls[0]
+    assert name == "claim_vertical_media_delivery"
+    assert set(arguments) == {
+        "requested_batch_id",
+        "requested_portfolio_date",
+        "requested_content_kind",
+        "requested_destination",
+        "requested_content_digest",
+        "requested_template_version",
+        "requested_attempt_id",
+        "requested_lease_expires_at",
+    }
+    assert arguments | {
+        "requested_attempt_id": claim.attempt_id,
+        "requested_lease_expires_at": arguments["requested_lease_expires_at"],
+    } == {
+        "requested_batch_id": BATCH_ID,
+        "requested_portfolio_date": "2026-08-24",
+        "requested_content_kind": "public_pick_story",
+        "requested_destination": "instagram_story",
+        "requested_content_digest": "a" * 64,
+        "requested_template_version": 1,
+        "requested_attempt_id": claim.attempt_id,
+        "requested_lease_expires_at": arguments["requested_lease_expires_at"],
+    }
+    lease = datetime.fromisoformat(str(arguments["requested_lease_expires_at"]))
+    assert before + timedelta(minutes=7) < lease < after + timedelta(minutes=9)
+
+
+@pytest.mark.parametrize("state", ["complete", "ambiguous"])
+def test_claim_accepts_only_exact_terminal_shape(state: str) -> None:
+    client = claimed_client()
+    set_claim_response(client, state, None)
+    claim = repository(client).claim(
+        batch_id=BATCH_ID,
+        portfolio_date="2026-08-24",
+        content_kind="daily_results_reel",
+        destination="facebook_reel",
+        digest="f" * 64,
+        template_version=2,
+    )
+    assert claim == VerticalClaim(state, None)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("batch_id", "ABCDEFAB-2222-4222-8222-222222222222"),
+        ("batch_id", "not-a-uuid"),
+        ("portfolio_date", "2026-8-24"),
+        ("portfolio_date", "2026-02-30"),
+        ("content_kind", "unknown_story"),
+        ("destination", "facebook_story"),
+        ("digest", "A" * 64),
+        ("digest", "a" * 63),
+        ("template_version", 0),
+        ("template_version", True),
+    ],
+)
+def test_claim_rejects_noncanonical_or_nonallowlisted_input_before_rpc(
+    field: str, value: object
+) -> None:
+    client = claimed_client()
+    arguments: dict[str, object] = {
+        "batch_id": BATCH_ID,
+        "portfolio_date": "2026-08-24",
+        "content_kind": "public_pick_story",
+        "destination": "instagram_story",
+        "digest": "a" * 64,
+        "template_version": 1,
+    }
+    arguments[field] = value
+    with pytest.raises(ValueError):
+        repository(client).claim(**arguments)  # type: ignore[arg-type]
+    assert client.rpc_calls == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        [],
+        [{"state": "claimed"}],
+        [{"state": "claimed", "attempt_id": "wrong"}],
+        [{"state": "complete", "attempt_id": BATCH_ID}],
+        [{"state": "unknown", "attempt_id": None}],
+        [{"state": "ambiguous", "attempt_id": None, "extra": False}],
+        [
+            {"state": "complete", "attempt_id": None},
+            {"state": "complete", "attempt_id": None},
+        ],
+    ],
+)
+def test_claim_rejects_every_nonexact_rpc_shape(response: object) -> None:
+    client = claimed_client()
+    client.responses["claim_vertical_media_delivery"] = response
+    with pytest.raises(
+        RuntimeError, match=r"vertical (?:RPC|claim) returned invalid data"
+    ):
+        repository(client).claim(
+            batch_id=BATCH_ID,
+            portfolio_date="2026-08-24",
+            content_kind="public_pick_story",
+            destination="instagram_story",
+            digest="a" * 64,
+            template_version=1,
+        )
+
+
+@pytest.mark.parametrize("stage", ["rpc", "execute"])
+def test_claim_sanitizes_sdk_exceptions(stage: str) -> None:
+    client = claimed_client()
+    setattr(client, f"{stage}_exception", RuntimeError("service-secret response body"))
+    with pytest.raises(RuntimeError, match=r"^vertical claim failed$") as raised:
+        repository(client).claim(
+            batch_id=BATCH_ID,
+            portfolio_date="2026-08-24",
+            content_kind="public_pick_story",
+            destination="instagram_story",
+            digest="a" * 64,
+            template_version=1,
+        )
+    assert raised.value.__cause__ is None
+
+
+def test_begin_remote_delivery_uses_exact_attempt_scoped_rpc() -> None:
+    client = FakeSupabase()
+    client.responses["begin_vertical_remote_delivery"] = [{"started": True}]
+
+    repository(client).begin_remote_delivery(
+        package=package(),
+        destination="instagram_story",
+        attempt_id="33333333-3333-4333-8333-333333333333",
+    )
+
+    assert client.rpc_calls == [
+        (
+            "begin_vertical_remote_delivery",
+            {
+                "requested_batch_id": BATCH_ID,
+                "requested_content_kind": "public_pick_story",
+                "requested_destination": "instagram_story",
+                "requested_content_digest": "a" * 64,
+                "requested_template_version": 1,
+                "requested_attempt_id": "33333333-3333-4333-8333-333333333333",
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("response", [{"started": False}, [{"started": 1}], []])
+def test_begin_remote_delivery_requires_exact_persisted_transition(
+    response: object,
+) -> None:
+    client = FakeSupabase()
+    client.responses["begin_vertical_remote_delivery"] = response
+
+    with pytest.raises(RuntimeError, match=r"vertical (?:RPC|remote transition)"):
+        repository(client).begin_remote_delivery(
+            package=package(),
+            destination="instagram_story",
+            attempt_id="33333333-3333-4333-8333-333333333333",
+        )
+
+
+def test_complete_uses_exact_rpc_shape_for_safe_success() -> None:
+    client = FakeSupabase()
+    client.responses["complete_vertical_media_delivery"] = [{"completed": True}]
+    repo = repository(client)
+    repo.complete(
+        package=package(),
+        destination="instagram_story",
+        attempt_id="33333333-3333-4333-8333-333333333333",
+        success=True,
+        receipt="ig-media_123:ok",
+    )
+    assert client.rpc_calls == [
+        (
+            "complete_vertical_media_delivery",
+            {
+                "requested_batch_id": BATCH_ID,
+                "requested_content_kind": "public_pick_story",
+                "requested_destination": "instagram_story",
+                "requested_content_digest": "a" * 64,
+                "requested_template_version": 1,
+                "requested_attempt_id": "33333333-3333-4333-8333-333333333333",
+                "requested_success": True,
+                "requested_receipt": "ig-media_123:ok",
+                "requested_error": "",
+            },
+        )
+    ]
+
+
+def test_complete_retries_once_when_the_first_confirmation_is_lost() -> None:
+    client = FakeSupabase()
+    execute_calls = 0
+
+    class FlakyRpc:
+        def execute(self) -> FakeResponse:
+            nonlocal execute_calls
+            execute_calls += 1
+            if execute_calls == 1:
+                raise RuntimeError("raw lost response service-secret")
+            return FakeResponse([{"completed": True}])
+
+    def rpc(name: str, arguments: dict[str, object]) -> FlakyRpc:
+        client.rpc_calls.append((name, arguments))
+        return FlakyRpc()
+
+    client.rpc = rpc  # type: ignore[method-assign]
+
+    repository(client).complete(
+        package=package(),
+        destination="instagram_story",
+        attempt_id="33333333-3333-4333-8333-333333333333",
+        success=True,
+        receipt="receipt_123",
+    )
+
+    assert execute_calls == 2
+    assert len(client.rpc_calls) == 2
+    assert client.rpc_calls[0] == client.rpc_calls[1]
+
+
+def test_complete_uses_exact_rpc_shape_for_allowlisted_failure() -> None:
+    client = FakeSupabase()
+    client.responses["complete_vertical_media_delivery"] = {"completed": True}
+    repo = repository(client)
+    repo.complete(
+        package=package(),
+        destination="instagram_story",
+        attempt_id="33333333-3333-4333-8333-333333333333",
+        success=False,
+        error="media_invalid",
+    )
+    assert client.rpc_calls[0][1]["requested_receipt"] == ""
+    assert client.rpc_calls[0][1]["requested_error"] == "media_invalid"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"destination": "facebook_story"},
+        {"attempt_id": "ABCDEFAB-2222-4222-8222-222222222222"},
+        {"success": 1},
+        {"success": True, "receipt": ""},
+        {"success": True, "receipt": "safe", "error": "delivery_failed"},
+        {"success": True, "receipt": "has space"},
+        {"success": False, "receipt": "unexpected", "error": "delivery_failed"},
+        {"success": False, "error": "raw remote response"},
+    ],
+)
+def test_complete_rejects_unsafe_outcomes_before_rpc(kwargs: dict[str, object]) -> None:
+    client = FakeSupabase()
+    defaults: dict[str, object] = {
+        "package": package(),
+        "destination": "instagram_story",
+        "attempt_id": "33333333-3333-4333-8333-333333333333",
+        "success": True,
+        "receipt": "receipt_123",
+        "error": "",
+    }
+    defaults.update(kwargs)
+    with pytest.raises(ValueError):
+        repository(client).complete(**defaults)  # type: ignore[arg-type]
+    assert client.rpc_calls == []
+
+
+@pytest.mark.parametrize(
+    "bad_package",
+    [
+        package(batch_id="ABCDEFAB-2222-4222-8222-222222222222"),
+        package(portfolio_date="2026-8-24"),
+        package(kind="unknown_story"),
+        package(digest="A" * 64),
+        package(template_version=0),
+    ],
+)
+def test_complete_revalidates_immutable_package_identity(
+    bad_package: VerticalCard,
+) -> None:
+    client = FakeSupabase()
+    with pytest.raises(ValueError):
+        repository(client).complete(
+            package=bad_package,
+            destination="instagram_story",
+            attempt_id="33333333-3333-4333-8333-333333333333",
+            success=True,
+            receipt="receipt_123",
+        )
+    assert client.rpc_calls == []
+
+
+@pytest.mark.parametrize(
+    "response", [{"completed": False}, [{"completed": False}], [{"completed": 1}]]
+)
+def test_complete_requires_exact_persisted_confirmation(response: object) -> None:
+    client = FakeSupabase()
+    client.responses["complete_vertical_media_delivery"] = response
+    with pytest.raises(RuntimeError, match="vertical completion was not persisted"):
+        repository(client).complete(
+            package=package(),
+            destination="instagram_story",
+            attempt_id="33333333-3333-4333-8333-333333333333",
+            success=True,
+            receipt="receipt_123",
+        )
+
+
+@pytest.mark.parametrize("response", [None, []])
+def test_complete_rejects_nonexact_rpc_shape(response: object) -> None:
+    client = FakeSupabase()
+    client.responses["complete_vertical_media_delivery"] = response
+    with pytest.raises(RuntimeError, match="vertical RPC returned invalid data"):
+        repository(client).complete(
+            package=package(),
+            destination="instagram_story",
+            attempt_id="33333333-3333-4333-8333-333333333333",
+            success=True,
+            receipt="receipt_123",
+        )
+
+
+@pytest.mark.parametrize("stage", ["rpc", "execute"])
+def test_complete_sanitizes_sdk_exceptions(stage: str) -> None:
+    client = FakeSupabase()
+    client.responses["complete_vertical_media_delivery"] = [{"completed": True}]
+    setattr(client, f"{stage}_exception", RuntimeError("service-secret response body"))
+    with pytest.raises(RuntimeError, match=r"^vertical completion failed$") as raised:
+        repository(client).complete(
+            package=package(),
+            destination="instagram_story",
+            attempt_id="33333333-3333-4333-8333-333333333333",
+            success=True,
+            receipt="receipt_123",
+        )
+    assert raised.value.__cause__ is None
+
+
+class EvidenceQuery:
+    def __init__(self, client: "EvidenceSupabase") -> None:
+        self.client = client
+
+    def select(self, columns: str) -> "EvidenceQuery":
+        self.client.calls.append(("select", columns))
+        return self
+
+    def eq(self, column: str, value: object) -> "EvidenceQuery":
+        self.client.calls.append(("eq", column, value))
+        return self
+
+    def gte(self, column: str, value: object) -> "EvidenceQuery":
+        self.client.calls.append(("gte", column, value))
+        return self
+
+    def lt(self, column: str, value: object) -> "EvidenceQuery":
+        self.client.calls.append(("lt", column, value))
+        return self
+
+    def order(self, column: str, *, desc: bool) -> "EvidenceQuery":
+        self.client.calls.append(("order", column, desc))
+        return self
+
+    def limit(self, count: int) -> "EvidenceQuery":
+        self.client.calls.append(("limit", count))
+        return self
+
+    def update(self, payload: dict[str, object]) -> "EvidenceQuery":
+        self.client.calls.append(("update", payload))
+        return self
+
+    def upsert(
+        self, payload: dict[str, object], *, on_conflict: str
+    ) -> "EvidenceQuery":
+        self.client.calls.append(("upsert", payload, on_conflict))
+        return self
+
+    def execute(self) -> FakeResponse:
+        if self.client.execute_exception is not None:
+            raise self.client.execute_exception
+        return FakeResponse(self.client.response)
+
+
+class EvidenceSupabase:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.calls: list[tuple[object, ...]] = []
+        self.execute_exception: Exception | None = None
+
+    def table(self, name: str) -> EvidenceQuery:
+        self.calls.append(("table", name))
+        return EvidenceQuery(self)
+
+
+def evidence_repository(
+    client: EvidenceSupabase,
+) -> SupabaseTicketEvidenceRepository:
+    return SupabaseTicketEvidenceRepository(client, admin_chat_id=123456)
+
+
+def evidence_report() -> ResultReport:
+    return ResultReport(
+        batch_id="44444444-4444-4444-8444-444444444444",
+        portfolio_date="2026-08-24",
+        kind="final",
+        rows=(
+            {
+                "id": 101,
+                "partido": "Aryans Sports vs Nbp Rainbow AC",
+                "resultado_marcador": "5-0",
+                "estado": "ganado",
+            },
+        ),
+        eligible=True,
+        terminal=True,
+        record="1-0",
+        digest="d" * 64,
+        telegram="report",
+        facebook="report",
+        instagram="report",
+    )
+
+
+def test_ticket_candidates_use_exact_cdmx_day_and_admin_origin() -> None:
+    client = EvidenceSupabase(
+        [
+            {
+                "file_id": "file-1",
+                "file_unique_id": "unique-1",
+                "received_at": "2026-08-24T06:00:00+00:00",
+            },
+            {
+                "file_id": "file-2",
+                "file_unique_id": "",
+                "received_at": "2026-08-25T05:59:59+00:00",
+            },
+        ]
+    )
+
+    result = evidence_repository(client).candidates(portfolio_date="2026-08-24")
+
+    assert result == (
+        TicketCandidate(
+            "unique-1", "file-1", "unique-1", "2026-08-24T06:00:00+00:00"
+        ),
+        TicketCandidate(
+            "file-2", "file-2", "", "2026-08-25T05:59:59+00:00"
+        ),
+    )
+    assert client.calls == [
+        ("table", "tickets_ganadores"),
+        ("select", "file_id,file_unique_id,received_at"),
+        ("eq", "telegram_chat_id", 123456),
+        ("gte", "received_at", "2026-08-24T06:00:00+00:00"),
+        ("lt", "received_at", "2026-08-25T06:00:00+00:00"),
+        ("order", "received_at", False),
+    ]
+
+
+def test_ticket_candidate_uses_file_id_when_nullable_unique_id_is_null() -> None:
+    client = EvidenceSupabase(
+        [
+            {
+                "file_id": "file-fallback",
+                "file_unique_id": None,
+                "received_at": "2026-08-24T12:00:00+00:00",
+            }
+        ]
+    )
+
+    result = evidence_repository(client).candidates(portfolio_date="2026-08-24")
+
+    assert result == (
+        TicketCandidate(
+            "file-fallback",
+            "file-fallback",
+            "",
+            "2026-08-24T12:00:00+00:00",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        {"not": "a-list"},
+        [{"file_id": "file", "file_unique_id": "unique"}],
+        [
+            {
+                "file_id": "",
+                "file_unique_id": "unique",
+                "received_at": "2026-08-24T06:00:00+00:00",
+            }
+        ],
+        [
+            {
+                "file_id": "file",
+                "file_unique_id": "unique",
+                "received_at": "not-a-time",
+            }
+        ],
+    ],
+    ids=("not-list", "missing-field", "empty-file", "bad-time"),
+)
+def test_ticket_candidates_reject_malformed_database_rows(rows: object) -> None:
+    with pytest.raises(RuntimeError, match="invalid"):
+        evidence_repository(EvidenceSupabase(rows)).candidates(
+            portfolio_date="2026-08-24"
+        )
+
+
+def test_ticket_review_upsert_uses_validated_exact_identity() -> None:
+    from backend.ticket_evidence import EvidenceDecision
+
+    client = EvidenceSupabase([{"evidence_key": "unique-1"}])
+    candidate = TicketCandidate(
+        "unique-1", "file-1", "unique-1", "2026-08-24T06:00:00+00:00"
+    )
+    decision = EvidenceDecision("matched", "5329224423", (101,), "b" * 64)
+
+    evidence_repository(client).record(
+        candidate=candidate,
+        report=evidence_report(),
+        decision=decision,
+        media_digest="c" * 64,
+    )
+
+    upsert = client.calls[1]
+    assert upsert[0] == "upsert"
+    assert upsert[2] == "evidence_key"
+    assert upsert[1] == {
+        "evidence_key": "unique-1",
+        "batch_id": "44444444-4444-4444-8444-444444444444",
+        "portfolio_date": "2026-08-24",
+        "state": "matched",
+        "ticket_id": "5329224423",
+        "pick_ids": [101],
+        "media_digest": "c" * 64,
+        "ocr_digest": "b" * 64,
+    }
+
+
+@pytest.mark.parametrize("pick_count", [2, 3, 4, 5, 6])
+def test_ticket_review_accepts_every_supported_multi_pick_ticket(
+    pick_count: int,
+) -> None:
+    from backend.ticket_evidence import EvidenceDecision
+
+    pick_ids = tuple(range(101, 101 + pick_count))
+    report = replace(
+        evidence_report(),
+        rows=tuple(
+            {
+                "id": pick_id,
+                "partido": f"Evento {pick_id}",
+                "resultado_marcador": "1-0",
+                "estado": "ganado",
+            }
+            for pick_id in pick_ids
+        ),
+    )
+    client = EvidenceSupabase([{"evidence_key": "unique-multi"}])
+
+    evidence_repository(client).record(
+        candidate=TicketCandidate(
+            "unique-multi",
+            "file-multi",
+            "unique-multi",
+            "2026-08-24T06:00:00+00:00",
+        ),
+        report=report,
+        decision=EvidenceDecision(
+            "matched",
+            "5329224423",
+            pick_ids,
+            "b" * 64,
+        ),
+        media_digest="c" * 64,
+    )
+
+    assert client.calls[1][0] == "upsert"
+    assert client.calls[1][1]["pick_ids"] == list(pick_ids)
+
+
+def test_ticket_review_requires_one_confirmed_upsert_row() -> None:
+    from backend.ticket_evidence import EvidenceDecision
+
+    client = EvidenceSupabase([])
+    candidate = TicketCandidate(
+        "unique-1", "file-1", "unique-1", "2026-08-24T06:00:00+00:00"
+    )
+
+    with pytest.raises(RuntimeError, match="not persisted"):
+        evidence_repository(client).record(
+            candidate=candidate,
+            report=evidence_report(),
+            decision=EvidenceDecision("pending_review", "", (), "b" * 64),
+            media_digest="c" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        ([], False),
+        (
+            [
+                {
+                    "evidence_key": "unique-1",
+                    "story_receipt": "",
+                    "consumed_at": None,
+                }
+            ],
+            False,
+        ),
+        (
+            [
+                {
+                    "evidence_key": "unique-1",
+                    "story_receipt": "story_media_1",
+                    "consumed_at": "2026-08-24T18:00:00+00:00",
+                }
+            ],
+            True,
+        ),
+    ],
+)
+def test_ticket_evidence_consumption_is_exact_and_idempotent(
+    rows: object,
+    expected: bool,
+) -> None:
+    client = EvidenceSupabase(rows)
+
+    result = evidence_repository(client).is_consumed(
+        evidence_key="unique-1",
+        report=evidence_report(),
+    )
+
+    assert result is expected
+    assert client.calls == [
+        ("table", "ticket_evidence_reviews"),
+        ("select", "evidence_key,story_receipt,consumed_at"),
+        ("eq", "evidence_key", "unique-1"),
+        ("eq", "batch_id", "44444444-4444-4444-8444-444444444444"),
+        ("eq", "portfolio_date", "2026-08-24"),
+        ("eq", "state", "matched"),
+        ("limit", 2),
+    ]
+
+
+def test_ticket_story_receipt_is_persisted_against_exact_evidence() -> None:
+    client = EvidenceSupabase(
+        [
+            {
+                "evidence_key": "unique-1",
+                "story_receipt": "story_media_1",
+            }
+        ]
+    )
+
+    evidence_repository(client).record_story_receipt(
+        evidence_key="unique-1",
+        report=evidence_report(),
+        receipt="story_media_1",
+    )
+
+    update = client.calls[1]
+    assert update[0] == "update"
+    assert update[1]["story_receipt"] == "story_media_1"
+    assert datetime.fromisoformat(str(update[1]["consumed_at"])).tzinfo is timezone.utc
+    assert client.calls[2:] == [
+        ("eq", "evidence_key", "unique-1"),
+        ("eq", "batch_id", "44444444-4444-4444-8444-444444444444"),
+        ("eq", "portfolio_date", "2026-08-24"),
+        ("eq", "state", "matched"),
+        ("eq", "story_receipt", ""),
+    ]

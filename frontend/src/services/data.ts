@@ -22,6 +22,12 @@ export function escapeHtml(value: unknown): string {
   return node.innerHTML;
 }
 
+function normalizeHorario(value: unknown): string {
+  const raw = String(value ?? '');
+  const match = /(?:^|\D)([01]?\d|2[0-3]):([0-5]\d)(?:\D|$)/.exec(raw);
+  return match ? `${match[1].padStart(2, '0')}:${match[2]}` : raw;
+}
+
 export function normalizePick(value: Record<string, unknown>): PickRow {
   const allowedStates = ['pendiente', 'ganado', 'perdido', 'void', 'revision_pendiente'];
   const rawState = String(value.estado ?? 'pendiente');
@@ -35,7 +41,7 @@ export function normalizePick(value: Record<string, unknown>): PickRow {
     razonamiento: String(value.razonamiento ?? 'Consulta los datos y apuesta con responsabilidad.'),
     fecha_generacion: String(value.fecha_generacion ?? ''),
     fecha_evento: String(value.fecha_evento ?? ''),
-    horario: String(value.horario ?? ''),
+    horario: normalizeHorario(value.horario),
     estado: (allowedStates.includes(rawState) ? rawState : 'revision_pendiente') as PickRow['estado'],
     es_parlay: Boolean(value.es_parlay),
     visibility: value.visibility === 'premium' ? 'premium' : 'public',
@@ -51,6 +57,9 @@ export function choosePublicPicks(rows: Array<Record<string, unknown>>): PickRow
 
 export const PUBLIC_PICK_FIELDS = 'id,categoria,partido,pick,cuota,confianza,fecha_generacion,fecha_evento,horario,estado,es_parlay,visibility';
 export const LEGACY_PUBLIC_PICK_FIELDS = 'id,categoria,partido,pick,cuota,confianza,fecha_generacion,estado,es_parlay';
+const PUBLIC_STATES: PickRow['estado'][] = [
+  'pendiente', 'ganado', 'perdido', 'void', 'revision_pendiente',
+];
 
 export async function loadPublicPicks(client: SupabaseClient): Promise<PickRow[]> {
   const response = await client.from('public_picks').select(PUBLIC_PICK_FIELDS).eq('estado', 'pendiente').order('id', { ascending: false }).limit(2);
@@ -64,6 +73,19 @@ export async function loadLocalPublicPicks(): Promise<PickRow[]> {
   if (!fallback.ok) return [];
   const rows = await fallback.json() as Array<Record<string, unknown>>;
   return choosePublicPicks(rows);
+}
+
+export async function loadDailyPublicPicks(
+  client: SupabaseClient,
+  dateKey: string,
+): Promise<PickRow[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return [];
+  const response = await client.from('public_picks')
+    .select(PUBLIC_PICK_FIELDS)
+    .eq('fecha_evento', dateKey)
+    .in('estado', PUBLIC_STATES)
+    .order('horario', { ascending: true });
+  return response.error ? [] : (response.data ?? []).map(normalizePick);
 }
 
 export async function loadHistory(client: SupabaseClient): Promise<PickRow[]> {

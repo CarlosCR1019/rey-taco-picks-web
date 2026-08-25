@@ -39,7 +39,9 @@ def test_pre_event_story_step_follows_exact_feed_publish() -> None:
     assert story["if"] == (
         "success() && steps.cloud_window.outputs.eligible == 'true'"
     )
-    assert story["run"] == "python -m backend.vertical_publisher --mode pre-event"
+    assert story["run"] == (
+        "python -m backend.vertical_publisher --mode pre-event --live"
+    )
 
 
 def test_pre_event_story_step_has_only_approved_scoped_configuration() -> None:
@@ -105,7 +107,7 @@ def test_result_workflow_runs_idempotent_final_vertical_after_verifier() -> None
     step = next(
         item for item in job["steps"] if item["name"] == "Publish final vertical media"
     )
-    assert step["run"] == "python -m backend.vertical_publisher --mode final"
+    assert step["run"] == "python -m backend.vertical_publisher --mode final --live"
     assert step["env"] == {
         "SUPABASE_URL": "${{ secrets.SUPABASE_URL }}",
         "SUPABASE_SERVICE_ROLE_KEY": "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}",
@@ -131,7 +133,9 @@ def test_recovery_workflow_has_media_tools_and_ledger_only_vertical_recovery() -
         for item in job["steps"]
         if item["name"] == "Recover final vertical media"
     )
-    assert step["run"] == "python -m backend.vertical_publisher --mode recover"
+    assert step["run"] == (
+        "python -m backend.vertical_publisher --mode recover --live"
+    )
     assert "scraper" not in str(step).casefold()
     assert step["env"]["SUPABASE_URL"] == "${{ secrets.SUPABASE_URL }}"
     assert step["env"]["FB_PAGE_ID"] == "${{ secrets.FB_PAGE_ID }}"

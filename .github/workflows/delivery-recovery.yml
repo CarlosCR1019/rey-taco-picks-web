@@ -134,7 +134,7 @@ jobs:
           META_GRAPH_VERSION: v26.0
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ADMIN_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m backend.vertical_publisher --mode recover
+        run: python -m backend.vertical_publisher --mode recover --live
 
       - name: Verify independent recovery outcomes
         if: always()

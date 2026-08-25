@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timezone
 import logging
+from pathlib import Path
 import re
 import shutil
 from typing import Protocol, cast
@@ -73,6 +74,27 @@ _SAFE_STATUSES = frozenset(
         "crosspost_unverified",
     }
 )
+
+
+def _write_dry_run_preview(
+    settings: MetaSettings,
+    *,
+    name: str,
+    suffix: str,
+    payload: bytes,
+) -> None:
+    """Persist an explicitly requested local preview without logging its path."""
+
+    if not settings.dry_run_output:
+        return
+    if re.fullmatch(r"[a-z0-9_-]{1,100}", name) is None:
+        raise ValueError("vertical preview name is invalid")
+    if suffix not in {".jpg", ".mp4"} or not isinstance(payload, bytes):
+        raise ValueError("vertical preview payload is invalid")
+    directory = Path(settings.dry_run_output).expanduser()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}{suffix}").write_bytes(payload)
+    LOGGER.info("vertical preview kind=%s status=written", name)
 
 
 class VerticalRepository(Protocol):
@@ -305,7 +327,13 @@ def publish_pre_event_stories(
     for card in cards:
         if settings.dry_run:
             try:
-                renderer(card)
+                jpeg = renderer(card)
+                _write_dry_run_preview(
+                    settings,
+                    name=card.kind,
+                    suffix=".jpg",
+                    payload=jpeg,
+                )
             except Exception as exc:
                 LOGGER.warning(
                     "vertical render status=failed kind=%s exception=%s",
@@ -341,7 +369,13 @@ def publish_daily_reel(
     destinations = ("instagram_reel", "facebook_reel")
     if settings.dry_run:
         try:
-            renderer.render(frames)
+            mp4 = renderer.render(frames)
+            _write_dry_run_preview(
+                settings,
+                name=package.kind,
+                suffix=".mp4",
+                payload=mp4,
+            )
         except Exception as exc:
             LOGGER.warning(
                 "vertical render status=failed kind=daily_results_reel exception=%s",
@@ -604,7 +638,13 @@ def publish_final_stories(
     ) -> str:
         if settings.dry_run:
             try:
-                render(card)
+                jpeg = render(card)
+                _write_dry_run_preview(
+                    settings,
+                    name=card.kind,
+                    suffix=".jpg",
+                    payload=jpeg,
+                )
             except Exception as exc:
                 LOGGER.warning(
                     "vertical render status=failed kind=%s exception=%s",
@@ -663,8 +703,15 @@ def publish_final_stories_from_runtime(
     report: ResultReport,
     *,
     environ: Mapping[str, str] | None = None,
+    include_stories: bool = True,
+    include_reels: bool = True,
 ) -> dict[str, str]:
     """Build runtime adapters and publish one final vertical package."""
+
+    if type(include_stories) is not bool or type(include_reels) is not bool:
+        raise ValueError("vertical publication scope is invalid")
+    if not include_stories and not include_reels:
+        raise ValueError("vertical publication scope is empty")
 
     values = _runtime_values(environ)
     supabase_url = _required_runtime_string(values, "SUPABASE_URL")
@@ -678,6 +725,7 @@ def publish_final_stories_from_runtime(
         service_role_key=service_role_key,
     )
     matched: tuple[MatchedEvidence, ...] = ()
+    story_evidence: tuple[MatchedEvidence, ...] = ()
     evidence_repository: SupabaseTicketEvidenceRepository | None = None
     telegram_token = _required_runtime_string(values, "TELEGRAM_BOT_TOKEN")
     raw_admin_id = _required_runtime_string(values, "TELEGRAM_ADMIN_ID")
@@ -699,64 +747,67 @@ def publish_final_stories_from_runtime(
                 fetcher=TelegramTicketFetcher(telegram_token),
                 inspector=EvidenceInspector(ocr=tesseract_ocr),
             )
-            matched = tuple(
-                item
-                for item in collected
-                if not evidence_repository.is_consumed(
-                    evidence_key=item.evidence_id,
-                    report=report,
+            matched = tuple(collected)
+            if include_stories:
+                story_evidence = tuple(
+                    item
+                    for item in matched
+                    if not evidence_repository.is_consumed(
+                        evidence_key=item.evidence_id,
+                        report=report,
+                    )
                 )
-            )
         except Exception as exc:
             LOGGER.warning(
                 "ticket evidence status=pending_review exception=%s",
                 type(exc).__name__,
             )
     meta_transport = VerticalMetaHttpTransport()
-    outcomes = publish_final_stories(
-        report,
-        evidence=matched,
-        repository=repository,
-        transport=meta_transport,
-        settings=settings,
-        renderer=render_story_jpeg,
-        evidence_renderer=lambda jpeg, card: render_ticket_evidence_jpeg(
-            jpeg,
-            observed_label=f"{card.portfolio_date} · CDMX",
-        ),
-        evidence_receipt_recorder=(
-            None
-            if evidence_repository is None
-            else lambda item, receipt: evidence_repository.record_story_receipt(
-                evidence_key=item.evidence_id,
-                report=report,
-                receipt=receipt,
+    outcomes: dict[str, str] = {}
+    if include_stories:
+        outcomes.update(
+            publish_final_stories(
+                report,
+                evidence=story_evidence,
+                repository=repository,
+                transport=meta_transport,
+                settings=settings,
+                renderer=render_story_jpeg,
+                evidence_renderer=lambda jpeg, card: render_ticket_evidence_jpeg(
+                    jpeg,
+                    observed_label=f"{card.portfolio_date} · CDMX",
+                ),
+                evidence_receipt_recorder=(
+                    None
+                    if evidence_repository is None
+                    else lambda item, receipt: evidence_repository.record_story_receipt(
+                        evidence_key=item.evidence_id,
+                        report=report,
+                        receipt=receipt,
+                    )
+                ),
             )
-        ),
-    )
-    try:
-        reel_outcomes = publish_daily_reel_from_runtime(
-            report,
-            evidence=matched,
-            repository=repository,
-            transport=meta_transport,
-            settings=settings,
-            environ=(
-                None
-                if environ is None
-                else dict(environ)
-            ),
         )
-    except Exception as exc:
-        LOGGER.warning(
-            "vertical reel status=failed exception=%s",
-            type(exc).__name__,
-        )
-        reel_outcomes = {
-            "instagram_reel": "media_invalid",
-            "facebook_reel": "media_invalid",
-        }
-    outcomes.update(reel_outcomes)
+    if include_reels:
+        try:
+            reel_outcomes = publish_daily_reel_from_runtime(
+                report,
+                evidence=matched,
+                repository=repository,
+                transport=meta_transport,
+                settings=settings,
+                environ=(None if environ is None else dict(environ)),
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical reel status=failed exception=%s",
+                type(exc).__name__,
+            )
+            reel_outcomes = {
+                "instagram_reel": "media_invalid",
+                "facebook_reel": "media_invalid",
+            }
+        outcomes.update(reel_outcomes)
     if not settings.dry_run and telegram_token and admin_chat_id:
         try:
             notify_vertical_failures(
@@ -864,6 +915,20 @@ def _parser() -> argparse.ArgumentParser:
         choices=("pre-event", "final", "recover"),
         required=True,
     )
+    publication = parser.add_mutually_exclusive_group(required=True)
+    publication.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="render locally without contacting Meta",
+    )
+    publication.add_argument(
+        "--live",
+        action="store_true",
+        help="allow the configured Meta publication",
+    )
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--stories-only", action="store_true")
+    scope.add_argument("--reel-only", action="store_true")
     return parser
 
 
@@ -871,6 +936,8 @@ def _run_final_mode(
     values: Mapping[str, object],
     *,
     settings: MetaSettings,
+    include_stories: bool,
+    include_reels: bool,
 ) -> int:
     supabase_url = _required_runtime_string(values, "SUPABASE_URL")
     service_role_key = _required_runtime_string(
@@ -897,6 +964,8 @@ def _run_final_mode(
         outcomes = publish_final_stories_from_runtime(
             report,
             environ=cast(Mapping[str, str], values),
+            include_stories=include_stories,
+            include_reels=include_reels,
         )
         safe_outcomes = _validated_outcomes(outcomes)
         for name, status in safe_outcomes.items():
@@ -915,10 +984,23 @@ def main(
 
     try:
         arguments = _parser().parse_args(argv)
-        values = _runtime_values(environ)
+        values = dict(_runtime_values(environ))
+        if arguments.mode == "pre-event" and (
+            arguments.stories_only or arguments.reel_only
+        ):
+            raise ValueError("pre-event mode does not accept final media scope")
+        values["META_DRY_RUN"] = "true" if arguments.dry_run else "false"
+        vertical_output = values.get("VERTICAL_DRY_RUN_OUTPUT", "")
+        if vertical_output:
+            values["META_DRY_RUN_OUTPUT"] = vertical_output
         settings = MetaSettings.from_mapping(values)
         if arguments.mode in {"final", "recover"}:
-            return _run_final_mode(values, settings=settings)
+            return _run_final_mode(
+                values,
+                settings=settings,
+                include_stories=not arguments.reel_only,
+                include_reels=not arguments.stories_only,
+            )
         portfolio_date = _portfolio_date(values)
         run_key = resolve_run_key(values)
         supabase_url = _required_runtime_string(values, "SUPABASE_URL")

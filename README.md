@@ -47,6 +47,40 @@ La configuración, migración y salida controlada a producción están documenta
 en [el runbook de seguridad, pagos y scraper](docs/operations/security-and-payments.md).
 No ejecute el scraper en modo de publicación hasta completar ese procedimiento.
 
-> Estado al 23 de agosto de 2026: el esquema seguro y la clave de servicio ya
-> estan configurados. Todavia no se ha despachado el nuevo collector ni se ha
-> autorizado una publicacion real desde este flujo.
+## Historias y reels
+
+El contenido vertical se genera localmente con las plantillas auditadas de Rey
+Taco. Las historias son JPEG de 1080 x 1920 y el reel diario es un MP4 vertical
+creado con FFmpeg a partir de resultados ya verificados. No depende de un
+servicio generativo de pago ni abre una ventana del navegador.
+
+Toda ejecución exige indicar de forma explícita si es una prueba o una
+publicación real. Para guardar material revisable sin contactar a Meta:
+
+```powershell
+$env:VERTICAL_DRY_RUN_OUTPUT = "artifacts/vertical-preview"
+python -m backend.vertical_publisher --mode pre-event --dry-run
+python -m backend.vertical_publisher --mode final --dry-run
+```
+
+El modo real requiere `--live`, las migraciones aplicadas y los secretos de
+Supabase y Meta configurados. Las dos salidas controladas pueden separarse:
+
+```powershell
+python -m backend.vertical_publisher --mode final --live --stories-only
+python -m backend.vertical_publisher --mode final --live --reel-only
+```
+
+La API devuelve un recibo de la historia de Instagram. Si Meta la muestra
+también como historia de Facebook por crossposting, esa aparición se valida por
+separado; no se presenta como si fuera un segundo recibo de la API. El ledger de
+Supabase impide volver a publicar una pieza ya completada y conserva como
+`pending_review` cualquier respuesta remota ambigua.
+
+Las variables de ejemplo solo nombran la configuración. Nunca guarde tokens en
+los archivos `.env.example`; los secretos de producción pertenecen a GitHub
+Actions o al entorno protegido del runner.
+
+> Estado al 25 de agosto de 2026: el flujo vertical está implementado y validado
+> localmente. Su despliegue permanece detenido hasta aplicar las migraciones
+> pendientes y completar una salida controlada con recibos verificados.

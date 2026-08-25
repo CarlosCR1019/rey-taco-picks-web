@@ -14,6 +14,35 @@ FORBIDDEN = (
 
 
 class SourceSecurityTests(unittest.TestCase):
+    def test_examples_name_vertical_configuration_without_secrets(self):
+        for relative in (".env.example", "backend/.env.example"):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("VERTICAL_MEDIA_BUCKET=social-vertical", text)
+            self.assertIn("VERTICAL_DRY_RUN=false", text)
+            self.assertIn("VERTICAL_DRY_RUN_OUTPUT=", text)
+            self.assertIn("META_GRAPH_VERSION=v26.0", text)
+            self.assertIn("TELEGRAM_BOT_TOKEN=", text)
+            self.assertNotIn("bot-secret", text)
+
+    def test_vertical_modules_do_not_log_secrets_or_control_browser(self):
+        names = (
+            "vertical_content.py",
+            "story_renderer.py",
+            "vertical_repository.py",
+            "meta_http.py",
+            "vertical_meta.py",
+            "ticket_evidence.py",
+            "reel_renderer.py",
+            "vertical_publisher.py",
+        )
+        sources = "\n".join(
+            (ROOT / "backend" / name).read_text(encoding="utf-8")
+            for name in names
+        )
+        self.assertNotIn("webdriver", sources)
+        self.assertNotIn("pyautogui", sources)
+        self.assertNotIn("print(settings.token", sources)
+
     def test_runbook_documents_baseline_persisted_retry_and_no_live_parlay_claim(self):
         runbook = " ".join(
             (ROOT / "docs/operations/security-and-payments.md")

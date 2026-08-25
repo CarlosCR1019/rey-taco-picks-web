@@ -377,6 +377,61 @@ def test_final_runtime_collects_evidence_and_uses_original_ticket_renderer(
     ]
 
 
+def test_reel_only_reuses_valid_evidence_even_after_story_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    class EvidenceRepository:
+        def is_consumed(self, **_kwargs: object) -> bool:
+            raise AssertionError("reel-only must not apply the story receipt filter")
+
+    monkeypatch.setattr(vertical_publisher, "create_client", lambda *_args: object())
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseVerticalRepository",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseTicketEvidenceRepository",
+        lambda *_args, **_kwargs: EvidenceRepository(),
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "collect_matched_evidence",
+        lambda *_args, **_kwargs: (evidence(),),
+    )
+    monkeypatch.setattr(vertical_publisher, "VerticalMetaHttpTransport", object)
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_final_stories",
+        lambda *_args, **_kwargs: pytest.fail("stories were not requested"),
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_daily_reel_from_runtime",
+        lambda _report, **kwargs: observed.update(kwargs)
+        or {
+            "instagram_reel": "success",
+            "facebook_reel": "success",
+        },
+    )
+
+    result = vertical_publisher.publish_final_stories_from_runtime(
+        final_report(),
+        environ=cli_values(TELEGRAM_ADMIN_ID="123456"),
+        include_stories=False,
+        include_reels=True,
+    )
+
+    assert result == {
+        "instagram_reel": "success",
+        "facebook_reel": "success",
+    }
+    assert observed["evidence"] == (evidence(),)
+
+
 def test_final_runtime_alerts_admin_with_safe_vertical_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -545,6 +600,35 @@ def test_daily_reel_renders_once_and_completes_destinations_independently() -> N
     assert repository.upload_calls == 1
     assert repository.begin_calls == ["instagram_reel", "facebook_reel"]
     assert repository.delete_calls == 1
+
+
+def test_daily_reel_dry_run_writes_local_preview_without_remote_side_effects(
+    tmp_path,
+) -> None:
+    repository = FakeReelRepository()
+    renderer = FakeReelRenderer()
+    meta = FakeReelMeta()
+
+    outcomes = publish_daily_reel(
+        final_report(),
+        frames=REEL_FRAMES,
+        repository=repository,
+        renderer=renderer,
+        transport=meta,
+        settings=configured_settings(
+            META_DRY_RUN="true",
+            META_DRY_RUN_OUTPUT=str(tmp_path),
+        ),
+    )
+
+    assert outcomes == {
+        "instagram_reel": "dry_run",
+        "facebook_reel": "dry_run",
+    }
+    assert (tmp_path / "daily_results_reel.mp4").read_bytes() == REEL_BYTES
+    assert repository.claim_calls == []
+    assert meta.instagram_calls == []
+    assert meta.facebook_calls == []
 
 
 def test_daily_reel_retry_calls_only_failed_facebook_destination() -> None:
@@ -859,6 +943,34 @@ def test_dry_run_renders_both_cards_without_claim_upload_or_meta() -> None:
     assert meta.calls == []
 
 
+def test_story_dry_run_writes_reviewable_jpegs_locally(tmp_path) -> None:
+    repository = FakeStoryRepository()
+    meta = FakeMeta()
+
+    outcomes = publish_pre_event_stories(
+        batch=batch(),
+        portfolio_date=PORTFOLIO_DATE,
+        repository=repository,
+        transport=meta,
+        settings=configured_settings(
+            META_DRY_RUN="true",
+            META_DRY_RUN_OUTPUT=str(tmp_path),
+        ),
+        renderer=vertical_publisher.render_story_jpeg,
+    )
+
+    assert outcomes == {
+        "public_pick_story": "dry_run",
+        "vip_teaser_story": "dry_run",
+    }
+    for kind in outcomes:
+        preview = (tmp_path / f"{kind}.jpg").read_bytes()
+        assert preview.startswith(b"\xff\xd8")
+        assert preview.endswith(b"\xff\xd9")
+    assert repository.claim_calls == []
+    assert meta.calls == []
+
+
 def test_dry_run_render_failure_returns_nonzero() -> None:
     settings = configured_settings(META_DRY_RUN="true")
 
@@ -985,7 +1097,7 @@ def test_main_loads_same_run_key_batch_and_required_portfolio_date(
     monkeypatch.setattr(vertical_publisher, "publish_pre_event_stories", publish_fake)
 
     assert vertical_publisher.main(
-        ["--mode", "pre-event"], cli_values()
+        ["--mode", "pre-event", "--live"], cli_values()
     ) == 0
 
     social_repository = FakeSocialRepository.instances[0]
@@ -1036,7 +1148,7 @@ def test_main_returns_nonzero_for_configured_incomplete_story_and_alert_failure_
 
     with caplog.at_level(logging.INFO, logger="backend.vertical_publisher"):
         result = vertical_publisher.main(
-            ["--mode", "pre-event"], cli_values()
+            ["--mode", "pre-event", "--live"], cli_values()
         )
 
     assert result == 1
@@ -1082,8 +1194,8 @@ def test_main_dry_run_render_failure_has_no_telegram_side_effect(
 
     with caplog.at_level(logging.INFO, logger="backend.vertical_publisher"):
         result = vertical_publisher.main(
-            ["--mode", "pre-event"],
-            cli_values(META_DRY_RUN="true"),
+            ["--mode", "pre-event", "--dry-run"],
+            cli_values(META_DRY_RUN="false"),
         )
 
     assert result == 1
@@ -1106,7 +1218,9 @@ def test_main_requires_a_canonical_daily_portfolio_date(
     values: dict[str, str], caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.INFO, logger="backend.vertical_publisher"):
-        result = vertical_publisher.main(["--mode", "pre-event"], values)
+        result = vertical_publisher.main(
+            ["--mode", "pre-event", "--live"], values
+        )
 
     assert result == 1
     assert "command=status_failed exception=ValueError" in caplog.text
@@ -1125,7 +1239,7 @@ def test_main_no_exact_batch_is_a_safe_noop(
 
     with caplog.at_level(logging.INFO, logger="backend.vertical_publisher"):
         result = vertical_publisher.main(
-            ["--mode", "pre-event"], cli_values()
+            ["--mode", "pre-event", "--live"], cli_values()
         )
 
     assert result == 0
@@ -1165,8 +1279,80 @@ def test_main_final_modes_load_only_settled_reports_and_use_the_ledger(
         },
     )
 
-    assert vertical_publisher.main(["--mode", mode], cli_values()) == 0
+    assert vertical_publisher.main(
+        ["--mode", mode, "--live"], cli_values()
+    ) == 0
     assert len(observed) == 1
     report, kwargs = cast(tuple[object, dict[str, object]], observed[0])
     assert report == final_report()
-    assert kwargs["environ"] == cli_values()
+    expected = cli_values()
+    expected["META_DRY_RUN"] = "false"
+    assert kwargs["environ"] == expected
+    assert kwargs["include_stories"] is True
+    assert kwargs["include_reels"] is True
+
+
+def test_main_requires_explicit_live_or_dry_run() -> None:
+    with pytest.raises(SystemExit):
+        vertical_publisher.main(["--mode", "pre-event"], cli_values())
+
+
+@pytest.mark.parametrize(
+    ("scope", "include_stories", "include_reels"),
+    [
+        ("--stories-only", True, False),
+        ("--reel-only", False, True),
+    ],
+)
+def test_main_final_mode_honors_vertical_scope(
+    scope: str,
+    include_stories: bool,
+    include_reels: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    class ResultRepository:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def batches(self):
+            return (tuple(rows_with_states(*(["ganado"] * 6))),)
+
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseResultReportRepository",
+        ResultRepository,
+    )
+
+    def publish(report: object, **kwargs: object) -> dict[str, str]:
+        observed.update(kwargs)
+        return {"final_results_story": "complete"}
+
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_final_stories_from_runtime",
+        publish,
+    )
+
+    assert vertical_publisher.main(
+        ["--mode", "final", "--dry-run", scope],
+        cli_values(META_DRY_RUN="false"),
+    ) == 0
+    assert observed["include_stories"] is include_stories
+    assert observed["include_reels"] is include_reels
+    runtime = cast(dict[str, str], observed["environ"])
+    assert runtime["META_DRY_RUN"] == "true"
+
+
+def test_pre_event_rejects_final_only_scope(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="backend.vertical_publisher"):
+        result = vertical_publisher.main(
+            ["--mode", "pre-event", "--dry-run", "--reel-only"],
+            cli_values(),
+        )
+
+    assert result == 1
+    assert "command=status_failed exception=ValueError" in caplog.text

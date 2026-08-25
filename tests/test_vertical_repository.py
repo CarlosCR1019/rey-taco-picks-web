@@ -1021,6 +1021,29 @@ def test_ticket_candidates_use_exact_cdmx_day_and_admin_origin() -> None:
     ]
 
 
+def test_ticket_candidate_uses_file_id_when_nullable_unique_id_is_null() -> None:
+    client = EvidenceSupabase(
+        [
+            {
+                "file_id": "file-fallback",
+                "file_unique_id": None,
+                "received_at": "2026-08-24T12:00:00+00:00",
+            }
+        ]
+    )
+
+    result = evidence_repository(client).candidates(portfolio_date="2026-08-24")
+
+    assert result == (
+        TicketCandidate(
+            "file-fallback",
+            "file-fallback",
+            "",
+            "2026-08-24T12:00:00+00:00",
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "rows",
     [

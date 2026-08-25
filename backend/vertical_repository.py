@@ -564,6 +564,8 @@ def _canonical_date(value: object) -> str:
 
 
 def _telegram_identity(value: object, *, required: bool) -> str:
+    if value is None and not required:
+        return ""
     if not isinstance(value, str) or value != value.strip():
         raise RuntimeError("ticket evidence query returned invalid data")
     if not value and not required:

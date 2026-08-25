@@ -201,7 +201,10 @@ def _fold(value: str, *, keep_hyphen: bool) -> str:
         .decode("ascii")
         .casefold()
     )
-    allowed = r"[^a-z0-9\s-]" if keep_hyphen else r"[^a-z0-9\s.-]"
+    # Playdoit renders final scores with a colon (for example ``5:0``), while
+    # database results are normalized with a hyphen. Preserve both separators
+    # for the score matcher; team-name folding removes them afterwards.
+    allowed = r"[^a-z0-9\s:-]" if keep_hyphen else r"[^a-z0-9\s.-]"
     return " ".join(re.sub(allowed, " ", folded).split())
 
 
@@ -217,7 +220,7 @@ def _score_pattern(value: object) -> re.Pattern[str]:
     if match is None:
         raise ValueError
     return re.compile(
-        rf"(?<![0-9]){re.escape(match.group(1))}\s*-\s*"
+        rf"(?<![0-9]){re.escape(match.group(1))}\s*[-:]\s*"
         rf"{re.escape(match.group(2))}(?![0-9])"
     )
 

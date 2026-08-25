@@ -377,6 +377,17 @@ def test_exact_team_and_score_match_preserves_full_ticket_id() -> None:
     assert result.pick_ids == (101,)
 
 
+def test_exact_team_match_accepts_playdoit_colon_score_format() -> None:
+    report = final_report()
+    result = EvidenceInspector(
+        ocr=lambda _: "Aryans Sports 5:0 Nbp Rainbow AC ID: 5329224423"
+    ).inspect(jpeg_bytes(), report=report)
+
+    assert result.state == "matched"
+    assert result.ticket_id == "5329224423"
+    assert result.pick_ids == (101,)
+
+
 def test_inspector_accepts_a_truthful_multi_pick_ticket() -> None:
     report = final_report()
     result = EvidenceInspector(

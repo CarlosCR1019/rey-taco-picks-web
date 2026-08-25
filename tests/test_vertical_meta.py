@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 
 import pytest
@@ -319,6 +320,46 @@ def test_facebook_reel_rejects_mismatched_page_id_in_token_response(
 
     assert result == VerticalDelivery("facebook_reel", "delivery_failed")
     assert session.post_calls == []
+
+
+def test_facebook_reel_logs_only_safe_start_failure_details(
+    reel_settings: MetaSettings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = FakeSession()
+    session.queue_gets(
+        FakeResponse(
+            200,
+            {"access_token": "page-access-secret", "id": FACEBOOK_ID},
+        )
+    )
+    session.queue_posts(
+        FakeResponse(
+            400,
+            {
+                "error": {
+                    "code": 200,
+                    "error_subcode": 1363042,
+                    "message": "raw secret page-access-secret",
+                }
+            },
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = VerticalMetaHttpTransport(session=session).publish_facebook_reel(
+            mp4=REEL_BYTES,
+            settings=reel_settings,
+            description="Resultados verificados",
+        )
+
+    assert result == VerticalDelivery("facebook_reel", "delivery_failed")
+    assert "stage=start" in caplog.text
+    assert "http_status=400" in caplog.text
+    assert "error_code=200" in caplog.text
+    assert "error_subcode=1363042" in caplog.text
+    assert "raw secret" not in caplog.text
+    assert "page-access-secret" not in caplog.text
 
 
 def test_facebook_reel_finish_timeout_is_pending_review(

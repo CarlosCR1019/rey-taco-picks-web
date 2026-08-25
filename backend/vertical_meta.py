@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import logging
 import math
 import re
 import time
@@ -37,6 +38,7 @@ VerticalDestination = Literal[
     "facebook_reel",
 ]
 _SAFE_RECEIPT = re.compile(r"^[A-Za-z0-9_:-]{1,200}$")
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,10 +260,12 @@ class VerticalMetaHttpTransport:
             return VerticalDelivery(destination, "not_configured")
         if not _valid_mp4(mp4) or not _valid_description(description):
             return VerticalDelivery(destination, "media_invalid")
+        stage = "page_token"
         try:
             page_token = self._resolve_page_token(settings)
             if isinstance(page_token, VerticalDelivery):
                 return page_token
+            stage = "start"
             start_response = cast(
                 MetaResponse,
                 self._session.post(
@@ -279,9 +283,23 @@ class VerticalMetaHttpTransport:
             start_status, start_payload = read_meta_json(start_response)
             failure = _meta_failure(destination, start_status, start_payload)
             if failure is not None:
+                _log_meta_failure(
+                    destination,
+                    stage=stage,
+                    status=start_status,
+                    payload=start_payload,
+                    reason="http_failure",
+                )
                 return failure
             start = _safe_reel_start(start_payload)
             if start is None:
+                _log_meta_failure(
+                    destination,
+                    stage=stage,
+                    status=start_status,
+                    payload=start_payload,
+                    reason="response_shape",
+                )
                 return VerticalDelivery(destination, "delivery_failed")
             video_id, upload_url = start
             if not _exact_rupload_url(
@@ -289,7 +307,15 @@ class VerticalMetaHttpTransport:
                 video_id=video_id,
                 version=settings.graph_version,
             ):
+                _log_meta_failure(
+                    destination,
+                    stage=stage,
+                    status=start_status,
+                    payload=start_payload,
+                    reason="upload_url",
+                )
                 return VerticalDelivery(destination, "delivery_failed")
+            stage = "upload"
             upload_response = cast(
                 MetaResponse,
                 self._session.post(
@@ -313,7 +339,15 @@ class VerticalMetaHttpTransport:
                 or upload_status >= 300
                 or upload_payload != {"success": True}
             ):
+                _log_meta_failure(
+                    destination,
+                    stage=stage,
+                    status=upload_status,
+                    payload=upload_payload,
+                    reason="upload_failed",
+                )
                 return VerticalDelivery(destination, "delivery_failed")
+            stage = "finish"
             finish_response = cast(
                 MetaResponse,
                 self._session.post(
@@ -334,16 +368,44 @@ class VerticalMetaHttpTransport:
                 ),
             )
             finish_status, finish_payload = read_meta_json(finish_response)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical meta status=ambiguous destination=%s stage=%s "
+                "exception=%s",
+                destination,
+                stage,
+                type(exc).__name__,
+            )
             return VerticalDelivery(destination, "pending_review")
         if meta_token_invalid(finish_payload):
+            _log_meta_failure(
+                destination,
+                stage="finish",
+                status=finish_status,
+                payload=finish_payload,
+                reason="token_invalid",
+            )
             return VerticalDelivery(destination, "token_invalid")
         if finish_status < 200 or finish_status >= 300:
+            _log_meta_failure(
+                destination,
+                stage="finish",
+                status=finish_status,
+                payload=finish_payload,
+                reason="http_failure",
+            )
             return VerticalDelivery(
                 destination,
                 "delivery_failed" if finish_status < 500 else "pending_review",
             )
         if finish_payload != {"success": True}:
+            _log_meta_failure(
+                destination,
+                stage="finish",
+                status=finish_status,
+                payload=finish_payload,
+                reason="response_shape",
+            )
             return VerticalDelivery(destination, "pending_review")
         return VerticalDelivery(destination, "success", video_id)
 
@@ -368,15 +430,36 @@ class VerticalMetaHttpTransport:
         status, payload = read_meta_json(response)
         failure = _meta_failure(destination, status, payload)
         if failure is not None:
+            _log_meta_failure(
+                destination,
+                stage="page_token",
+                status=status,
+                payload=payload,
+                reason="http_failure",
+            )
             return failure
         if (
             not isinstance(payload, Mapping)
             or "access_token" not in payload
             or not set(payload).issubset({"access_token", "id"})
         ):
+            _log_meta_failure(
+                destination,
+                stage="page_token",
+                status=status,
+                payload=payload,
+                reason="response_shape",
+            )
             return VerticalDelivery(destination, "delivery_failed")
         returned_page_id = payload.get("id")
         if returned_page_id is not None and returned_page_id != settings.facebook_page_id:
+            _log_meta_failure(
+                destination,
+                stage="page_token",
+                status=status,
+                payload=payload,
+                reason="page_mismatch",
+            )
             return VerticalDelivery(destination, "delivery_failed")
         value = payload["access_token"]
         if (
@@ -386,8 +469,46 @@ class VerticalMetaHttpTransport:
             or len(value) > 4096
             or any(unicode_category(char) in {"Cc", "Cf"} for char in value)
         ):
+            _log_meta_failure(
+                destination,
+                stage="page_token",
+                status=status,
+                payload=payload,
+                reason="token_shape",
+            )
             return VerticalDelivery(destination, "delivery_failed")
         return value
+
+
+def _log_meta_failure(
+    destination: VerticalDestination,
+    *,
+    stage: str,
+    status: int,
+    payload: object,
+    reason: str,
+) -> None:
+    error_code = "none"
+    error_subcode = "none"
+    if isinstance(payload, Mapping):
+        error = payload.get("error")
+        if isinstance(error, Mapping):
+            code = error.get("code")
+            subcode = error.get("error_subcode")
+            if type(code) is int and 0 <= code <= 2_147_483_647:
+                error_code = str(code)
+            if type(subcode) is int and 0 <= subcode <= 2_147_483_647:
+                error_subcode = str(subcode)
+    LOGGER.warning(
+        "vertical meta status=failed destination=%s stage=%s http_status=%s "
+        "error_code=%s error_subcode=%s reason=%s",
+        destination,
+        stage,
+        status,
+        error_code,
+        error_subcode,
+        reason,
+    )
 
 
 def _required_id(

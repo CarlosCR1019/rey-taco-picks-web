@@ -175,12 +175,18 @@ def test_story_cta_and_footer_render_inside_instagram_safe_zone():
     footer = output.crop(STORY_FOOTER_BOUNDS)
     below_safe_zone = output.crop((60, SAFE_ZONE_BOTTOM, 1020, 1880))
 
-    assert sum(
-        red > 180 and green > 150 and blue < 130
-        for red, green, blue in cta.getdata()
-    ) > 40_000
-    assert sum(
-        red > 120 and green > 130 and blue > 150
-        for red, green, blue in footer.getdata()
-    ) > 100
+    assert (
+        sum(
+            red > 180 and green > 150 and blue < 130
+            for red, green, blue in cta.getdata()
+        )
+        > 40_000
+    )
+    assert (
+        sum(
+            red > 120 and green > 130 and blue > 150
+            for red, green, blue in footer.getdata()
+        )
+        > 100
+    )
     assert all(max(pixel) < 64 for pixel in below_safe_zone.getdata())

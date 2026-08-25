@@ -37,4 +37,14 @@ describe('approved application shell', () => {
     expect(document.getElementById('history-title')?.textContent).toBe('Los picks que recibió VIP');
     expect(document.querySelector('#resultados .section-kicker')?.textContent).toContain('Resultados verificados');
   });
+
+  it('keeps the verified table and mounts the victory wall directly below it', () => {
+    renderShell();
+    const html = document.getElementById('app')!.innerHTML;
+
+    expect(html).toContain('id="victory-wall"');
+    expect(html).toContain('Muro de victorias');
+    expect(html).toContain('id="victory-dialog"');
+    expect(html.indexOf('history-table-wrap')).toBeLessThan(html.indexOf('id="victory-wall"'));
+  });
 });

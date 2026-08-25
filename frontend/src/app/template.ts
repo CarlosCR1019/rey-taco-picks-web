@@ -77,6 +77,13 @@ export function applicationTemplate(): string {
               <tbody id="history-container"><tr><td colspan="5">Cargando historial…</td></tr></tbody>
             </table>
           </div>
+          <section class="victory-wall-section" aria-labelledby="victory-title">
+            <div class="victory-heading">
+              <div><span class="section-kicker">Evidencia original</span><h3 id="victory-title">Muro de victorias</h3></div>
+              <span>Fotografías recibidas por el bot, sin recrear el boleto.</span>
+            </div>
+            <div id="victory-wall" aria-live="polite"><div class="victory-empty">Cargando evidencias…</div></div>
+          </section>
         </section>
 
         <section class="education-grid" id="metodo" aria-label="Contenido educativo">
@@ -146,6 +153,12 @@ export function applicationTemplate(): string {
       </div>
       <p id="auth-message" class="form-message" aria-live="polite"></p>
       <div class="spei-note"><strong>¿Prefieres SPEI?</strong><span>Escríbenos por WhatsApp. Todo comprobante se revisa manualmente.</span><a href="https://wa.me/525639331102" target="_blank" rel="noopener noreferrer">Abrir WhatsApp</a></div>
+    </dialog>
+
+    <dialog id="victory-dialog" class="victory-dialog" aria-labelledby="victory-dialog-title">
+      <div class="dialog-close"><button id="victory-dialog-close" type="button" aria-label="Cerrar evidencia">×</button></div>
+      <h2 id="victory-dialog-title">Evidencia original</h2>
+      <img id="victory-dialog-image" alt="Boleto ganador verificado en tamaño completo" />
     </dialog>
 
     <div class="cookie-notice hidden" id="cookie-notice" role="region" aria-label="Aviso de privacidad"><p>Usamos almacenamiento esencial para tu sesión y medición anónima de uso.</p><button id="cookie-accept" type="button">Entendido</button></div>

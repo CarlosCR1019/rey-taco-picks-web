@@ -4,6 +4,7 @@ import { renderShell } from './app/render';
 import { visibleHistory } from './app/history';
 import { publicCounterLabel } from './app/picks';
 import { renderTimeBoard } from './app/timeBoard';
+import { renderVictoryWall, visibleTicketCount } from './app/victoryWall';
 import { initDailyVerseBanner } from './dailyVerse';
 import { calculatePerformance } from './domain/metrics';
 import { currentMexicoBlockIndex, mexicoDateKey } from './domain/timeBlocks';
@@ -14,11 +15,14 @@ import { telegramLinkUrl } from './services/account';
 import { trackConversion, trackWhenVisible } from './services/analytics';
 import { escapeHtml, loadDailyPublicPicks, loadHistory, loadLocalPublicPicks, loadSubscriberPicks, type PickRow } from './services/data';
 import { isSubscriberRpcActive } from './services/membership';
+import { loadTicketManifest } from './services/tickets';
 
 type AppState = {
   picks: PickRow[];
   publicBoard: PickRow[];
   history: PickRow[];
+  tickets: string[];
+  visibleTickets: number;
   pickFilter: string;
   historyFilter: string;
   user: User | null;
@@ -26,7 +30,8 @@ type AppState = {
 };
 
 const state: AppState = {
-  picks: [], publicBoard: [], history: [], pickFilter: 'all', historyFilter: 'all', user: null, isVip: false,
+  picks: [], publicBoard: [], history: [], tickets: [], visibleTickets: 6,
+  pickFilter: 'all', historyFilter: 'all', user: null, isVip: false,
 };
 let membershipGeneration = 0;
 
@@ -83,6 +88,18 @@ function renderHistory(): void {
   if (record) record.textContent = `${metrics.wins}-${metrics.losses}`;
   if (units) units.textContent = `${metrics.units >= 0 ? '+' : ''}${metrics.units} u`;
   if (roi) roi.textContent = `${metrics.roi >= 0 ? '+' : ''}${metrics.roi}%`;
+}
+
+function renderTickets(): void {
+  const root = byId('victory-wall');
+  if (!root) return;
+  root.innerHTML = renderVictoryWall(state.tickets, state.visibleTickets);
+}
+
+async function refreshTickets(): Promise<void> {
+  state.tickets = await loadTicketManifest();
+  state.visibleTickets = 6;
+  renderTickets();
 }
 
 async function refreshData(): Promise<void> {
@@ -255,6 +272,42 @@ byId('history-filters')?.addEventListener('click', event => {
   renderHistory();
 });
 
+const victoryDialog = byId<HTMLDialogElement>('victory-dialog');
+const victoryDialogImage = byId<HTMLImageElement>('victory-dialog-image');
+const clearVictoryDialogImage = () => victoryDialogImage?.removeAttribute('src');
+
+byId('victory-wall')?.addEventListener('click', event => {
+  const target = event.target as HTMLElement;
+  if (target.closest('#victory-load-more')) {
+    state.visibleTickets = visibleTicketCount(state.visibleTickets, state.tickets.length);
+    renderTickets();
+    return;
+  }
+  const ticket = target.closest<HTMLButtonElement>('[data-ticket-url]');
+  const url = ticket?.dataset.ticketUrl ?? '';
+  if (!victoryDialog || !victoryDialogImage || !/^\/tickets\/ticket_[0-9]{1,20}[.]jpg$/.test(url)) return;
+  victoryDialogImage.src = url;
+  victoryDialog.showModal();
+});
+
+byId('victory-wall')?.addEventListener('error', event => {
+  const image = event.target as HTMLElement;
+  if (!(image instanceof HTMLImageElement)) return;
+  const card = image.closest<HTMLButtonElement>('.victory-card');
+  if (!card) return;
+  card.disabled = true;
+  card.classList.add('failed');
+  image.remove();
+  const label = card.querySelector('span');
+  if (label) label.textContent = 'Evidencia temporalmente no disponible';
+}, true);
+
+byId('victory-dialog-close')?.addEventListener('click', () => {
+  victoryDialog?.close();
+  clearVictoryDialogImage();
+});
+victoryDialog?.addEventListener('close', clearVictoryDialogImage);
+
 function updateStake(): void {
   const bankroll = Math.max(0, Number(byId<HTMLInputElement>('bankroll')?.value || 0));
   const percent = Number(byId<HTMLSelectElement>('risk-percent')?.value || 1);
@@ -280,6 +333,7 @@ byId('cookie-accept')?.addEventListener('click', () => {
 if (supabase) {
   supabase.auth.onAuthStateChange((_event, session) => void checkMembership(session?.user ?? null));
 }
+void refreshTickets();
 void (async () => {
   await refreshData();
   if (supabase) {

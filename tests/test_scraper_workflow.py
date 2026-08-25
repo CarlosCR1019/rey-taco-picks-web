@@ -14,7 +14,6 @@ DELIVERY_RECOVERY_WORKFLOW = (
 SERVICE_ROLE_EXPRESSION = "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}"
 RUN_KEY_EXPRESSION = "residential:${{ github.run_id }}"
 RESIDENTIAL_RUNNER = ["self-hosted", "Windows", "X64", "playdoit-residential"]
-RECOVERY_LABEL_EXPRESSION = "${{ needs.collect_primary.outputs.recovery_label }}"
 
 
 def _workflow(path: Path) -> dict:
@@ -145,28 +144,23 @@ def test_collector_jobs_use_only_residential_windows_runners():
     jobs = workflow["jobs"]
 
     assert jobs["collect_primary"]["runs-on"] == RESIDENTIAL_RUNNER
-    assert jobs["collect_recovery"]["runs-on"] == [
-        *RESIDENTIAL_RUNNER,
-        RECOVERY_LABEL_EXPRESSION,
-    ]
+    assert jobs["collect_recovery"]["runs-on"] == RESIDENTIAL_RUNNER
     assert jobs["deliver_cloud"]["runs-on"] == "ubuntu-latest"
 
 
-def test_recovery_targets_the_opposite_interactive_runner():
+def test_recovery_can_use_whichever_interactive_runner_is_online():
     workflow = _workflow(COLLECTOR_WORKFLOW)
     primary = workflow["jobs"]["collect_primary"]
     recovery = workflow["jobs"]["collect_recovery"]
 
     assert primary["env"]["REY_TACO_BROWSER_MODE"] == "interactive"
     assert recovery["env"]["REY_TACO_BROWSER_MODE"] == "interactive"
-    assert primary["outputs"]["recovery_label"] == (
-        "${{ steps.recovery_route.outputs.recovery_label }}"
+    assert "recovery_label" not in primary["outputs"]
+    assert all(
+        step["name"] != "Choose opposite recovery runner"
+        for step in primary["steps"]
     )
-    route = _step(primary, "Choose opposite recovery runner")
-    assert route["if"] == "always()"
-    assert "rey-taco-carlos" in route["run"]
-    assert "rey-taco-respaldo" in route["run"]
-    assert RECOVERY_LABEL_EXPRESSION in recovery["runs-on"]
+    assert recovery["runs-on"] == RESIDENTIAL_RUNNER
 
 
 def test_recovery_reuses_run_key_and_runs_only_after_primary_failure():

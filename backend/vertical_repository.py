@@ -40,6 +40,16 @@ _FAILURES = frozenset(
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_RECEIPT = re.compile(r"^[A-Za-z0-9_:-]{1,256}$")
+_STORY_KINDS = _CONTENT_KINDS - {"daily_results_reel"}
+_STORY_OBJECT_KEY = re.compile(
+    r"^stories/(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})/"
+    rf"(?P<kind>{'|'.join(sorted(_STORY_KINDS))})-"
+    r"(?P<digest>[0-9a-f]{64})[.]jpg$"
+)
+_REEL_OBJECT_KEY = re.compile(
+    r"^reels/(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})/"
+    r"daily_results_reel-(?P<digest>[0-9a-f]{64})[.]mp4$"
+)
 
 
 class _SupabaseResponse(Protocol):
@@ -129,35 +139,45 @@ class SupabaseVerticalRepository:
             )
         except Exception:
             raise RuntimeError("temporary story upload failed") from None
-        _validate_upload_response(
-            response,
-            bucket=self.BUCKET,
-            object_key=object_key,
-        )
+        try:
+            _validate_upload_response(
+                response,
+                bucket=self.BUCKET,
+                object_key=object_key,
+            )
+        except Exception:
+            _best_effort_remove(bucket, object_key)
+            raise
         try:
             raw_url = bucket.get_public_url(object_key)
         except Exception:
+            _best_effort_remove(bucket, object_key)
             raise RuntimeError("temporary story public URL failed") from None
-        url = _validated_public_url(
-            raw_url,
-            supabase_url=self._url,
-            bucket=self.BUCKET,
-            object_key=object_key,
-        )
+        try:
+            url = _validated_public_url(
+                raw_url,
+                supabase_url=self._url,
+                bucket=self.BUCKET,
+                object_key=object_key,
+            )
+        except Exception:
+            _best_effort_remove(bucket, object_key)
+            raise
         return TemporaryAsset(object_key, url, "image/jpeg")
 
     def delete_temporary(self, asset: TemporaryAsset) -> None:
-        if not isinstance(asset, TemporaryAsset) or not asset.object_key.startswith(
-            ("stories/", "reels/", "evidence/")
-        ):
-            raise ValueError("temporary asset key is invalid")
+        object_key = _validated_temporary_asset(
+            asset,
+            supabase_url=self._url,
+            bucket=self.BUCKET,
+        )
         try:
             result = self._client.storage.from_(self.BUCKET).remove(
-                [asset.object_key]
+                [object_key]
             )
         except Exception:
             raise RuntimeError("temporary asset cleanup failed") from None
-        _validate_remove_response(result, asset.object_key)
+        _validate_remove_response(result, object_key)
 
     def claim(
         self,
@@ -279,6 +299,48 @@ def _validate_remove_response(value: object, object_key: str) -> None:
     )
     if not valid:
         raise RuntimeError("temporary asset cleanup response was invalid")
+
+
+def _best_effort_remove(bucket: _StorageBucket, object_key: str) -> None:
+    try:
+        response = bucket.remove([object_key])
+        _validate_remove_response(response, object_key)
+    except Exception:
+        return
+
+
+def _validated_temporary_asset(
+    asset: object,
+    *,
+    supabase_url: str,
+    bucket: str,
+) -> str:
+    if not isinstance(asset, TemporaryAsset):
+        raise ValueError("temporary asset is invalid")
+    object_key = asset.object_key
+    expected_mime: str | None = None
+    match: re.Match[str] | None = None
+    if isinstance(object_key, str):
+        match = _STORY_OBJECT_KEY.fullmatch(object_key)
+        if match is not None:
+            expected_mime = "image/jpeg"
+        else:
+            match = _REEL_OBJECT_KEY.fullmatch(object_key)
+            if match is not None:
+                expected_mime = "video/mp4"
+    if match is None or asset.mime_type != expected_mime:
+        raise ValueError("temporary asset key or MIME type is invalid")
+    try:
+        _canonical_date(match.group("date"))
+        _validated_public_url(
+            asset.url,
+            supabase_url=supabase_url,
+            bucket=bucket,
+            object_key=object_key,
+        )
+    except (RuntimeError, ValueError):
+        raise ValueError("temporary asset URL or date is invalid") from None
+    return object_key
 
 
 def _canonical_date(value: object) -> str:

@@ -25,6 +25,11 @@ STORY_URL = (
     "https://project.supabase.co/storage/v1/object/public/social-vertical/"
     f"{STORY_OBJECT_KEY}"
 )
+EVIDENCE_OBJECT_KEY = f"evidence/2026-08-24/5329224423-{'c' * 64}.jpg"
+EVIDENCE_URL = (
+    "https://project.supabase.co/storage/v1/object/public/social-vertical/"
+    f"{EVIDENCE_OBJECT_KEY}"
+)
 
 
 @dataclass(frozen=True)
@@ -68,9 +73,9 @@ class FakeBucket:
         return self.public_url
 
     def remove(self, paths: list[str]) -> object:
+        self.remove_calls.append(paths)
         if self.remove_exception is not None:
             raise self.remove_exception
-        self.remove_calls.append(paths)
         return self.remove_response
 
 
@@ -248,6 +253,8 @@ def test_upload_story_rejects_unexpected_upload_response() -> None:
     with pytest.raises(RuntimeError, match="upload response"):
         repository(client).upload_story(card=package(), jpeg=story_jpeg())
 
+    assert client.storage.bucket.remove_calls == [[STORY_OBJECT_KEY]]
+
 
 @pytest.mark.parametrize(
     "public_url",
@@ -264,6 +271,37 @@ def test_upload_story_requires_exact_public_url(public_url: object) -> None:
 
     with pytest.raises(RuntimeError, match="public URL"):
         repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert client.storage.bucket.remove_calls == [[STORY_OBJECT_KEY]]
+
+
+def test_upload_story_cleans_up_when_public_url_lookup_fails() -> None:
+    client = FakeSupabase()
+    client.storage.bucket.public_url_exception = RuntimeError(
+        "raw provider body service-secret"
+    )
+
+    with pytest.raises(
+        RuntimeError, match=r"^temporary story public URL failed$"
+    ) as raised:
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert raised.value.__cause__ is None
+    assert client.storage.bucket.remove_calls == [[STORY_OBJECT_KEY]]
+
+
+def test_upload_story_cleanup_failure_does_not_mask_original_error() -> None:
+    client = FakeSupabase()
+    client.storage.bucket.upload_response = {"path": STORY_OBJECT_KEY}
+    client.storage.bucket.remove_exception = RuntimeError(
+        "raw cleanup body service-secret"
+    )
+
+    with pytest.raises(RuntimeError, match="upload response") as raised:
+        repository(client).upload_story(card=package(), jpeg=story_jpeg())
+
+    assert client.storage.bucket.remove_calls == [[STORY_OBJECT_KEY]]
+    assert "service-secret" not in str(raised.value)
 
 
 @pytest.mark.parametrize("stage", ["upload", "public_url"])
@@ -296,8 +334,137 @@ def test_upload_story_sanitizes_storage_exceptions(stage: str) -> None:
 def test_delete_rejects_non_temporary_assets_before_storage(asset: object) -> None:
     client = FakeSupabase()
 
-    with pytest.raises(ValueError, match="key is invalid"):
+    with pytest.raises(ValueError, match="temporary asset"):
         repository(client).delete_temporary(asset)  # type: ignore[arg-type]
+
+    assert client.storage.from_calls == []
+
+
+@pytest.mark.parametrize(
+    ("object_key", "mime_type"),
+    [
+        (
+            f"reels/2026-08-24/daily_results_reel-{'b' * 64}.mp4",
+            "video/mp4",
+        ),
+    ],
+)
+def test_delete_accepts_canonical_reel_asset(
+    object_key: str,
+    mime_type: str,
+) -> None:
+    client = FakeSupabase()
+    client.storage.bucket.remove_response = [{"name": object_key}]
+    url = (
+        "https://project.supabase.co/storage/v1/object/public/social-vertical/"
+        f"{object_key}"
+    )
+    asset = TemporaryAsset(object_key, url, mime_type)  # type: ignore[arg-type]
+
+    repository(client).delete_temporary(asset)
+
+    assert client.storage.bucket.remove_calls == [[object_key]]
+
+
+@pytest.mark.parametrize(
+    ("object_key", "url", "mime_type"),
+    [
+        ("stories/../private.jpg", STORY_URL, "image/jpeg"),
+        (
+            f"stories/2026-8-24/public_pick_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-02-30/public_pick_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories//2026-08-24/public_pick_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/unknown_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/public_pick_story-{'A' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/public_pick_story-{'a' * 64}.jpg/extra",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/public_pick_story-{'a' * 64}.jpg",
+            STORY_URL,
+            "video/mp4",
+        ),
+        (
+            f"reels/2026-08-24/daily_results_reel-{'b' * 64}.jpg",
+            STORY_URL,
+            "video/mp4",
+        ),
+        (
+            f"evidence/2026-08-24/ticket%2Fsecret-{'c' * 64}.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+        (
+            EVIDENCE_OBJECT_KEY,
+            EVIDENCE_URL,
+            "image/jpeg",
+        ),
+        (
+            STORY_OBJECT_KEY,
+            STORY_URL.replace("social-vertical", "other-bucket"),
+            "image/jpeg",
+        ),
+        (STORY_OBJECT_KEY, STORY_URL + "?token=unexpected", "image/jpeg"),
+        (
+            STORY_OBJECT_KEY,
+            STORY_URL.replace(STORY_OBJECT_KEY, "stories/2026-08-24/other.jpg"),
+            "image/jpeg",
+        ),
+        (
+            f"stories/2026-08-24/public_pick_story-{'a' * 63}\x00.jpg",
+            STORY_URL,
+            "image/jpeg",
+        ),
+    ],
+    ids=(
+        "traversal",
+        "noncanonical-date",
+        "invalid-calendar-date",
+        "ambiguous-double-separator",
+        "unknown-story-kind",
+        "uppercase-digest",
+        "suffix-path",
+        "story-mime-mismatch",
+        "reel-extension-mismatch",
+        "encoded-evidence-separator",
+        "unsupported-evidence-prefix",
+        "wrong-url-bucket",
+        "url-query",
+        "wrong-url-key",
+        "control-character",
+    ),
+)
+def test_delete_rejects_noncanonical_or_incoherent_asset_before_storage(
+    object_key: str,
+    url: str,
+    mime_type: str,
+) -> None:
+    client = FakeSupabase()
+    asset = TemporaryAsset(object_key, url, mime_type)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="temporary asset"):
+        repository(client).delete_temporary(asset)
 
     assert client.storage.from_calls == []
 

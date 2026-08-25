@@ -7,12 +7,15 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timezone
 import logging
 import re
-from typing import Protocol
+import shutil
+from typing import Protocol, cast
 
 from supabase import create_client
 
 from backend.social_poster import MetaSettings, _runtime_values, resolve_run_key
-from backend.result_reporting import ResultReport
+from backend.result_report_repository import SupabaseResultReportRepository
+from backend.result_reporting import ResultReport, build_result_report
+from backend.reel_renderer import ReelRenderer as LocalReelRenderer
 from backend.social_repository import MetaSocialBatch, SupabaseSocialRepository
 from backend.story_renderer import render_story_jpeg, render_ticket_evidence_jpeg
 from backend.telegram_publisher import TelegramDestination, TelegramHttpTransport
@@ -24,9 +27,12 @@ from backend.ticket_evidence import (
     tesseract_ocr,
 )
 from backend.vertical_content import (
+    ReelPackage,
     VerticalCard,
+    build_daily_reel_package,
     build_final_results_story,
     build_public_pick_story,
+    build_reel_cta_story,
     build_ticket_evidence_card,
     build_verified_result_story,
     build_vip_teaser_story,
@@ -50,6 +56,8 @@ _SAFE_KINDS = frozenset(
         "ticket_evidence_story",
         "reel_cta_story",
         "daily_results_reel",
+        "instagram_reel",
+        "facebook_reel",
     }
 )
 _HEALTHY_STATUSES = frozenset({"success", "complete", "dry_run"})
@@ -74,6 +82,10 @@ class VerticalRepository(Protocol):
         self, *, card: VerticalCard, jpeg: bytes
     ) -> TemporaryAsset: ...
 
+    def upload_reel(
+        self, *, package: ReelPackage, mp4: bytes
+    ) -> TemporaryAsset: ...
+
     def begin_remote_delivery(self, **kwargs: object) -> None: ...
 
     def complete(self, **kwargs: object) -> None: ...
@@ -86,22 +98,39 @@ class VerticalTransport(Protocol):
         self, *, image_url: str, settings: MetaSettings
     ) -> VerticalDelivery: ...
 
+    def publish_instagram_reel(
+        self, *, video_url: str, settings: MetaSettings
+    ) -> VerticalDelivery: ...
+
+    def publish_facebook_reel(
+        self,
+        *,
+        mp4: bytes,
+        settings: MetaSettings,
+        description: str,
+    ) -> VerticalDelivery: ...
+
+
+class ReelRenderer(Protocol):
+    def render(self, frames: Sequence[bytes]) -> bytes: ...
+
 
 class TelegramTransport(Protocol):
     def __call__(self, destination: TelegramDestination, text: str) -> None: ...
 
 
 def _record_failure(
-    card: VerticalCard,
+    card: VerticalCard | ReelPackage,
     *,
     repository: VerticalRepository,
     attempt_id: str,
     error: str,
+    destination: str = "instagram_story",
 ) -> bool:
     try:
         repository.complete(
             package=card,
-            destination="instagram_story",
+            destination=destination,
             attempt_id=attempt_id,
             success=False,
             receipt="",
@@ -297,6 +326,250 @@ def publish_pre_event_stories(
     return outcomes
 
 
+def publish_daily_reel(
+    report: ResultReport,
+    *,
+    frames: Sequence[bytes],
+    repository: VerticalRepository,
+    renderer: ReelRenderer,
+    transport: VerticalTransport,
+    settings: MetaSettings,
+) -> dict[str, str]:
+    """Render once and deliver one daily reel to independent destinations."""
+
+    package = build_daily_reel_package(report)
+    destinations = ("instagram_reel", "facebook_reel")
+    if settings.dry_run:
+        try:
+            renderer.render(frames)
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical render status=failed kind=daily_results_reel exception=%s",
+                type(exc).__name__,
+            )
+            return {destination: "delivery_failed" for destination in destinations}
+        return {destination: "dry_run" for destination in destinations}
+
+    outcomes: dict[str, str] = {}
+    active: dict[str, VerticalClaim] = {}
+    for destination in destinations:
+        try:
+            claim = repository.claim(
+                batch_id=package.batch_id,
+                portfolio_date=package.portfolio_date,
+                content_kind=package.kind,
+                destination=destination,
+                digest=package.digest,
+                template_version=package.template_version,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical claim status=failed kind=daily_results_reel "
+                "destination=%s exception=%s",
+                destination,
+                type(exc).__name__,
+            )
+            outcomes[destination] = "delivery_failed"
+            continue
+        if claim.state == "claimed":
+            if claim.attempt_id is None:
+                outcomes[destination] = "delivery_failed"
+            else:
+                active[destination] = claim
+        else:
+            outcomes[destination] = claim.state
+    if not active:
+        return outcomes
+
+    asset: TemporaryAsset | None = None
+    try:
+        try:
+            mp4 = renderer.render(frames)
+            asset = repository.upload_reel(package=package, mp4=mp4)
+        except Exception as exc:
+            LOGGER.warning(
+                "vertical delivery status=failed kind=daily_results_reel exception=%s",
+                type(exc).__name__,
+            )
+            for destination, claim in active.items():
+                persisted = _record_failure(
+                    package,
+                    repository=repository,
+                    attempt_id=claim.attempt_id or "",
+                    error="delivery_failed",
+                    destination=destination,
+                )
+                outcomes[destination] = (
+                    "delivery_failed" if persisted else "pending_review"
+                )
+            return outcomes
+
+        for destination, claim in active.items():
+            attempt_id = claim.attempt_id
+            if attempt_id is None:
+                outcomes[destination] = "delivery_failed"
+                continue
+            try:
+                repository.begin_remote_delivery(
+                    package=package,
+                    destination=destination,
+                    attempt_id=attempt_id,
+                )
+            except Exception as exc:
+                LOGGER.warning(
+                    "vertical remote_transition status=failed "
+                    "kind=daily_results_reel destination=%s exception=%s",
+                    destination,
+                    type(exc).__name__,
+                )
+                persisted = _record_failure(
+                    package,
+                    repository=repository,
+                    attempt_id=attempt_id,
+                    error="delivery_failed",
+                    destination=destination,
+                )
+                outcomes[destination] = (
+                    "delivery_failed" if persisted else "pending_review"
+                )
+                continue
+            try:
+                if destination == "instagram_reel":
+                    delivery = transport.publish_instagram_reel(
+                        video_url=asset.url,
+                        settings=settings,
+                    )
+                else:
+                    delivery = transport.publish_facebook_reel(
+                        mp4=mp4,
+                        settings=settings,
+                        description=package.caption,
+                    )
+            except Exception as exc:
+                LOGGER.warning(
+                    "vertical remote status=ambiguous kind=daily_results_reel "
+                    "destination=%s exception=%s",
+                    destination,
+                    type(exc).__name__,
+                )
+                outcomes[destination] = "pending_review"
+                continue
+            if (
+                not isinstance(delivery, VerticalDelivery)
+                or delivery.destination != destination
+            ):
+                outcomes[destination] = "pending_review"
+                continue
+            if delivery.status == "pending_review":
+                outcomes[destination] = "pending_review"
+                continue
+            if delivery.status == "success":
+                try:
+                    repository.complete(
+                        package=package,
+                        destination=destination,
+                        attempt_id=attempt_id,
+                        success=True,
+                        receipt=delivery.receipt,
+                        error="",
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "vertical completion status=ambiguous "
+                        "kind=daily_results_reel destination=%s exception=%s",
+                        destination,
+                        type(exc).__name__,
+                    )
+                    outcomes[destination] = "pending_review"
+                else:
+                    outcomes[destination] = "success"
+                continue
+            persisted = _record_failure(
+                package,
+                repository=repository,
+                attempt_id=attempt_id,
+                error=delivery.status,
+                destination=destination,
+            )
+            outcomes[destination] = delivery.status if persisted else "pending_review"
+        return outcomes
+    finally:
+        if asset is not None:
+            try:
+                repository.delete_temporary(asset)
+            except RuntimeError as exc:
+                LOGGER.warning(
+                    "vertical cleanup status=failed kind=daily_results_reel "
+                    "exception=%s",
+                    type(exc).__name__,
+                )
+
+
+def frames_for_daily_reel(
+    report: ResultReport,
+    *,
+    evidence: Sequence[MatchedEvidence],
+) -> tuple[bytes, ...]:
+    """Render truthful source frames for one final daily reel."""
+
+    summary = build_final_results_story(report)
+    winner = next(
+        (row for row in report.rows if row["estado"] == "ganado"),
+        None,
+    )
+    if winner is None:
+        raise ValueError("daily reel requires at least one verified win")
+    detail = build_verified_result_story(report, pick_id=int(winner["id"]))
+    closing = build_reel_cta_story(report)
+    frames = [render_story_jpeg(summary), render_story_jpeg(detail)]
+    if evidence:
+        selected = sorted(
+            evidence,
+            key=lambda item: (-len(item.pick_ids), item.evidence_id),
+        )[0]
+        frames.append(
+            render_ticket_evidence_jpeg(
+                selected.jpeg,
+                observed_label=f"{report.portfolio_date} · CDMX",
+            )
+        )
+    frames.append(render_story_jpeg(closing))
+    return tuple(frames)
+
+
+def publish_daily_reel_from_runtime(
+    report: ResultReport,
+    *,
+    evidence: Sequence[MatchedEvidence],
+    repository: VerticalRepository,
+    transport: VerticalTransport,
+    settings: MetaSettings,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Resolve runner media tools and publish one daily reel."""
+
+    values = _runtime_values(environ)
+    configured_ffmpeg = values.get("FFMPEG_PATH", "")
+    configured_ffprobe = values.get("FFPROBE_PATH", "")
+    if not isinstance(configured_ffmpeg, str) or not isinstance(
+        configured_ffprobe,
+        str,
+    ):
+        raise ValueError("local media tool paths are invalid")
+    ffmpeg = configured_ffmpeg or shutil.which("ffmpeg") or ""
+    ffprobe = configured_ffprobe or shutil.which("ffprobe") or ""
+    renderer = LocalReelRenderer(ffmpeg=ffmpeg, ffprobe=ffprobe)
+    frames = frames_for_daily_reel(report, evidence=evidence)
+    return publish_daily_reel(
+        report,
+        frames=frames,
+        repository=repository,
+        renderer=renderer,
+        transport=transport,
+        settings=settings,
+    )
+
+
 def publish_final_stories(
     report: ResultReport,
     *,
@@ -439,11 +712,12 @@ def publish_final_stories_from_runtime(
                 "ticket evidence status=pending_review exception=%s",
                 type(exc).__name__,
             )
+    meta_transport = VerticalMetaHttpTransport()
     outcomes = publish_final_stories(
         report,
         evidence=matched,
         repository=repository,
-        transport=VerticalMetaHttpTransport(),
+        transport=meta_transport,
         settings=settings,
         renderer=render_story_jpeg,
         evidence_renderer=lambda jpeg, card: render_ticket_evidence_jpeg(
@@ -460,6 +734,29 @@ def publish_final_stories_from_runtime(
             )
         ),
     )
+    try:
+        reel_outcomes = publish_daily_reel_from_runtime(
+            report,
+            evidence=matched,
+            repository=repository,
+            transport=meta_transport,
+            settings=settings,
+            environ=(
+                None
+                if environ is None
+                else dict(environ)
+            ),
+        )
+    except Exception as exc:
+        LOGGER.warning(
+            "vertical reel status=failed exception=%s",
+            type(exc).__name__,
+        )
+        reel_outcomes = {
+            "instagram_reel": "media_invalid",
+            "facebook_reel": "media_invalid",
+        }
+    outcomes.update(reel_outcomes)
     if not settings.dry_run and telegram_token and admin_chat_id:
         try:
             notify_vertical_failures(
@@ -562,8 +859,52 @@ def require_healthy_vertical_outcomes(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Publish Rey Taco vertical media")
-    parser.add_argument("--mode", choices=("pre-event",), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("pre-event", "final", "recover"),
+        required=True,
+    )
     return parser
+
+
+def _run_final_mode(
+    values: Mapping[str, object],
+    *,
+    settings: MetaSettings,
+) -> int:
+    supabase_url = _required_runtime_string(values, "SUPABASE_URL")
+    service_role_key = _required_runtime_string(
+        values,
+        "SUPABASE_SERVICE_ROLE_KEY",
+    )
+    repository = SupabaseResultReportRepository(
+        url=supabase_url,
+        service_role_key=service_role_key,
+    )
+    raw_date = values.get("DAILY_PORTFOLIO_DATE", "")
+    if not isinstance(raw_date, str):
+        raise ValueError("DAILY_PORTFOLIO_DATE must be a canonical date")
+    requested_date = _portfolio_date(values) if raw_date else ""
+    found = False
+    for rows in repository.batches():
+        try:
+            report = build_result_report(rows, kind="final")
+        except ValueError:
+            continue
+        if requested_date and report.portfolio_date != requested_date:
+            continue
+        found = True
+        outcomes = publish_final_stories_from_runtime(
+            report,
+            environ=cast(Mapping[str, str], values),
+        )
+        safe_outcomes = _validated_outcomes(outcomes)
+        for name, status in safe_outcomes.items():
+            LOGGER.info("vertical kind=%s status=%s", name, status)
+        require_healthy_vertical_outcomes(safe_outcomes, settings=settings)
+    if not found:
+        LOGGER.info("vertical mode=final report=no_final_report")
+    return 0
 
 
 def main(
@@ -573,15 +914,17 @@ def main(
     """Run the pre-event publisher and return a safe process exit code."""
 
     try:
-        _parser().parse_args(argv)
+        arguments = _parser().parse_args(argv)
         values = _runtime_values(environ)
+        settings = MetaSettings.from_mapping(values)
+        if arguments.mode in {"final", "recover"}:
+            return _run_final_mode(values, settings=settings)
         portfolio_date = _portfolio_date(values)
         run_key = resolve_run_key(values)
         supabase_url = _required_runtime_string(values, "SUPABASE_URL")
         service_role_key = _required_runtime_string(
             values, "SUPABASE_SERVICE_ROLE_KEY"
         )
-        settings = MetaSettings.from_mapping(values)
         reference_at = datetime.now(timezone.utc)
         social_repository = SupabaseSocialRepository(
             supabase_url=supabase_url,

@@ -45,6 +45,12 @@ def test_checker_reports_remediable_setup_without_changing_the_pc():
     assert "Google\\Chrome\\Application\\chrome.exe" in source
     assert 'Get-Command -Name "git"' in source
     assert 'Get-Command -Name "py"' in source
+    assert 'Get-Command -Name "ffmpeg"' in source
+    assert 'Get-Command -Name "ffprobe"' in source
+    assert 'Get-Command -Name "tesseract"' in source
+    assert 'Add-Check -Name "ffmpeg" -Class "SETUP"' in source
+    assert 'Add-Check -Name "ffprobe" -Class "SETUP"' in source
+    assert 'Add-Check -Name "tesseract" -Class "SETUP"' in source
     assert "powercfg.exe /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE" in source
     assert 'READY_WITH_SETUP' in source
     assert 'NOT_READY' in source

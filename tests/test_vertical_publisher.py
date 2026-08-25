@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import logging
 from typing import Callable, cast
@@ -16,7 +16,9 @@ from backend.ticket_evidence import MatchedEvidence
 from backend.vertical_content import VerticalCard, build_public_pick_story
 from backend.vertical_meta import VerticalDelivery
 from backend.vertical_publisher import (
+    frames_for_daily_reel,
     notify_vertical_failures,
+    publish_daily_reel,
     publish_final_stories,
     publish_pre_event_stories,
 )
@@ -309,6 +311,15 @@ def test_final_runtime_collects_evidence_and_uses_original_ticket_renderer(
         return {"final_results_story": "success"}
 
     monkeypatch.setattr(vertical_publisher, "publish_final_stories", publish)
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_daily_reel_from_runtime",
+        lambda report, **kwargs: observed.update(reel=(report, kwargs))
+        or {
+            "instagram_reel": "success",
+            "facebook_reel": "success",
+        },
+    )
 
     report = final_report()
     result = vertical_publisher.publish_final_stories_from_runtime(
@@ -319,7 +330,11 @@ def test_final_runtime_collects_evidence_and_uses_original_ticket_renderer(
         ),
     )
 
-    assert result == {"final_results_story": "success"}
+    assert result == {
+        "final_results_story": "success",
+        "instagram_reel": "success",
+        "facebook_reel": "success",
+    }
     assert observed["client_args"] == (
         "https://project.supabase.co",
         "service-role-secret",
@@ -391,6 +406,14 @@ def test_final_runtime_alerts_admin_with_safe_vertical_failure(
     )
     monkeypatch.setattr(
         vertical_publisher,
+        "publish_daily_reel_from_runtime",
+        lambda *_args, **_kwargs: {
+            "instagram_reel": "success",
+            "facebook_reel": "success",
+        },
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
         "TelegramHttpTransport",
         lambda token: telegram if token == "telegram-secret" else None,
     )
@@ -400,11 +423,209 @@ def test_final_runtime_alerts_admin_with_safe_vertical_failure(
         environ=cli_values(TELEGRAM_ADMIN_ID="123456"),
     )
 
-    assert result == {"final_results_story": "delivery_failed"}
+    assert result == {
+        "final_results_story": "delivery_failed",
+        "instagram_reel": "success",
+        "facebook_reel": "success",
+    }
     assert telegram.messages == [
         "⚠️ Rey Taco · contenido vertical incompleto\n"
         "• final_results_story: delivery_failed"
     ]
+
+
+class FakeReelRepository:
+    def __init__(self) -> None:
+        self.states = {
+            "instagram_reel": "pending",
+            "facebook_reel": "pending",
+        }
+        self.claim_calls: list[str] = []
+        self.begin_calls: list[str] = []
+        self.complete_calls: list[dict[str, object]] = []
+        self.upload_calls = 0
+        self.delete_calls = 0
+
+    def claim(self, **kwargs: object) -> VerticalClaim:
+        destination = cast(str, kwargs["destination"])
+        self.claim_calls.append(destination)
+        state = self.states[destination]
+        if state == "complete":
+            return VerticalClaim("complete", None)
+        if state == "pending_review":
+            return VerticalClaim("ambiguous", None)
+        self.states[destination] = "claimed"
+        return VerticalClaim("claimed", ATTEMPT_ID)
+
+    def begin_remote_delivery(self, **kwargs: object) -> None:
+        destination = cast(str, kwargs["destination"])
+        self.begin_calls.append(destination)
+        self.states[destination] = "pending_review"
+
+    def upload_reel(self, **_kwargs: object) -> TemporaryAsset:
+        self.upload_calls += 1
+        return TemporaryAsset(
+            f"reels/{PORTFOLIO_DATE}/daily_results_reel-{'d' * 64}.mp4",
+            (
+                "https://project.supabase.co/storage/v1/object/public/"
+                "social-vertical/reels/2026-08-24/reel.mp4"
+            ),
+            "video/mp4",
+        )
+
+    def complete(self, **kwargs: object) -> None:
+        self.complete_calls.append(dict(kwargs))
+        destination = cast(str, kwargs["destination"])
+        self.states[destination] = "complete" if kwargs["success"] else "failed"
+
+    def delete_temporary(self, _asset: TemporaryAsset) -> None:
+        self.delete_calls += 1
+
+
+class FakeReelRenderer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[bytes, ...]] = []
+
+    def render(self, frames: tuple[bytes, ...]) -> bytes:
+        self.calls.append(frames)
+        return REEL_BYTES
+
+
+class FakeReelMeta:
+    def __init__(self) -> None:
+        self.instagram_calls: list[str] = []
+        self.facebook_calls: list[bytes] = []
+
+    def publish_instagram_reel(self, *, video_url: str, settings: MetaSettings):
+        self.instagram_calls.append(video_url)
+        return VerticalDelivery("instagram_reel", "success", "ig-reel")
+
+    def publish_facebook_reel(
+        self,
+        *,
+        mp4: bytes,
+        settings: MetaSettings,
+        description: str,
+    ):
+        self.facebook_calls.append(mp4)
+        return VerticalDelivery("facebook_reel", "success", "fb-reel")
+
+
+REEL_BYTES = b"\x00\x00\x00\x18ftypisom" + (b"\x00" * 64)
+REEL_FRAMES = (b"frame-1", b"frame-2", b"frame-3")
+
+
+def test_daily_reel_frames_include_summary_winner_and_cta() -> None:
+    frames = frames_for_daily_reel(final_report(), evidence=())
+
+    assert len(frames) == 3
+    assert all(frame.startswith(b"\xff\xd8") for frame in frames)
+    assert all(frame.endswith(b"\xff\xd9") for frame in frames)
+
+
+def test_daily_reel_renders_once_and_completes_destinations_independently() -> None:
+    repository = FakeReelRepository()
+    renderer = FakeReelRenderer()
+    meta = FakeReelMeta()
+
+    outcomes = publish_daily_reel(
+        final_report(),
+        frames=REEL_FRAMES,
+        repository=repository,
+        renderer=renderer,
+        transport=meta,
+        settings=configured_settings(FB_PAGE_ID="1311611272037375"),
+    )
+
+    assert outcomes == {
+        "instagram_reel": "success",
+        "facebook_reel": "success",
+    }
+    assert renderer.calls == [REEL_FRAMES]
+    assert repository.upload_calls == 1
+    assert repository.begin_calls == ["instagram_reel", "facebook_reel"]
+    assert repository.delete_calls == 1
+
+
+def test_daily_reel_retry_calls_only_failed_facebook_destination() -> None:
+    repository = FakeReelRepository()
+    repository.states.update(
+        instagram_reel="complete",
+        facebook_reel="failed",
+    )
+    renderer = FakeReelRenderer()
+    meta = FakeReelMeta()
+
+    outcomes = publish_daily_reel(
+        final_report(),
+        frames=REEL_FRAMES,
+        repository=repository,
+        renderer=renderer,
+        transport=meta,
+        settings=configured_settings(FB_PAGE_ID="1311611272037375"),
+    )
+
+    assert outcomes == {
+        "instagram_reel": "complete",
+        "facebook_reel": "success",
+    }
+    assert meta.instagram_calls == []
+    assert len(meta.facebook_calls) == 1
+    assert renderer.calls == [REEL_FRAMES]
+
+
+def test_daily_reel_records_failed_destination_without_touching_success() -> None:
+    repository = FakeReelRepository()
+    meta = FakeReelMeta()
+
+    def fail_facebook(**_kwargs: object) -> VerticalDelivery:
+        return VerticalDelivery("facebook_reel", "delivery_failed")
+
+    meta.publish_facebook_reel = fail_facebook  # type: ignore[method-assign]
+
+    outcomes = publish_daily_reel(
+        final_report(),
+        frames=REEL_FRAMES,
+        repository=repository,
+        renderer=FakeReelRenderer(),
+        transport=meta,
+        settings=configured_settings(FB_PAGE_ID="1311611272037375"),
+    )
+
+    assert outcomes == {
+        "instagram_reel": "success",
+        "facebook_reel": "delivery_failed",
+    }
+    failure = next(call for call in repository.complete_calls if not call["success"])
+    assert failure["destination"] == "facebook_reel"
+
+
+def test_second_settled_batch_same_portfolio_date_does_not_render_second_reel() -> None:
+    repository = FakeReelRepository()
+    renderer = FakeReelRenderer()
+    meta = FakeReelMeta()
+    first = final_report()
+    second = replace(
+        first,
+        batch_id="22345678-1234-4234-8234-123456789abc",
+        digest="e" * 64,
+    )
+    kwargs = {
+        "frames": REEL_FRAMES,
+        "repository": repository,
+        "renderer": renderer,
+        "transport": meta,
+        "settings": configured_settings(FB_PAGE_ID="1311611272037375"),
+    }
+
+    publish_daily_reel(first, **kwargs)
+    outcomes = publish_daily_reel(second, **kwargs)
+
+    assert outcomes == {
+        "instagram_reel": "complete",
+        "facebook_reel": "complete",
+    }
+    assert renderer.calls == [REEL_FRAMES]
 
 
 def test_pre_event_publishes_public_then_teaser_and_records_each() -> None:
@@ -909,3 +1130,43 @@ def test_main_no_exact_batch_is_a_safe_noop(
 
     assert result == 0
     assert "batch=no_batch" in caplog.text
+
+
+@pytest.mark.parametrize("mode", ["final", "recover"])
+def test_main_final_modes_load_only_settled_reports_and_use_the_ledger(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[object] = []
+
+    class ResultRepository:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs == {
+                "url": "https://project.supabase.co",
+                "service_role_key": "service-role-secret",
+            }
+
+        def batches(self):
+            return (tuple(rows_with_states(*(["ganado"] * 6))),)
+
+    monkeypatch.setattr(
+        vertical_publisher,
+        "SupabaseResultReportRepository",
+        ResultRepository,
+    )
+    monkeypatch.setattr(
+        vertical_publisher,
+        "publish_final_stories_from_runtime",
+        lambda report, **kwargs: observed.append((report, kwargs))
+        or {
+            "final_results_story": "complete",
+            "instagram_reel": "complete",
+            "facebook_reel": "complete",
+        },
+    )
+
+    assert vertical_publisher.main(["--mode", mode], cli_values()) == 0
+    assert len(observed) == 1
+    report, kwargs = cast(tuple[object, dict[str, object]], observed[0])
+    assert report == final_report()
+    assert kwargs["environ"] == cli_values()

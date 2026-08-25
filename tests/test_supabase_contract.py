@@ -2064,9 +2064,26 @@ class SupabaseContractTests(unittest.TestCase):
             "case when entries.visibility = 'public' then null",
             release,
         )
+        self.assertIn("active_entry_count not between 1 and 6", release)
+        self.assertIn(
+            "active_batch_pick_count <> active_entry_count",
+            release,
+        )
+        self.assertIn(
+            "get diagnostics synchronized_pick_count = row_count",
+            release,
+        )
+        self.assertIn(
+            "synchronized_pick_count <> active_entry_count",
+            release,
+        )
         self.assertIn("public.resume_daily_pick_release(requested_run_key)", release)
         self.assertIn("legacy_result->'created'", release)
         self.assertIn("synchronized_result->'feed_eligible'", release)
+        self.assertLess(
+            release.index("update public.picks as persisted"),
+            release.index("public.resume_daily_pick_release(requested_run_key)"),
+        )
 
     def test_daily_release_visibility_sync_keeps_service_only_boundary(self):
         text = " ".join(

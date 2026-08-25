@@ -337,7 +337,7 @@ class VerticalMetaHttpTransport:
             if (
                 upload_status < 200
                 or upload_status >= 300
-                or not _safe_upload_success(upload_payload)
+                or not _safe_success_flag(upload_payload)
             ):
                 _log_meta_failure(
                     destination,
@@ -398,7 +398,7 @@ class VerticalMetaHttpTransport:
                 destination,
                 "delivery_failed" if finish_status < 500 else "pending_review",
             )
-        if finish_payload != {"success": True}:
+        if not _safe_success_flag(finish_payload):
             _log_meta_failure(
                 destination,
                 stage="finish",
@@ -511,22 +511,8 @@ def _log_meta_failure(
     )
 
 
-def _safe_upload_success(payload: object) -> bool:
-    if (
-        not isinstance(payload, Mapping)
-        or payload.get("success") is not True
-        or not set(payload).issubset({"success", "h"})
-    ):
-        return False
-    upload_hash = payload.get("h")
-    return upload_hash is None or bool(
-        isinstance(upload_hash, str)
-        and 1 <= len(upload_hash) <= 1024
-        and all(
-            unicode_category(character) not in {"Cc", "Cf"}
-            for character in upload_hash
-        )
-    )
+def _safe_success_flag(payload: object) -> bool:
+    return bool(isinstance(payload, Mapping) and payload.get("success") is True)
 
 
 def _required_id(

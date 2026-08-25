@@ -20,6 +20,11 @@ MUTED = "#AAB6CA"
 
 _SIZE = (1080, 1920)
 _RESAMPLE = Image.Resampling.LANCZOS
+SAFE_ZONE_BOTTOM = 1740
+STORY_CTA_BOUNDS = (72, 1570, 1008, 1622)
+STORY_FOOTER_BOUNDS = (60, 1648, 1020, 1680)
+TICKET_FOREGROUND_BOX = (60, 170, 1020, 1750)
+TICKET_FOREGROUND_SIZE = (960, 1580)
 
 
 def _font(
@@ -134,12 +139,18 @@ def render_story_jpeg(card: VerticalCard) -> bytes:
     cta_font = _font(28, bold=True)
     cta = _fit_text(draw, card.cta, cta_font, 900)
     cta_width = draw.textlength(cta, font=cta_font)
-    draw.rounded_rectangle((58, 1772, 1022, 1822), radius=16, fill=GOLD)
-    draw.text((540 - cta_width / 2, 1782), cta, fill=NAVY, font=cta_font)
+    draw.rounded_rectangle(STORY_CTA_BOUNDS, radius=16, fill=GOLD)
+    cta_top = STORY_CTA_BOUNDS[1] + 10
+    draw.text((540 - cta_width / 2, cta_top), cta, fill=NAVY, font=cta_font)
     footer = "18+ · Apuesta con responsabilidad"
     footer_font = _font(21, bold=True)
     footer_width = draw.textlength(footer, font=footer_font)
-    draw.text((540 - footer_width / 2, 1843), footer, fill=MUTED, font=footer_font)
+    draw.text(
+        (540 - footer_width / 2, STORY_FOOTER_BOUNDS[1]),
+        footer,
+        fill=MUTED,
+        font=footer_font,
+    )
     return _jpeg(image)
 
 
@@ -164,9 +175,9 @@ def render_ticket_evidence_jpeg(ticket_jpeg: bytes, observed_label: str) -> byte
     label = _fit_text(draw, str(observed_label), _font(24), 900)
     draw.text((70, 132), label, fill=WHITE, font=_font(24))
 
-    foreground = ImageOps.contain(source, (960, 1580), method=_RESAMPLE)
-    x = (1080 - foreground.width) // 2
-    y = 220
+    foreground = ImageOps.contain(source, TICKET_FOREGROUND_SIZE, method=_RESAMPLE)
+    x = TICKET_FOREGROUND_BOX[0] + (TICKET_FOREGROUND_SIZE[0] - foreground.width) // 2
+    y = TICKET_FOREGROUND_BOX[1] + (TICKET_FOREGROUND_SIZE[1] - foreground.height) // 2
     draw.rounded_rectangle(
         (x - 10, y - 10, x + foreground.width + 10, y + foreground.height + 10),
         radius=20,

@@ -3,15 +3,23 @@ from __future__ import annotations
 from io import BytesIO
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
-from backend.story_renderer import render_story_jpeg, render_ticket_evidence_jpeg
+from backend.story_renderer import (
+    SAFE_ZONE_BOTTOM,
+    STORY_CTA_BOUNDS,
+    STORY_FOOTER_BOUNDS,
+    render_story_jpeg,
+    render_ticket_evidence_jpeg,
+)
 from backend.vertical_content import build_public_pick_story
 from tests.test_social_poster import batch
 
 
-def _decode(jpeg: bytes) -> Image.Image:
+def _decode_jpeg(jpeg: bytes) -> Image.Image:
+    assert jpeg[:3] == b"\xff\xd8\xff"
     with Image.open(BytesIO(jpeg)) as image:
+        assert image.format == "JPEG"
         return image.copy()
 
 
@@ -35,6 +43,55 @@ def _tall_ticket_jpeg() -> bytes:
     return output.getvalue()
 
 
+def _marked_ticket_jpeg(size: tuple[int, int]) -> bytes:
+    image = Image.new("RGB", size, "#202020")
+    pixels = image.load()
+    marker_size = max(8, min(size) // 30)
+    markers = {
+        "top_left": (236, 48, 48),
+        "top_right": (40, 212, 92),
+        "bottom_left": (45, 106, 236),
+        "bottom_right": (238, 208, 47),
+    }
+    for offset_x in range(marker_size):
+        for offset_y in range(marker_size):
+            pixels[offset_x, offset_y] = markers["top_left"]
+            pixels[size[0] - 1 - offset_x, offset_y] = markers["top_right"]
+            pixels[offset_x, size[1] - 1 - offset_y] = markers["bottom_left"]
+            pixels[size[0] - 1 - offset_x, size[1] - 1 - offset_y] = markers[
+                "bottom_right"
+            ]
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=100, subsampling=0)
+    return output.getvalue()
+
+
+def _expected_foreground_box(size: tuple[int, int]) -> tuple[int, int, int, int]:
+    source = Image.new("RGB", size)
+    contained = ImageOps.contain(source, (960, 1580), method=Image.Resampling.LANCZOS)
+    left = 60 + (960 - contained.width) // 2
+    top = 170 + (1580 - contained.height) // 2
+    return left, top, left + contained.width, top + contained.height
+
+
+def _assert_corner_markers(output: Image.Image, source_size: tuple[int, int]) -> None:
+    left, top, right, bottom = _expected_foreground_box(source_size)
+    expected = {
+        (left, top): (236, 48, 48),
+        (right - 1, top): (40, 212, 92),
+        (left, bottom - 1): (45, 106, 236),
+        (right - 1, bottom - 1): (238, 208, 47),
+    }
+    for (x, y), (red, green, blue) in expected.items():
+        nearby = output.crop((x, y, x + 3, y + 3)).getdata()
+        assert any(
+            abs(pixel[0] - red) < 55
+            and abs(pixel[1] - green) < 55
+            and abs(pixel[2] - blue) < 55
+            for pixel in nearby
+        ), (x, y)
+
+
 def test_render_story_jpeg_is_rgb_1080x1920_and_deterministic():
     card = build_public_pick_story(batch(), portfolio_date="2026-08-24")
 
@@ -42,7 +99,7 @@ def test_render_story_jpeg_is_rgb_1080x1920_and_deterministic():
     second = render_story_jpeg(card)
 
     assert first == second
-    image = _decode(first)
+    image = _decode_jpeg(first)
     assert image.mode == "RGB"
     assert image.size == (1080, 1920)
 
@@ -55,37 +112,14 @@ def test_render_story_jpeg_rejects_non_vertical_cards():
 def test_render_ticket_evidence_contains_all_source_corners_without_cropping():
     source = _tall_ticket_jpeg()
 
-    output = _decode(
+    output = _decode_jpeg(
         render_ticket_evidence_jpeg(source, observed_label="24 AGO · CDMX")
     )
 
     assert output.mode == "RGB"
     assert output.size == (1080, 1920)
 
-    # The 320x900 source is contained in a 960x1580 foreground box, yielding
-    # roughly 561x1580 centered at x=259 and y=220. Search each source corner
-    # in its corresponding foreground quadrant, not merely anywhere in output.
-    regions = {
-        "red": (
-            (280, 255, 480, 420),
-            lambda r, g, b: r > 170 and r > g * 1.8 and r > b * 1.5,
-        ),
-        "green": (
-            (600, 255, 800, 420),
-            lambda r, g, b: g > 150 and g > r * 1.5 and g > b * 1.2,
-        ),
-        "blue": (
-            (280, 1570, 480, 1760),
-            lambda r, g, b: b > 150 and b > r * 1.4 and b > g * 1.2,
-        ),
-        "yellow": (
-            (600, 1570, 800, 1760),
-            lambda r, g, b: r > 150 and g > 130 and b < 130,
-        ),
-    }
-    for name, (box, predicate) in regions.items():
-        pixels = output.crop(box).getdata()
-        assert any(predicate(*pixel) for pixel in pixels), name
+    _assert_corner_markers(output, (320, 900))
 
     # The source ticket identifier remains visible in the foreground content;
     # this guards against a renderer that reconstructs or masks the ticket.
@@ -101,6 +135,20 @@ def test_render_ticket_evidence_contains_all_source_corners_without_cropping():
     assert max(channel for pixel in foreground.getdata() for channel in pixel) > 240
 
 
+@pytest.mark.parametrize("source_size", [(1200, 400), (640, 160)])
+def test_render_ticket_evidence_centers_landscape_and_short_sources_without_cropping(
+    source_size: tuple[int, int],
+):
+    output = _decode_jpeg(
+        render_ticket_evidence_jpeg(
+            _marked_ticket_jpeg(source_size), observed_label="24 AGO · CDMX"
+        )
+    )
+
+    assert output.size == (1080, 1920)
+    _assert_corner_markers(output, source_size)
+
+
 def test_render_ticket_evidence_is_deterministic_and_rejects_invalid_input():
     source = _tall_ticket_jpeg()
 
@@ -112,3 +160,27 @@ def test_render_ticket_evidence_is_deterministic_and_rejects_invalid_input():
         render_ticket_evidence_jpeg(b"not an image", observed_label="24 AGO · CDMX")
     with pytest.raises(ValueError, match="JPEG bytes"):
         render_ticket_evidence_jpeg(object(), observed_label="24 AGO · CDMX")
+
+
+def test_story_cta_and_footer_render_inside_instagram_safe_zone():
+    assert SAFE_ZONE_BOTTOM == 1740
+    assert STORY_CTA_BOUNDS[1] >= 0
+    assert STORY_CTA_BOUNDS[3] <= SAFE_ZONE_BOTTOM
+    assert STORY_FOOTER_BOUNDS[1] >= 0
+    assert STORY_FOOTER_BOUNDS[3] <= SAFE_ZONE_BOTTOM
+
+    card = build_public_pick_story(batch(), portfolio_date="2026-08-24")
+    output = _decode_jpeg(render_story_jpeg(card))
+    cta = output.crop(STORY_CTA_BOUNDS)
+    footer = output.crop(STORY_FOOTER_BOUNDS)
+    below_safe_zone = output.crop((60, SAFE_ZONE_BOTTOM, 1020, 1880))
+
+    assert sum(
+        red > 180 and green > 150 and blue < 130
+        for red, green, blue in cta.getdata()
+    ) > 40_000
+    assert sum(
+        red > 120 and green > 130 and blue > 150
+        for red, green, blue in footer.getdata()
+    ) > 100
+    assert all(max(pixel) < 64 for pixel in below_safe_zone.getdata())

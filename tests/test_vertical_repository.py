@@ -8,10 +8,13 @@ import re
 from PIL import Image
 import pytest
 
+from backend.result_reporting import ResultReport
 from backend.vertical_content import ReelPackage, VerticalCard
 from backend.vertical_repository import (
     SupabaseVerticalRepository,
+    SupabaseTicketEvidenceRepository,
     TemporaryAsset,
+    TicketCandidate,
     VerticalClaim,
 )
 
@@ -904,3 +907,192 @@ def test_complete_sanitizes_sdk_exceptions(stage: str) -> None:
             receipt="receipt_123",
         )
     assert raised.value.__cause__ is None
+
+
+class EvidenceQuery:
+    def __init__(self, client: "EvidenceSupabase") -> None:
+        self.client = client
+
+    def select(self, columns: str) -> "EvidenceQuery":
+        self.client.calls.append(("select", columns))
+        return self
+
+    def eq(self, column: str, value: object) -> "EvidenceQuery":
+        self.client.calls.append(("eq", column, value))
+        return self
+
+    def gte(self, column: str, value: object) -> "EvidenceQuery":
+        self.client.calls.append(("gte", column, value))
+        return self
+
+    def lt(self, column: str, value: object) -> "EvidenceQuery":
+        self.client.calls.append(("lt", column, value))
+        return self
+
+    def order(self, column: str, *, desc: bool) -> "EvidenceQuery":
+        self.client.calls.append(("order", column, desc))
+        return self
+
+    def upsert(
+        self, payload: dict[str, object], *, on_conflict: str
+    ) -> "EvidenceQuery":
+        self.client.calls.append(("upsert", payload, on_conflict))
+        return self
+
+    def execute(self) -> FakeResponse:
+        if self.client.execute_exception is not None:
+            raise self.client.execute_exception
+        return FakeResponse(self.client.response)
+
+
+class EvidenceSupabase:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.calls: list[tuple[object, ...]] = []
+        self.execute_exception: Exception | None = None
+
+    def table(self, name: str) -> EvidenceQuery:
+        self.calls.append(("table", name))
+        return EvidenceQuery(self)
+
+
+def evidence_repository(
+    client: EvidenceSupabase,
+) -> SupabaseTicketEvidenceRepository:
+    return SupabaseTicketEvidenceRepository(client, admin_chat_id=123456)
+
+
+def evidence_report() -> ResultReport:
+    return ResultReport(
+        batch_id="44444444-4444-4444-8444-444444444444",
+        portfolio_date="2026-08-24",
+        kind="final",
+        rows=(
+            {
+                "id": 101,
+                "partido": "Aryans Sports vs Nbp Rainbow AC",
+                "resultado_marcador": "5-0",
+                "estado": "ganado",
+            },
+        ),
+        eligible=True,
+        terminal=True,
+        record="1-0",
+        digest="d" * 64,
+        telegram="report",
+        facebook="report",
+        instagram="report",
+    )
+
+
+def test_ticket_candidates_use_exact_cdmx_day_and_admin_origin() -> None:
+    client = EvidenceSupabase(
+        [
+            {
+                "file_id": "file-1",
+                "file_unique_id": "unique-1",
+                "received_at": "2026-08-24T06:00:00+00:00",
+            },
+            {
+                "file_id": "file-2",
+                "file_unique_id": "",
+                "received_at": "2026-08-25T05:59:59+00:00",
+            },
+        ]
+    )
+
+    result = evidence_repository(client).candidates(portfolio_date="2026-08-24")
+
+    assert result == (
+        TicketCandidate(
+            "unique-1", "file-1", "unique-1", "2026-08-24T06:00:00+00:00"
+        ),
+        TicketCandidate(
+            "file-2", "file-2", "", "2026-08-25T05:59:59+00:00"
+        ),
+    )
+    assert client.calls == [
+        ("table", "tickets_ganadores"),
+        ("select", "file_id,file_unique_id,received_at"),
+        ("eq", "telegram_chat_id", 123456),
+        ("gte", "received_at", "2026-08-24T06:00:00+00:00"),
+        ("lt", "received_at", "2026-08-25T06:00:00+00:00"),
+        ("order", "received_at", False),
+    ]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        {"not": "a-list"},
+        [{"file_id": "file", "file_unique_id": "unique"}],
+        [
+            {
+                "file_id": "",
+                "file_unique_id": "unique",
+                "received_at": "2026-08-24T06:00:00+00:00",
+            }
+        ],
+        [
+            {
+                "file_id": "file",
+                "file_unique_id": "unique",
+                "received_at": "not-a-time",
+            }
+        ],
+    ],
+    ids=("not-list", "missing-field", "empty-file", "bad-time"),
+)
+def test_ticket_candidates_reject_malformed_database_rows(rows: object) -> None:
+    with pytest.raises(RuntimeError, match="invalid"):
+        evidence_repository(EvidenceSupabase(rows)).candidates(
+            portfolio_date="2026-08-24"
+        )
+
+
+def test_ticket_review_upsert_uses_validated_exact_identity() -> None:
+    from backend.ticket_evidence import EvidenceDecision
+
+    client = EvidenceSupabase([{"evidence_key": "unique-1"}])
+    candidate = TicketCandidate(
+        "unique-1", "file-1", "unique-1", "2026-08-24T06:00:00+00:00"
+    )
+    decision = EvidenceDecision("matched", "5329224423", (101,), "b" * 64)
+
+    evidence_repository(client).record(
+        candidate=candidate,
+        report=evidence_report(),
+        decision=decision,
+        media_digest="c" * 64,
+    )
+
+    upsert = client.calls[1]
+    assert upsert[0] == "upsert"
+    assert upsert[2] == "evidence_key"
+    assert upsert[1] == {
+        "evidence_key": "unique-1",
+        "batch_id": "44444444-4444-4444-8444-444444444444",
+        "portfolio_date": "2026-08-24",
+        "state": "matched",
+        "ticket_id": "5329224423",
+        "pick_ids": [101],
+        "media_digest": "c" * 64,
+        "ocr_digest": "b" * 64,
+    }
+
+
+def test_ticket_review_requires_one_confirmed_upsert_row() -> None:
+    from backend.ticket_evidence import EvidenceDecision
+
+    client = EvidenceSupabase([])
+    candidate = TicketCandidate(
+        "unique-1", "file-1", "unique-1", "2026-08-24T06:00:00+00:00"
+    )
+
+    with pytest.raises(RuntimeError, match="not persisted"):
+        evidence_repository(client).record(
+            candidate=candidate,
+            report=evidence_report(),
+            decision=EvidenceDecision("pending_review", "", (), "b" * 64),
+            media_digest="c" * 64,
+        )

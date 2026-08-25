@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 import re
-from typing import Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import UUID, uuid4
 import warnings
+from zoneinfo import ZoneInfo
 
 from PIL import Image, UnidentifiedImageError
 from supabase import create_client
@@ -21,6 +22,10 @@ from backend.social_repository import (
     _validated_supabase_url,
 )
 from backend.vertical_content import ReelPackage, VerticalCard
+
+if TYPE_CHECKING:
+    from backend.result_reporting import ResultReport
+    from backend.ticket_evidence import EvidenceDecision
 
 
 _CONTENT_KINDS = frozenset(
@@ -99,6 +104,14 @@ class TemporaryAsset:
     object_key: str
     url: str
     mime_type: Literal["image/jpeg", "video/mp4"]
+
+
+@dataclass(frozen=True, slots=True)
+class TicketCandidate:
+    evidence_key: str
+    file_id: str
+    file_unique_id: str
+    received_at: str
 
 
 class SupabaseVerticalRepository:
@@ -297,6 +310,153 @@ class SupabaseVerticalRepository:
         raise RuntimeError("vertical remote transition failed")
 
 
+class SupabaseTicketEvidenceRepository:
+    """Validated service-role boundary for original Telegram ticket reviews."""
+
+    def __init__(self, client: object, *, admin_chat_id: int) -> None:
+        if client is None or not callable(getattr(client, "table", None)):
+            raise ValueError("ticket evidence client is invalid")
+        if (
+            type(admin_chat_id) is not int
+            or admin_chat_id == 0
+            or not -(2**63) <= admin_chat_id < 2**63
+        ):
+            raise ValueError("ticket evidence admin chat id is invalid")
+        self._client = client
+        self._admin_chat_id = admin_chat_id
+
+    def candidates(self, *, portfolio_date: str) -> tuple[TicketCandidate, ...]:
+        normalized_date = _canonical_date(portfolio_date)
+        local_zone = ZoneInfo("America/Mexico_City")
+        local_start = datetime.combine(
+            date.fromisoformat(normalized_date), datetime.min.time(), local_zone
+        )
+        local_end = local_start + timedelta(days=1)
+        start = local_start.astimezone(timezone.utc)
+        end = local_end.astimezone(timezone.utc)
+        try:
+            response = (
+                self._client.table("tickets_ganadores")
+                .select("file_id,file_unique_id,received_at")
+                .eq("telegram_chat_id", self._admin_chat_id)
+                .gte("received_at", start.isoformat())
+                .lt("received_at", end.isoformat())
+                .order("received_at", desc=False)
+                .execute()
+            )
+            rows = response.data
+        except Exception:
+            raise RuntimeError("ticket evidence query failed") from None
+        if not isinstance(rows, list):
+            raise RuntimeError("ticket evidence query returned invalid data")
+        result: list[TicketCandidate] = []
+        seen: set[str] = set()
+        expected = {"file_id", "file_unique_id", "received_at"}
+        for row in rows:
+            if not isinstance(row, Mapping) or set(row) != expected:
+                raise RuntimeError("ticket evidence query returned invalid data")
+            file_id = _telegram_identity(row["file_id"], required=True)
+            unique_id = _telegram_identity(row["file_unique_id"], required=False)
+            received_at = _aware_timestamp(row["received_at"])
+            if not start <= received_at.astimezone(timezone.utc) < end:
+                raise RuntimeError("ticket evidence query returned invalid data")
+            evidence_key = unique_id or file_id
+            if evidence_key in seen:
+                raise RuntimeError("ticket evidence query returned invalid data")
+            seen.add(evidence_key)
+            result.append(
+                TicketCandidate(
+                    evidence_key,
+                    file_id,
+                    unique_id,
+                    str(row["received_at"]),
+                )
+            )
+        return tuple(result)
+
+    def record(
+        self,
+        *,
+        candidate: TicketCandidate,
+        report: ResultReport,
+        decision: EvidenceDecision,
+        media_digest: str,
+    ) -> None:
+        from backend.result_reporting import ResultReport
+        from backend.ticket_evidence import EvidenceDecision
+
+        if not isinstance(candidate, TicketCandidate):
+            raise ValueError("ticket evidence review identity is invalid")
+        evidence_key = _telegram_identity(candidate.evidence_key, required=True)
+        _telegram_identity(candidate.file_id, required=True)
+        _telegram_identity(candidate.file_unique_id, required=False)
+        _aware_timestamp(candidate.received_at)
+        if (
+            not isinstance(report, ResultReport)
+            or report.kind != "final"
+            or not report.terminal
+        ):
+            raise ValueError("ticket evidence review requires a final report")
+        if not isinstance(decision, EvidenceDecision):
+            raise ValueError("ticket evidence review decision is invalid")
+        normalized_media_digest = _digest(media_digest)
+        normalized_ocr_digest = _digest(decision.ocr_digest)
+        if decision.state not in {"matched", "pending_review"}:
+            raise ValueError("ticket evidence review decision is invalid")
+        if (
+            not isinstance(decision.ticket_id, str)
+            or decision.ticket_id != decision.ticket_id.strip()
+            or (
+                decision.ticket_id
+                and re.fullmatch(r"[0-9]{6,20}", decision.ticket_id) is None
+            )
+        ):
+            raise ValueError("ticket evidence review decision is invalid")
+        if (
+            not isinstance(decision.pick_ids, tuple)
+            or any(type(value) is not int or value <= 0 for value in decision.pick_ids)
+            or len(set(decision.pick_ids)) != len(decision.pick_ids)
+        ):
+            raise ValueError("ticket evidence review decision is invalid")
+        report_ids = {int(row["id"]) for row in report.rows}
+        if decision.state == "matched":
+            if (
+                not decision.ticket_id
+                or len(decision.pick_ids) not in {1, 6}
+                or not set(decision.pick_ids).issubset(report_ids)
+            ):
+                raise ValueError("ticket evidence review decision is invalid")
+        elif decision.pick_ids:
+            raise ValueError("ticket evidence review decision is invalid")
+        payload: dict[str, object] = {
+            "evidence_key": evidence_key,
+            "batch_id": _canonical_uuid(report.batch_id, field="batch_id"),
+            "portfolio_date": _canonical_date(report.portfolio_date),
+            "state": decision.state,
+            "ticket_id": decision.ticket_id,
+            "pick_ids": list(decision.pick_ids),
+            "media_digest": normalized_media_digest,
+            "ocr_digest": normalized_ocr_digest,
+        }
+        try:
+            response = (
+                self._client.table("ticket_evidence_reviews")
+                .upsert(payload, on_conflict="evidence_key")
+                .execute()
+            )
+            rows = response.data
+        except Exception:
+            raise RuntimeError("ticket evidence review was not persisted") from None
+        valid = (
+            isinstance(rows, list)
+            and len(rows) == 1
+            and isinstance(rows[0], Mapping)
+            and rows[0].get("evidence_key") == evidence_key
+        )
+        if not valid:
+            raise RuntimeError("ticket evidence review was not persisted")
+
+
 def _canonical_uuid(value: object, *, field: str) -> str:
     if not isinstance(value, str) or value != value.strip() or value != value.lower():
         raise ValueError(f"{field} must be a canonical UUID")
@@ -401,6 +561,28 @@ def _canonical_date(value: object) -> str:
     if normalized != value:
         raise ValueError("portfolio_date must be a canonical date")
     return normalized
+
+
+def _telegram_identity(value: object, *, required: bool) -> str:
+    if not isinstance(value, str) or value != value.strip():
+        raise RuntimeError("ticket evidence query returned invalid data")
+    if not value and not required:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,512}", value) is None:
+        raise RuntimeError("ticket evidence query returned invalid data")
+    return value
+
+
+def _aware_timestamp(value: object) -> datetime:
+    if not isinstance(value, str) or value != value.strip():
+        raise RuntimeError("ticket evidence query returned invalid data")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise RuntimeError("ticket evidence query returned invalid data") from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise RuntimeError("ticket evidence query returned invalid data")
+    return parsed
 
 
 def _content_kind(value: object) -> str:

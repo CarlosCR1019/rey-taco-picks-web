@@ -59,6 +59,7 @@ DAILY_RELEASE_VISIBILITY_SYNC_SQL = (
 VERTICAL_REMOTE_GUARD_SQL = (
     SQL.parent / "20260824200000_vertical_remote_publish_guard.sql"
 )
+TICKET_EVIDENCE_SQL = SQL.parent / "20260824210000_ticket_evidence.sql"
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -2335,6 +2336,63 @@ class SupabaseContractTests(unittest.TestCase):
                 f"grant execute on function {signature} to service_role",
                 text,
             )
+
+    def test_ticket_evidence_migration_is_additive_and_service_role_only(self):
+        self.assertTrue(TICKET_EVIDENCE_SQL.exists())
+        text = " ".join(
+            TICKET_EVIDENCE_SQL.read_text(encoding="utf-8").lower().split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn("alter table if exists public.tickets_ganadores", text)
+        for column in (
+            "add column if not exists telegram_chat_id bigint",
+            "add column if not exists file_unique_id text",
+            "add column if not exists received_at timestamptz not null default now()",
+        ):
+            self.assertIn(column, text)
+        self.assertIn("to_regclass('public.tickets_ganadores')", text)
+        self.assertIn(
+            "create index if not exists tickets_ganadores_admin_received_at_idx",
+            text,
+        )
+        self.assertIn(
+            "create table if not exists public.ticket_evidence_reviews", text
+        )
+        self.assertIn("evidence_key text primary key", text)
+        self.assertIn(
+            "state text not null check (state in ('matched','pending_review'))",
+            text,
+        )
+        self.assertIn("ticket_id text not null default ''", text)
+        self.assertIn("pick_ids bigint[] not null default '{}'", text)
+        self.assertIn(
+            "media_digest text not null check (media_digest ~ '^[0-9a-f]{64}$')",
+            text,
+        )
+        self.assertIn(
+            "ocr_digest text not null check (ocr_digest ~ '^[0-9a-f]{64}$')",
+            text,
+        )
+        self.assertIn(
+            "alter table public.ticket_evidence_reviews enable row level security",
+            text,
+        )
+        self.assertIn(
+            "revoke all on table public.ticket_evidence_reviews from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            "grant select, insert, update on table public.ticket_evidence_reviews to service_role",
+            text,
+        )
+
+    def test_applied_vertical_migration_does_not_gain_ticket_schema(self):
+        text = VERTICAL_MEDIA_DELIVERY_SQL.read_text(encoding="utf-8").lower()
+
+        self.assertNotIn("ticket_evidence_reviews", text)
+        self.assertNotIn("telegram_chat_id", text)
 
 
 if __name__ == "__main__":

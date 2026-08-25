@@ -3,6 +3,7 @@ import json
 import sys
 import time
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client
@@ -43,7 +44,7 @@ def get_offset():
         with open(OFFSET_FILE, "r") as f:
             try:
                 return int(f.read().strip())
-            except:
+            except Exception:
                 return 0
     return 0
 
@@ -373,7 +374,10 @@ def procesar_foto(update):
                 supabase.table("tickets_ganadores").insert({
                     "archivo": filename,
                     "caption": caption or "Ticket Ganador",
-                    "file_id": file_id
+                    "file_id": file_id,
+                    "file_unique_id": best_photo.get("file_unique_id", ""),
+                    "telegram_chat_id": chat_id,
+                    "received_at": datetime.now(timezone.utc).isoformat(),
                 }).execute()
                 print("   ✅ Registrado en Supabase.")
             except Exception as e:

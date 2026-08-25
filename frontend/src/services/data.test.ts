@@ -4,6 +4,7 @@ import {
   choosePublicPicks,
   escapeHtml,
   LEGACY_PUBLIC_PICK_FIELDS,
+  loadDailyPublicPicks,
   loadHistory,
   loadPublicPicks,
   normalizePick,
@@ -43,6 +44,26 @@ describe('public pick data', () => {
 
     expect(await loadPublicPicks(client)).toHaveLength(2);
     expect(limits).toEqual([2]);
+  });
+
+  it('loads every public state for one CDMX event date without a row limit', async () => {
+    const calls: Array<[string, unknown]> = [];
+    const response = { data: [
+      { ...rows[1], fecha_evento: '2026-08-25' },
+      { ...rows[2], fecha_evento: '2026-08-25', estado: 'ganado' },
+    ], error: null };
+    const builder = {
+      eq: (field: string, value: unknown) => { calls.push([field, value]); return builder; },
+      in: (field: string, value: unknown) => { calls.push([field, value]); return builder; },
+      order: () => Promise.resolve(response),
+    };
+    const client = { from: () => ({ select: () => builder }) } as unknown as SupabaseClient;
+
+    const result = await loadDailyPublicPicks(client, '2026-08-25');
+
+    expect(result).toHaveLength(2);
+    expect(calls).toContainEqual(['fecha_evento', '2026-08-25']);
+    expect(calls).toContainEqual(['estado', ['pendiente', 'ganado', 'perdido', 'void', 'revision_pendiente']]);
   });
 
   it('normalizes missing values without inventing results', () => {

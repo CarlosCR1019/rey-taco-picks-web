@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -83,11 +84,51 @@ def test_interactive_launcher_is_non_admin_hidden_and_token_free():
 
 def test_startup_task_is_interactive_limited_and_idempotent():
     text = source(STARTUP_REGISTRAR)
-    assert "-LogonType Interactive" in text
-    assert "-RunLevel Limited" in text
-    assert "AtLogOn" in text
-    assert "Register-ScheduledTask" in text
-    assert "-Force" in text
+    action_arguments = re.search(
+        r"\$ActionArguments = \(\s*(?P<arguments>.*?)\s*\)\s*\$Action =",
+        text,
+        re.DOTALL,
+    )
+    principal = re.search(
+        r"\$Principal = New-ScheduledTaskPrincipal `\s*(?P<options>.*?)\s*\$Settings =",
+        text,
+        re.DOTALL,
+    )
+    trigger = re.search(
+        r"\$Trigger = New-ScheduledTaskTrigger (?P<options>.*?)\s*\$Principal =",
+        text,
+        re.DOTALL,
+    )
+    settings = re.search(
+        r"\$Settings = New-ScheduledTaskSettingsSet `\s*(?P<options>.*?)\s*\[void\]"
+        r"\(Register-ScheduledTask",
+        text,
+        re.DOTALL,
+    )
+    registration = re.search(
+        r"\[void\]\(Register-ScheduledTask `\s*(?P<options>.*?)\s*\)",
+        text,
+        re.DOTALL,
+    )
+
+    assert action_arguments is not None
+    assert principal is not None
+    assert trigger is not None
+    assert settings is not None
+    assert registration is not None
+    assert "-WindowStyle Hidden" in action_arguments.group("arguments")
+    assert "-LogonType Interactive" in principal.group("options")
+    assert "-RunLevel Limited" in principal.group("options")
+    assert "-AtLogOn" in trigger.group("options")
+    assert "-Hidden" in settings.group("options")
+    assert "-AllowStartIfOnBatteries" in settings.group("options")
+    assert "-DontStopIfGoingOnBatteries" in settings.group("options")
+    assert "-MultipleInstances IgnoreNew" in settings.group("options")
+    assert "-StartWhenAvailable" in settings.group("options")
+    assert "-RestartCount 999" in settings.group("options")
+    assert "-RestartInterval (New-TimeSpan -Minutes 1)" in settings.group("options")
+    assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in settings.group("options")
+    assert "-Force" in registration.group("options")
 
 
 def test_migration_preserves_registration_and_removes_only_service():

@@ -624,6 +624,13 @@ def test_cloud_only_ten_oclock_release_reuses_stale_gate_before_delivery():
     assert "actions/runs/$env:GITHUB_RUN_ID" in gate["run"]
     assert "backend.adaptive_schedule" in gate["run"]
     assert "backend.daily_portfolio --created-at" in gate["run"]
+    assert "$run.created_at -is [datetime]" in gate["run"]
+    assert "$run.created_at -is [datetimeoffset]" in gate["run"]
+    assert "[DateTimeOffset]::TryParse" in gate["run"]
+    assert ".ToUniversalTime().ToString(" in gate["run"]
+    assert "[Globalization.CultureInfo]::InvariantCulture" in gate["run"]
+    assert '$gateArgs += @("--created-at", $createdAt)' in gate["run"]
+    assert "([string]$run.created_at)" not in gate["run"]
     assert '"eligible=false" >> $env:GITHUB_OUTPUT' in gate["run"]
     assert '"portfolio_date=invalid" >> $env:GITHUB_OUTPUT' in gate["run"]
     assert install["if"] == "steps.cloud_window.outputs.eligible == 'true'"

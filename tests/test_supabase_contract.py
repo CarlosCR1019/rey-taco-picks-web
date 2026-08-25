@@ -53,6 +53,9 @@ RESULT_REPORT_RECEIPT_LENGTH_SQL = (
 VERTICAL_MEDIA_DELIVERY_SQL = (
     SQL.parent / "20260824180000_vertical_media_delivery.sql"
 )
+DAILY_RELEASE_VISIBILITY_SYNC_SQL = (
+    SQL.parent / "20260824190000_daily_release_visibility_sync.sql"
+)
 
 
 def function_body(path: Path, signature: str) -> str:
@@ -2027,6 +2030,77 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("public.release_daily_pick_portfolio_one_round_v1(", release)
         self.assertIn("feed_eligible = first_release_in_round", release)
         self.assertIn("'{feed_eligible}'", release)
+
+    def test_daily_release_synchronizes_persisted_visibility_before_returning(self):
+        self.assertTrue(DAILY_RELEASE_VISIBILITY_SYNC_SQL.exists())
+        text = " ".join(
+            DAILY_RELEASE_VISIBILITY_SYNC_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "rename to release_daily_pick_portfolio_visibility_unsynced_v1",
+            text,
+        )
+        release = function_body(
+            DAILY_RELEASE_VISIBILITY_SYNC_SQL,
+            "public.release_daily_pick_portfolio( requested_run_key text, requested_portfolio_date date ) returns jsonb",
+        )
+        self.assertIn(
+            "public.release_daily_pick_portfolio_visibility_unsynced_v1(",
+            release,
+        )
+        self.assertIn("update public.picks as persisted", release)
+        self.assertIn("from public.daily_pick_entries as entries", release)
+        self.assertIn("persisted.id = entries.pick_id", release)
+        self.assertIn("persisted.batch_id = released_batch_id", release)
+        self.assertIn("entries.portfolio_date = requested_portfolio_date", release)
+        self.assertIn("entries.active", release)
+        self.assertIn("visibility = entries.visibility", release)
+        self.assertIn(
+            "case when entries.visibility = 'public' then null",
+            release,
+        )
+        self.assertIn("public.resume_daily_pick_release(requested_run_key)", release)
+        self.assertIn("legacy_result->'created'", release)
+        self.assertIn("synchronized_result->'feed_eligible'", release)
+
+    def test_daily_release_visibility_sync_keeps_service_only_boundary(self):
+        text = " ".join(
+            DAILY_RELEASE_VISIBILITY_SYNC_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+        old_signature = (
+            "public.release_daily_pick_portfolio_visibility_unsynced_v1(text, date)"
+        )
+        current_signature = "public.release_daily_pick_portfolio(text, date)"
+
+        self.assertIn(
+            "set search_path = pg_catalog, extensions, public, pg_temp",
+            text,
+        )
+        self.assertIn(
+            f"revoke all on function {old_signature} "
+            "from public, anon, authenticated, service_role",
+            text,
+        )
+        self.assertIn(
+            f"revoke all on function {current_signature} "
+            "from public, anon, authenticated",
+            text,
+        )
+        self.assertIn(
+            f"grant execute on function {current_signature} to service_role",
+            text,
+        )
+        self.assertNotIn(
+            f"grant execute on function {old_signature}",
+            text,
+        )
 
     def test_result_reports_survive_daily_round_rollover(self):
         batches = function_body(

@@ -496,13 +496,22 @@ def test_structured_pipeline_real_adapter_reaches_rpc_with_only_db_columns(
 def test_structured_pipeline_daily_portfolio_caps_distinct_matches_at_six(
     event_fixture,
 ):
+    starts_at = [
+        datetime(2026, 8, 20, 18, 15, tzinfo=timezone.utc),
+        datetime(2026, 8, 20, 18, 45, tzinfo=timezone.utc),
+        datetime(2026, 8, 21, 0, 15, tzinfo=timezone.utc),
+        datetime(2026, 8, 21, 0, 45, tzinfo=timezone.utc),
+        datetime(2026, 8, 21, 6, 15, tzinfo=timezone.utc),
+        datetime(2026, 8, 21, 6, 45, tzinfo=timezone.utc),
+        datetime(2026, 8, 21, 12, 15, tzinfo=timezone.utc),
+    ]
     events = [
         replace(
             event_fixture,
             source_event_id=f"portfolio-{index}",
             home_team=f"Home {index}",
             away_team=f"Away {index}",
-            starts_at=event_fixture.starts_at + timedelta(minutes=index),
+            starts_at=start,
             markets=(
                 Market(
                     "h2h",
@@ -516,7 +525,7 @@ def test_structured_pipeline_daily_portfolio_caps_distinct_matches_at_six(
                 ),
             ),
         )
-        for index in range(7)
+        for index, start in enumerate(starts_at)
     ]
     publisher = FakePublisher()
 
@@ -542,8 +551,17 @@ def test_structured_pipeline_daily_portfolio_caps_distinct_matches_at_six(
     ]
     assert len(public_rows) == 2
     assert len({row["source_event_id"] for row in public_rows}) == 2
+    assert [row["source_event_id"] for row in public_rows] == [
+        "portfolio-0",
+        "portfolio-2",
+    ]
     assert [row["source_event_id"] for row in result.picks] == [
-        f"portfolio-{index}" for index in range(6)
+        "portfolio-0",
+        "portfolio-2",
+        "portfolio-4",
+        "portfolio-6",
+        "portfolio-1",
+        "portfolio-3",
     ]
 
 

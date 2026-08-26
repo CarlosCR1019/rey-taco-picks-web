@@ -17,6 +17,7 @@ from backend.publishing_policy import expected_public_pick_count
 
 MEXICO_CITY = ZoneInfo("America/Mexico_City")
 MAX_DAILY_PICKS = 6
+MAX_TIME_BLOCK_PICKS = 2
 _AUDIT_FIELDS = (
     "source",
     "source_event_id",
@@ -118,6 +119,16 @@ def physical_event_key(row: Mapping[str, object]) -> str:
     return f"physical:v1:{digest}"
 
 
+def mexico_time_block(row: Mapping[str, object]) -> int:
+    """Return the six-hour CDMX block for one audited event start."""
+
+    if not isinstance(row, Mapping):
+        raise TypeError("pick must be a mapping")
+    return _created_at(row.get("source_starts_at")).astimezone(
+        MEXICO_CITY
+    ).hour // 6
+
+
 def _normalize_matchup(value: str) -> str:
     ascii_value = "".join(
         character
@@ -158,6 +169,7 @@ def merge_daily_portfolio(
 
     used_audits: set[tuple[str, str, str, str]] = set()
     used_events: set[str] = set()
+    block_counts = [0, 0, 0, 0]
     public_count = 0
     for row in released:
         identity = audit_identity(row)
@@ -166,6 +178,10 @@ def merge_daily_portfolio(
             raise ValueError("released portfolio contains duplicate identities")
         used_audits.add(identity)
         used_events.add(event)
+        block = mexico_time_block(row)
+        if block_counts[block] >= MAX_TIME_BLOCK_PICKS:
+            raise ValueError("released portfolio exceeds time block capacity")
+        block_counts[block] += 1
         visibility = row.get("visibility")
         if visibility not in {"public", "premium"}:
             raise ValueError("released portfolio has invalid visibility")
@@ -185,8 +201,12 @@ def merge_daily_portfolio(
         event = physical_event_identity(row)
         if identity in used_audits or event in used_events:
             continue
+        block = mexico_time_block(row)
+        if block_counts[block] >= MAX_TIME_BLOCK_PICKS:
+            continue
         used_audits.add(identity)
         used_events.add(event)
+        block_counts[block] += 1
         prepared = dict(row)
         prepared["visibility"] = "premium"
         selected.append(prepared)

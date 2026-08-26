@@ -1613,17 +1613,26 @@ def test_ranked_pick_is_frozen_and_slotted(event_fixture):
     assert not hasattr(ranked, "__dict__")
 
 
-def test_daily_portfolio_preserves_rank_order_and_caps_at_six():
+def test_daily_portfolio_reserves_two_slots_per_mexico_time_block():
+    starts_at = [
+        datetime(2026, 8, 21, 0, 15, tzinfo=MEXICO),
+        datetime(2026, 8, 21, 0, 45, tzinfo=MEXICO),
+        datetime(2026, 8, 21, 1, 15, tzinfo=MEXICO),
+        datetime(2026, 8, 21, 6, 15, tzinfo=MEXICO),
+        datetime(2026, 8, 21, 6, 45, tzinfo=MEXICO),
+        datetime(2026, 8, 21, 12, 15, tzinfo=MEXICO),
+        datetime(2026, 8, 21, 18, 15, tzinfo=MEXICO),
+    ]
     candidates = [
         build_candidates([
             event_with(
                 source_event_id=f"portfolio-{index}",
                 home_team=f"Home {index}",
                 away_team=f"Away {index}",
-                starts_at=OBSERVED + timedelta(hours=8, minutes=index),
+                starts_at=start,
             )
         ])[0]
-        for index in range(7)
+        for index, start in enumerate(starts_at)
     ]
     ranked = [
         RankedPick(candidate, f"Respaldo suficiente para selección {index}.")
@@ -1632,7 +1641,36 @@ def test_daily_portfolio_preserves_rank_order_and_caps_at_six():
 
     selected = select_daily_portfolio(ranked)
 
-    assert [row.candidate for row in selected] == candidates[:6]
+    assert [row.candidate for row in selected] == [
+        candidates[0],
+        candidates[3],
+        candidates[5],
+        candidates[6],
+        candidates[1],
+        candidates[4],
+    ]
+
+
+def test_daily_portfolio_does_not_force_more_than_two_picks_into_one_block():
+    candidates = [
+        build_candidates([
+            event_with(
+                source_event_id=f"concentrated-{index}",
+                home_team=f"Home {index}",
+                away_team=f"Away {index}",
+                starts_at=datetime(2026, 8, 21, 2, index, tzinfo=MEXICO),
+            )
+        ])[0]
+        for index in range(6)
+    ]
+    ranked = [
+        RankedPick(candidate, f"Respaldo suficiente para selección {index}.")
+        for index, candidate in enumerate(candidates)
+    ]
+
+    selected = select_daily_portfolio(ranked)
+
+    assert [row.candidate for row in selected] == candidates[:2]
 
 
 def test_daily_portfolio_keeps_only_highest_ranked_pick_per_physical_match():

@@ -31,6 +31,7 @@ MEXICO = ZoneInfo("America/Mexico_City")
 # Bound model-controlled output before persistence and notification fan-out.
 MAX_AI_RANKED_PICKS = 12
 MAX_DAILY_PICKS = 6
+MAX_TIME_BLOCK_PICKS = 2
 EVIDENCE_LABEL_LIMITED = "Datos limitados"
 EVIDENCE_LABEL_HIGH = "Respaldo alto"
 EVIDENCE_START_TOLERANCE = timedelta(minutes=5)
@@ -870,7 +871,7 @@ class RankedPick:
 
 
 def select_daily_portfolio(ranked: object) -> list[RankedPick]:
-    """Keep the highest-ranked pick from at most six physical events."""
+    """Choose up to two ranked physical events from each CDMX time block."""
 
     if isinstance(ranked, (str, bytes)) or not isinstance(ranked, Iterable):
         return []
@@ -881,16 +882,30 @@ def select_daily_portfolio(ranked: object) -> list[RankedPick]:
     if not all(isinstance(row, RankedPick) for row in rows):
         return []
 
-    selected: list[RankedPick] = []
+    eligible: list[RankedPick] = []
     for row in rows:
         if any(
             _same_physical_event(row.candidate, existing.candidate)
-            for existing in selected
+            for existing in eligible
         ):
             continue
-        selected.append(row)
-        if len(selected) == MAX_DAILY_PICKS:
-            break
+        eligible.append(row)
+
+    selected: list[RankedPick] = []
+    block_counts = [0, 0, 0, 0]
+    selected_ids: set[str] = set()
+    for block_slot in range(1, MAX_TIME_BLOCK_PICKS + 1):
+        for row in eligible:
+            if row.candidate.candidate_id in selected_ids:
+                continue
+            block = row.candidate.starts_at.astimezone(MEXICO).hour // 6
+            if block_counts[block] >= block_slot:
+                continue
+            selected.append(row)
+            selected_ids.add(row.candidate.candidate_id)
+            block_counts[block] += 1
+            if len(selected) == MAX_DAILY_PICKS:
+                return selected
     return selected
 
 

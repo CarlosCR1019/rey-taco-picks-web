@@ -53,6 +53,9 @@ RESULT_REPORT_RECEIPT_LENGTH_SQL = (
 VERTICAL_MEDIA_DELIVERY_SQL = (
     SQL.parent / "20260824180000_vertical_media_delivery.sql"
 )
+DAILY_TIME_BLOCK_PORTFOLIO_SQL = (
+    SQL.parent / "20260825180000_daily_time_block_portfolio.sql"
+)
 DAILY_RELEASE_VISIBILITY_SYNC_SQL = (
     SQL.parent / "20260824190000_daily_release_visibility_sync.sql"
 )
@@ -1712,6 +1715,41 @@ class SupabaseContractTests(unittest.TestCase):
         self.assertIn("jsonb_typeof(entry.value->'es_parlay') <> 'boolean'", body)
         self.assertNotIn("coalesce((candidate.value->>'es_parlay')::boolean, false)", body)
         self.assertIn("revision = locked_portfolio.revision + 1", body)
+
+    def test_daily_stage_caps_each_cdmx_time_block_at_two_picks(self):
+        self.assertTrue(DAILY_TIME_BLOCK_PORTFOLIO_SQL.exists())
+        text = " ".join(
+            DAILY_TIME_BLOCK_PORTFOLIO_SQL.read_text(encoding="utf-8")
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        self.assertIn(
+            "rename to stage_daily_pick_portfolio_unbounded_windows_v1",
+            text,
+        )
+        body = function_body(
+            DAILY_TIME_BLOCK_PORTFOLIO_SQL,
+            "public.stage_daily_pick_portfolio( requested_run_key text, requested_portfolio_date date, requested_source_hash text, requested_picks jsonb ) returns jsonb",
+        )
+        self.assertIn("at time zone 'america/mexico_city'", body)
+        self.assertIn("block_position", body)
+        self.assertIn("greatest( 0, 2 -", body)
+        self.assertIn("released.released_revision is not null", body)
+        self.assertIn("released.active", body)
+        self.assertIn("existing_scan.source_hash <> requested_source_hash", body)
+        self.assertIn("order by scans.revision desc, scans.created_at desc", body)
+        self.assertIn("'created', false", body)
+        self.assertIn(
+            "revoke all on function public.stage_daily_pick_portfolio_unbounded_windows_v1(text, date, text, jsonb)",
+            text,
+        )
+        self.assertIn(
+            "grant execute on function public.stage_daily_pick_portfolio(text, date, text, jsonb) to service_role",
+            text,
+        )
 
     def test_daily_release_appends_only_delta_and_resume_is_exact(self):
         release_signature = (

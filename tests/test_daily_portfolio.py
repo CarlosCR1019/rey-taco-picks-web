@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -17,7 +18,13 @@ def pick(
     event: int | None = None,
     visibility: str | None = None,
     parlay: bool = False,
+    block: int | None = None,
 ):
+    mexico = ZoneInfo("America/Mexico_City")
+    local_block = (number - 1) % 4 if block is None else block
+    starts_at = datetime(
+        2026, 8, 25, local_block * 6 + 1, tzinfo=mexico
+    ).astimezone(timezone.utc)
     row = {
         "source": "playdoit",
         "source_event_id": f"event-{event if event is not None else number}",
@@ -26,6 +33,7 @@ def pick(
         "partido": f"Local {event if event is not None else number} vs Visitante {event if event is not None else number}",
         "pick": f"Pick {number}",
         "es_parlay": parlay,
+        "source_starts_at": starts_at.isoformat().replace("+00:00", "Z"),
     }
     if visibility is not None:
         row["visibility"] = visibility
@@ -87,6 +95,33 @@ def test_first_draft_keeps_rank_order_caps_six_and_assigns_two_free():
         "premium",
         "premium",
     ]
+
+
+def test_first_draft_keeps_at_most_two_picks_in_each_time_block():
+    result = thaw(
+        merge_daily_portfolio(
+            [],
+            [pick(index, block=0) for index in range(1, 7)],
+        )
+    )
+
+    assert [row["pick"] for row in result] == ["Pick 1", "Pick 2"]
+
+
+def test_released_block_uses_its_two_slots_before_new_alternatives():
+    released = [
+        pick(1, visibility="public", block=0),
+        pick(2, visibility="premium", block=0),
+    ]
+
+    result = thaw(
+        merge_daily_portfolio(
+            released,
+            [pick(3, block=0), pick(4, block=1)],
+        )
+    )
+
+    assert [row["pick"] for row in result] == ["Pick 1", "Pick 2", "Pick 4"]
 
 
 def test_one_to_five_picks_have_exactly_one_free_pick():

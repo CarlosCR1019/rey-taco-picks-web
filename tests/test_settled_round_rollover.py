@@ -29,6 +29,23 @@ def test_rollover_accepts_one_complete_six_pick_round():
     assert batch_id == "11111111-1111-1111-1111-111111111111"
 
 
+def test_rollover_accepts_a_reduced_round_when_every_remaining_pick_is_final():
+    entries = [released_entry(position) for position in range(1, 5)]
+    entries[-1]["picks"]["estado"] = "void"
+
+    assert validate_settled_round("2026-08-24", entries) == (
+        "11111111-1111-1111-1111-111111111111"
+    )
+
+
+@pytest.mark.parametrize("size", [0, 7])
+def test_rollover_rejects_empty_or_oversized_rounds(size: int):
+    entries = [released_entry(position) for position in range(1, size + 1)]
+
+    with pytest.raises(ValueError, match="between one and six"):
+        validate_settled_round("2026-08-24", entries)
+
+
 @pytest.mark.parametrize(
     "entry_override",
     [

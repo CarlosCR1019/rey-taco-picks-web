@@ -9,6 +9,11 @@ on:
     - cron: '0 5 * * *'
   workflow_dispatch:
     inputs:
+      publish:
+        description: Allow writes and external result publication for this manual run
+        required: true
+        default: false
+        type: boolean
       manual_result_evidence_json:
         description: Reviewed final-score evidence JSON; leave blank for automatic verification
         required: false
@@ -68,7 +73,7 @@ jobs:
           fi
 
       - name: Apply reviewed result evidence
-        if: ${{ inputs.manual_result_evidence_json != '' }}
+        if: ${{ inputs.publish == true && inputs.manual_result_evidence_json != '' }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -91,9 +96,11 @@ jobs:
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           SUPABASE_STORAGE_BUCKET: ${{ secrets.SUPABASE_STORAGE_BUCKET }}
           RESULT_REPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && 'auto' || github.event.schedule == '0 1 * * *' && 'evening' || 'final_only' }}
+          RESULT_VERIFIER_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}
         run: python backend/verificar_resultados.py
 
       - name: Validate final media configuration
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish == true }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -124,6 +131,7 @@ jobs:
           fi
 
       - name: Publish final vertical media
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish == true }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -136,7 +144,7 @@ jobs:
         run: python -m backend.vertical_publisher --mode final --live
 
       - name: Open verified settled round
-        if: ${{ inputs.rollover_settled_portfolio_date != '' }}
+        if: ${{ inputs.publish == true && inputs.rollover_settled_portfolio_date != '' }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

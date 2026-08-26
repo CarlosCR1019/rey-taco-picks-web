@@ -341,6 +341,12 @@ def test_result_verifier_receives_detailed_stats_key_only_as_a_secret():
 def test_result_verifier_can_apply_explicit_manual_score_evidence():
     workflow = _workflow(VERIFIER_WORKFLOW)
     dispatch = workflow["on"]["workflow_dispatch"]
+    assert dispatch["inputs"]["publish"] == {
+        "description": "Allow writes and external result publication for this manual run",
+        "required": "true",
+        "default": "false",
+        "type": "boolean",
+    }
     assert dispatch["inputs"]["manual_result_evidence_json"] == {
         "description": "Reviewed final-score evidence JSON; leave blank for automatic verification",
         "required": "false",
@@ -350,7 +356,9 @@ def test_result_verifier_can_apply_explicit_manual_score_evidence():
 
     verifier = workflow["jobs"]["verificar"]
     step = _step(verifier, "Apply reviewed result evidence")
-    assert step["if"] == "${{ inputs.manual_result_evidence_json != '' }}"
+    assert step["if"] == (
+        "${{ inputs.publish == true && inputs.manual_result_evidence_json != '' }}"
+    )
     assert step["env"]["SUPABASE_URL"] == "${{ secrets.SUPABASE_URL }}"
     assert step["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
     assert step["env"]["MANUAL_RESULT_EVIDENCE_JSON"] == (
@@ -371,7 +379,9 @@ def test_result_verifier_can_open_a_verified_settled_round():
 
     verifier = workflow["jobs"]["verificar"]
     step = _step(verifier, "Open verified settled round")
-    assert step["if"] == "${{ inputs.rollover_settled_portfolio_date != '' }}"
+    assert step["if"] == (
+        "${{ inputs.publish == true && inputs.rollover_settled_portfolio_date != '' }}"
+    )
     assert step["env"]["SUPABASE_URL"] == "${{ secrets.SUPABASE_URL }}"
     assert step["env"]["SUPABASE_SERVICE_ROLE_KEY"] == SERVICE_ROLE_EXPRESSION
     assert step["env"]["ROLLOVER_SETTLED_PORTFOLIO_DATE"] == (
@@ -413,6 +423,9 @@ def test_result_report_secrets_are_scoped_to_the_verifier_step():
     for key, value in expected.items():
         assert verify_step["env"][key] == value
         assert key not in verifier.get("env", {})
+    assert verify_step["env"]["RESULT_VERIFIER_DRY_RUN"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.publish != true }}"
+    )
     assert "github.event.schedule == '0 1 * * *'" in verify_step["env"][
         "RESULT_REPORT_MODE"
     ]

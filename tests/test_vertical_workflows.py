@@ -110,6 +110,9 @@ def test_result_workflow_runs_idempotent_final_vertical_after_verifier() -> None
     step = next(
         item for item in job["steps"] if item["name"] == "Publish final vertical media"
     )
+    assert step["if"] == (
+        "${{ github.event_name != 'workflow_dispatch' || inputs.publish == true }}"
+    )
     assert step["run"] == "python -m backend.vertical_publisher --mode final --live"
     assert step["env"] == {
         "SUPABASE_URL": "${{ secrets.SUPABASE_URL }}",
@@ -148,6 +151,9 @@ def test_result_workflow_validates_live_vertical_configuration_before_publishing
         item
         for item in job["steps"]
         if item["name"] == "Validate final media configuration"
+    )
+    assert step["if"] == (
+        "${{ github.event_name != 'workflow_dispatch' || inputs.publish == true }}"
     )
     assert step["env"] == {
         "SUPABASE_URL": "${{ secrets.SUPABASE_URL }}",

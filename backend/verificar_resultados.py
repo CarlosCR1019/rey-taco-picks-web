@@ -82,7 +82,12 @@ def _decimal_odds(pick):
     return parsed if math.isfinite(parsed) and 1.01 <= parsed <= 1000 else None
 
 
-def obtener_resultados_api(event_dates=None, pending_picks=None):
+def obtener_resultados_api(
+    event_dates=None,
+    pending_picks=None,
+    *,
+    include_api_football=True,
+):
     """Consulta múltiples fuentes (ESPN API pública y The Odds API) para obtener resultados de partidos finalizados."""
     todos_juegos = []
     
@@ -138,7 +143,7 @@ def obtener_resultados_api(event_dates=None, pending_picks=None):
             except Exception:
                 continue
 
-    if API_FOOTBALL_KEY and supabase and pending_picks:
+    if include_api_football and API_FOOTBALL_KEY and supabase and pending_picks:
         try:
             detailed_results = ApiFootballResultsClient(
                 API_FOOTBALL_KEY,
@@ -382,12 +387,18 @@ def load_active_pending_picks(client):
     return response.data
 
 
+def result_verifier_dry_run() -> bool:
+    return (os.getenv("RESULT_VERIFIER_DRY_RUN") or "").strip().casefold() == "true"
+
+
 def verificar_picks() -> int:
     """Verifica los picks pendientes contra resultados reales."""
     print("\n" + "="*60)
     print("🔍  VERIFICADOR DE RESULTADOS - Rey Taco Picks")
     print("="*60)
     
+    dry_run = result_verifier_dry_run()
+
     if not supabase:
         print("❌ No hay conexión a Supabase.")
         return 1
@@ -401,6 +412,9 @@ def verificar_picks() -> int:
     
     if not picks_pendientes:
         print("ℹ️ No hay picks pendientes por verificar.")
+        if dry_run:
+            print("ℹ️ Dry-run: reportes omitidos.")
+            return 0
         publish_available_result_reports()
         return 0
     
@@ -412,7 +426,11 @@ def verificar_picks() -> int:
         for pick in picks_pendientes
         if pick.get('fecha_evento') or pick.get('fecha_generacion')
     }, reverse=True)[:7]
-    todos_resultados = obtener_resultados_api(pick_dates, picks_pendientes)
+    todos_resultados = obtener_resultados_api(
+        pick_dates,
+        picks_pendientes,
+        include_api_football=not dry_run,
+    )
     print(f"\n📊 Total de resultados obtenidos: {len(todos_resultados)}")
     
     # Comparar cada pick contra resultados
@@ -424,6 +442,12 @@ def verificar_picks() -> int:
         partido = pick.get('partido', '')
         decision = grade_pending_pick_from_results(pick, todos_resultados)
         if not decision:
+            continue
+        if dry_run:
+            print(
+                f"   🧪 Dry-run: {partido} → {pick.get('pick')} "
+                f"→ {decision['estado'].upper()} (sin actualizar)"
+            )
             continue
         try:
             result = supabase.table("picks").update(decision).eq(
@@ -446,7 +470,11 @@ def verificar_picks() -> int:
     
     print(f"\n{'='*60}")
     print(f"📊 RESUMEN: {actualizados} verificados | ✅ {ganados} ganados | ❌ {perdidos} perdidos")
-    
+
+    if dry_run:
+        print("ℹ️ Dry-run: API-Football, actualizaciones y reportes omitidos.")
+        return 0
+
     publish_available_result_reports()
     
     print("="*60)
@@ -454,6 +482,9 @@ def verificar_picks() -> int:
 
 def publish_available_result_reports():
     """Publish one evidence-backed partial or final report without duplicates."""
+    if result_verifier_dry_run():
+        print("   ℹ️ Dry-run: reportes omitidos.")
+        return {}
     mode = os.getenv("RESULT_REPORT_MODE", "auto").strip().casefold()
     if mode not in {"auto", "evening", "final_only"}:
         print("   ⚠️ RESULT_REPORT_MODE inválido; reportes omitidos.")

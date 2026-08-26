@@ -86,6 +86,27 @@ def test_verifier_accepts_idempotent_complete_outcomes(monkeypatch):
     assert verifier.publish_available_result_reports()
 
 
+def test_verifier_dry_run_never_constructs_a_result_report(monkeypatch):
+    outcomes = {
+        "admin": "success",
+        "vip": "success",
+        "free": "success",
+        "facebook": "success",
+        "instagram": "success",
+    }
+    configure_report_run(monkeypatch, outcomes)
+    monkeypatch.setenv("RESULT_VERIFIER_DRY_RUN", "true")
+    monkeypatch.setattr(
+        verifier,
+        "publish_result_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry-run attempted a result report")
+        ),
+    )
+
+    assert verifier.publish_available_result_reports() == {}
+
+
 def test_verifier_attempts_vertical_after_existing_five_destinations(monkeypatch):
     order: list[str] = []
     outcomes = {

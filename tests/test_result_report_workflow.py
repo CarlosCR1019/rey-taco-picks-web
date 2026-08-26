@@ -14,6 +14,27 @@ class FakeBatchRepository:
         return (tuple(rows_with_states(*(["ganado"] * 6))),)
 
 
+def test_verifier_fails_when_supabase_is_not_configured(monkeypatch, capsys):
+    monkeypatch.setattr(verifier, "supabase", None)
+
+    assert verifier.verificar_picks() == 1
+
+    assert "Supabase" in capsys.readouterr().out
+
+
+def test_verifier_fails_when_reading_pending_picks_fails(monkeypatch, capsys):
+    monkeypatch.setattr(verifier, "supabase", object())
+    monkeypatch.setattr(
+        verifier,
+        "load_active_pending_picks",
+        lambda _client: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+
+    assert verifier.verificar_picks() == 1
+
+    assert "Error leyendo picks" in capsys.readouterr().out
+
+
 def configure_report_run(monkeypatch, outcomes):
     monkeypatch.setenv("RESULT_REPORT_MODE", "final_only")
     monkeypatch.setattr(verifier, "SUPABASE_URL", "https://project.supabase.co")

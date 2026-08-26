@@ -382,7 +382,7 @@ def load_active_pending_picks(client):
     return response.data
 
 
-def verificar_picks():
+def verificar_picks() -> int:
     """Verifica los picks pendientes contra resultados reales."""
     print("\n" + "="*60)
     print("🔍  VERIFICADOR DE RESULTADOS - Rey Taco Picks")
@@ -390,19 +390,19 @@ def verificar_picks():
     
     if not supabase:
         print("❌ No hay conexión a Supabase.")
-        return
+        return 1
     
     # Obtener picks pendientes
     try:
         picks_pendientes = load_active_pending_picks(supabase)
     except Exception as e:
         print(f"❌ Error leyendo picks: {e}")
-        return
+        return 1
     
     if not picks_pendientes:
         print("ℹ️ No hay picks pendientes por verificar.")
         publish_available_result_reports()
-        return
+        return 0
     
     print(f"📋 {len(picks_pendientes)} picks pendientes encontrados.\n")
     
@@ -450,6 +450,7 @@ def verificar_picks():
     publish_available_result_reports()
     
     print("="*60)
+    return 0
 
 def publish_available_result_reports():
     """Publish one evidence-backed partial or final report without duplicates."""
@@ -539,4 +540,4 @@ def _report_for_mode(rows, *, mode):
     return None
 
 if __name__ == "__main__":
-    verificar_picks()
+    raise SystemExit(verificar_picks())

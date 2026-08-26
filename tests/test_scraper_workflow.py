@@ -302,6 +302,17 @@ def test_collection_jobs_receive_no_delivery_or_meta_secrets():
         assert "--collect-only" in _step(job, "Collect and persist only")["run"]
 
 
+def test_collection_jobs_can_pause_odds_api_without_deleting_its_secret():
+    workflow = _workflow(COLLECTOR_WORKFLOW)
+    gated_secret = (
+        "${{ vars.ODDS_API_ENABLED == 'true' && "
+        "secrets.ODDS_API_KEY || '' }}"
+    )
+
+    for job_name in ("collect_primary", "collect_recovery"):
+        assert workflow["jobs"][job_name]["env"]["ODDS_API_KEY"] == gated_secret
+
+
 def test_residential_jobs_bypass_execution_policy_only_inside_the_job():
     workflow = _workflow(COLLECTOR_WORKFLOW)
 

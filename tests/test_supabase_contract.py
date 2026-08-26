@@ -56,6 +56,9 @@ VERTICAL_MEDIA_DELIVERY_SQL = (
 DAILY_TIME_BLOCK_PORTFOLIO_SQL = (
     SQL.parent / "20260825180000_daily_time_block_portfolio.sql"
 )
+DAILY_TIME_BLOCK_PORTFOLIO_HARDENING_SQL = (
+    SQL.parent / "20260825190000_daily_time_block_portfolio_hardening.sql"
+)
 DAILY_RELEASE_VISIBILITY_SYNC_SQL = (
     SQL.parent / "20260824190000_daily_release_visibility_sync.sql"
 )
@@ -1750,6 +1753,38 @@ class SupabaseContractTests(unittest.TestCase):
             "grant execute on function public.stage_daily_pick_portfolio(text, date, text, jsonb) to service_role",
             text,
         )
+
+    def test_daily_time_block_hardening_preserves_replay_and_alternatives(self):
+        self.assertTrue(DAILY_TIME_BLOCK_PORTFOLIO_HARDENING_SQL.exists())
+        text = " ".join(
+            DAILY_TIME_BLOCK_PORTFOLIO_HARDENING_SQL.read_text(
+                encoding="utf-8"
+            )
+            .lower()
+            .split()
+        )
+
+        self.assertTrue(text.startswith("begin;"))
+        self.assertTrue(text.endswith("commit;"))
+        body = function_body(
+            DAILY_TIME_BLOCK_PORTFOLIO_HARDENING_SQL,
+            "public.stage_daily_pick_portfolio( requested_run_key text, requested_portfolio_date date, requested_source_hash text, requested_picks jsonb ) returns jsonb",
+        )
+        self.assertIn("raw_candidates as", body)
+        self.assertIn("deduplicated_candidates as", body)
+        self.assertLess(
+            body.index("deduplicated_candidates as"),
+            body.index("ranked_candidates as"),
+        )
+        self.assertIn("released.physical_event_key", body)
+        self.assertIn("released.source_selection_key", body)
+        self.assertIn("released_public_blocks as", body)
+        self.assertIn("public_block_priority", body)
+        self.assertIn("insert into public.daily_pick_scans", body)
+        self.assertIn("requested_run_key", body)
+        self.assertIn("requested_source_hash", body)
+        self.assertIn("requested_picks", body)
+        self.assertNotIn("return jsonb_build_object( 'scan_id', latest_scan.id", body)
 
     def test_daily_release_appends_only_delta_and_resume_is_exact(self):
         release_signature = (

@@ -124,6 +124,35 @@ def test_released_block_uses_its_two_slots_before_new_alternatives():
     assert [row["pick"] for row in result] == ["Pick 1", "Pick 2", "Pick 4"]
 
 
+def test_sixth_pick_prefers_a_different_block_for_the_second_free_pick():
+    released = [
+        pick(1, visibility="public", block=0),
+        pick(2, visibility="premium", block=1),
+        pick(3, visibility="premium", block=1),
+        pick(4, visibility="premium", block=2),
+        pick(5, visibility="premium", block=2),
+    ]
+
+    result = thaw(
+        merge_daily_portfolio(
+            released,
+            [pick(6, block=0), pick(7, block=3)],
+        )
+    )
+
+    assert [row["pick"] for row in result] == [
+        "Pick 1",
+        "Pick 2",
+        "Pick 3",
+        "Pick 4",
+        "Pick 5",
+        "Pick 7",
+    ]
+    assert [
+        row["pick"] for row in result if row["visibility"] == "public"
+    ] == ["Pick 1", "Pick 7"]
+
+
 def test_one_to_five_picks_have_exactly_one_free_pick():
     for count in range(1, 6):
         result = thaw(

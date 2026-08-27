@@ -391,6 +391,53 @@ def result_verifier_dry_run() -> bool:
     return (os.getenv("RESULT_VERIFIER_DRY_RUN") or "").strip().casefold() == "true"
 
 
+def _load_result_report_batches():
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not supabase:
+        raise RuntimeError("result report repository unavailable")
+    try:
+        repository = SupabaseResultReportRepository(
+            url=SUPABASE_URL,
+            service_role_key=SUPABASE_SERVICE_ROLE_KEY,
+        )
+        batches = repository.batches()
+    except Exception:
+        raise RuntimeError("result report batches unavailable") from None
+    return repository, batches
+
+
+def _result_report_mode() -> str:
+    mode = os.getenv("RESULT_REPORT_MODE", "auto").strip().casefold()
+    if mode not in {"auto", "evening", "final_only"}:
+        raise RuntimeError("invalid result report mode")
+    return mode
+
+
+def _validate_live_publication_configuration(mode: str) -> None:
+    """Validate every adapter needed by this live mode without sending data."""
+    if mode not in {"auto", "evening", "final_only"}:
+        raise RuntimeError("invalid result report mode")
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    TelegramHttpTransport(token)
+    telegram_chats = {
+        "admin": (os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip(),
+        "vip": (os.getenv("TELEGRAM_VIP_CHANNEL_ID") or os.getenv("TELEGRAM_CHANNEL_ID") or "").strip(),
+        "free": (os.getenv("TELEGRAM_FREE_CHANNEL_ID") or "").strip(),
+    }
+    if any(not chat_id for chat_id in telegram_chats.values()):
+        raise RuntimeError("result report Telegram configuration unavailable")
+    if mode == "evening":
+        return
+    settings = MetaSettings.from_mapping(os.environ)
+    if not settings.token or not settings.facebook_page_id or not settings.instagram_user_id:
+        raise RuntimeError("result report Meta configuration unavailable")
+    MetaHttpTransport()
+    SupabaseResultArtifactStore(
+        client=supabase,
+        supabase_url=SUPABASE_URL,
+        bucket=(os.getenv("SUPABASE_STORAGE_BUCKET") or "social-media").strip(),
+    )
+
+
 def verificar_picks() -> int:
     """Verifica los picks pendientes contra resultados reales."""
     print("\n" + "="*60)
@@ -398,10 +445,22 @@ def verificar_picks() -> int:
     print("="*60)
     
     dry_run = result_verifier_dry_run()
-
     if not supabase:
         print("❌ No hay conexión a Supabase.")
         return 1
+
+    if not dry_run:
+        try:
+            mode = _result_report_mode()
+            _validate_live_publication_configuration(mode)
+        except (RuntimeError, ValueError):
+            print("❌ No se pudo validar la configuración de publicación.")
+            return 1
+        try:
+            _load_result_report_batches()
+        except RuntimeError:
+            print("❌ No se pudo autorizar el repositorio de reportes.")
+            return 1
     
     # Obtener picks pendientes
     try:
@@ -485,21 +544,17 @@ def publish_available_result_reports():
     if result_verifier_dry_run():
         print("   ℹ️ Dry-run: reportes omitidos.")
         return {}
-    mode = os.getenv("RESULT_REPORT_MODE", "auto").strip().casefold()
-    if mode not in {"auto", "evening", "final_only"}:
-        print("   ⚠️ RESULT_REPORT_MODE inválido; reportes omitidos.")
-        return {}
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not supabase:
-        print("   ℹ️ Reportes omitidos: Supabase no está configurado.")
-        return {}
-    try:
-        repository = SupabaseResultReportRepository(
-            url=SUPABASE_URL,
-            service_role_key=SUPABASE_SERVICE_ROLE_KEY,
-        )
-        batches = repository.batches()
-    except Exception:
-        print("   ⚠️ No se pudieron cargar los lotes para reportes.")
+    mode = _result_report_mode()
+    _validate_live_publication_configuration(mode)
+    repository, batches = _load_result_report_batches()
+
+    reports = tuple(
+        report
+        for rows in batches
+        if (report := _report_for_mode(rows, mode=mode)) is not None
+    )
+    if not reports:
+        print("   ℹ️ No hay lotes de reportes listos.")
         return {}
 
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
@@ -522,11 +577,7 @@ def publish_available_result_reports():
     )
 
     published: dict[str, dict[str, str]] = {}
-    vertical_published: list[dict[str, str]] = []
-    for rows in batches:
-        report = _report_for_mode(rows, mode=mode)
-        if report is None:
-            continue
+    for report in reports:
         outcomes = publish_result_report(
             report,
             repository=repository,
@@ -539,20 +590,19 @@ def publish_available_result_reports():
         published[f"{report.batch_id}:{report.kind}"] = outcomes
         summary = ", ".join(f"{name}={status}" for name, status in outcomes.items())
         print(f"   📣 Reporte {report.kind}: {summary}")
+        require_healthy_result_reports(
+            {f"{report.batch_id}:{report.kind}": outcomes}
+        )
         if report.kind == "final":
             try:
                 vertical = publish_final_stories_from_runtime(report)
             except Exception:
                 vertical = {"final_results_story": "delivery_failed"}
-            vertical_published.append(vertical)
+            require_healthy_vertical_outcomes(vertical, settings=meta_settings)
             vertical_summary = ", ".join(
                 f"{name}={status}" for name, status in vertical.items()
             )
-            print(f"   📱 Historias finales: {vertical_summary or 'sin evidencia'}")
-    require_healthy_result_reports(published)
-    if meta_settings is not None:
-        for outcomes in vertical_published:
-            require_healthy_vertical_outcomes(outcomes, settings=meta_settings)
+            print(f"   📱 Medios finales: {vertical_summary or 'sin evidencia'}")
     return published
 
 

@@ -198,6 +198,59 @@ def test_unhealthy_result_report_never_starts_vertical(monkeypatch):
         verifier.publish_available_result_reports()
 
 
+def test_unhealthy_report_does_not_prevent_later_exact_report_attempts(monkeypatch):
+    second_rows = rows_with_states(*(["perdido"] * 6))
+    second_batch_id = "87654321-4321-4321-8321-cba987654321"
+    for index, row in enumerate(second_rows, start=11):
+        row["id"] = index
+        row["batch_id"] = second_batch_id
+
+    class TwoBatchRepository(FakeBatchRepository):
+        def batches(self):
+            return (
+                tuple(rows_with_states(*(["ganado"] * 6))),
+                tuple(second_rows),
+            )
+
+    healthy = {
+        "admin": "success",
+        "vip": "success",
+        "free": "success",
+        "facebook": "success",
+        "instagram": "success",
+    }
+    unhealthy = dict(healthy, facebook="delivery_failed")
+    attempted: list[str] = []
+    vertical: list[str] = []
+    configure_report_run(monkeypatch, healthy)
+    monkeypatch.setattr(
+        verifier,
+        "SupabaseResultReportRepository",
+        TwoBatchRepository,
+    )
+    monkeypatch.setattr(
+        verifier,
+        "publish_result_report",
+        lambda report, **_kwargs: attempted.append(report.batch_id)
+        or (unhealthy if report.batch_id != second_batch_id else healthy),
+    )
+    monkeypatch.setattr(
+        verifier,
+        "publish_final_stories_from_runtime",
+        lambda report: vertical.append(report.batch_id)
+        or {"final_results_story": "complete"},
+    )
+
+    with pytest.raises(RuntimeError, match="facebook=delivery_failed"):
+        verifier.publish_available_result_reports()
+
+    assert attempted == [
+        "12345678-1234-4234-8234-123456789abc",
+        second_batch_id,
+    ]
+    assert vertical == [second_batch_id]
+
+
 def test_vertical_runtime_failure_is_sanitized_after_healthy_exact_report(
     monkeypatch,
 ):

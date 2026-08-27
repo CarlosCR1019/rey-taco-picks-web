@@ -577,6 +577,7 @@ def publish_available_result_reports():
     )
 
     published: dict[str, dict[str, str]] = {}
+    vertical_published: list[dict[str, str]] = []
     for report in reports:
         outcomes = publish_result_report(
             report,
@@ -590,19 +591,25 @@ def publish_available_result_reports():
         published[f"{report.batch_id}:{report.kind}"] = outcomes
         summary = ", ".join(f"{name}={status}" for name, status in outcomes.items())
         print(f"   📣 Reporte {report.kind}: {summary}")
-        require_healthy_result_reports(
-            {f"{report.batch_id}:{report.kind}": outcomes}
-        )
+        try:
+            require_healthy_result_reports(
+                {f"{report.batch_id}:{report.kind}": outcomes}
+            )
+        except RuntimeError:
+            continue
         if report.kind == "final":
             try:
                 vertical = publish_final_stories_from_runtime(report)
             except Exception:
                 vertical = {"final_results_story": "delivery_failed"}
-            require_healthy_vertical_outcomes(vertical, settings=meta_settings)
+            vertical_published.append(vertical)
             vertical_summary = ", ".join(
                 f"{name}={status}" for name, status in vertical.items()
             )
             print(f"   📱 Medios finales: {vertical_summary or 'sin evidencia'}")
+    require_healthy_result_reports(published)
+    for outcomes in vertical_published:
+        require_healthy_vertical_outcomes(outcomes, settings=meta_settings)
     return published
 
 

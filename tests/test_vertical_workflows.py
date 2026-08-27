@@ -107,20 +107,35 @@ def test_result_workflow_has_one_final_vertical_owner_inside_verifier() -> None:
     assert verifier["run"] == "python backend/verificar_resultados.py"
 
 
-def test_result_workflow_validates_all_live_configuration_before_verifying() -> None:
+def test_result_workflow_scopes_live_configuration_before_verifying() -> None:
     job = _load_workflow(RESULTS_WORKFLOW)["jobs"]["verificar"]
     names = [step["name"] for step in job["steps"]]
     assert names.index("Validate result verifier configuration") < names.index(
         "Verify Results"
     )
-    verifier_step = next(
+    basic_step = next(
         item
         for item in job["steps"]
         if item["name"] == "Validate result verifier configuration"
     )
-    assert verifier_step["env"] == {
+    assert basic_step["env"] == {
         "SUPABASE_URL": "${{ secrets.SUPABASE_URL }}",
         "SUPABASE_SERVICE_ROLE_KEY": "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}",
+    }
+    assert 'Missing required Actions secret' in basic_step["run"]
+
+    live_step = next(
+        item
+        for item in job["steps"]
+        if item["name"] == "Validate live result publication configuration"
+    )
+    assert names.index("Validate result verifier configuration") < names.index(
+        "Validate live result publication configuration"
+    ) < names.index("Verify Results")
+    assert live_step["if"] == (
+        "${{ github.event_name != 'workflow_dispatch' || inputs.publish == true }}"
+    )
+    assert live_step["env"] == {
         "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
         "TELEGRAM_CHAT_ID": "${{ secrets.TELEGRAM_CHAT_ID }}",
         "TELEGRAM_VIP_CHANNEL_ID": "${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}",
@@ -128,8 +143,13 @@ def test_result_workflow_validates_all_live_configuration_before_verifying() -> 
         "META_SYSTEM_USER_ACCESS_TOKEN": "${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}",
         "FB_PAGE_ID": "${{ secrets.FB_PAGE_ID }}",
         "IG_USER_ID": "${{ secrets.IG_USER_ID }}",
+        "RESULT_REPORT_MODE": (
+            "${{ github.event_name == 'workflow_dispatch' && 'auto' || "
+            "github.event.schedule == '0 1 * * *' && 'evening' || 'final_only' }}"
+        ),
     }
-    assert 'Missing required Actions secret' in verifier_step["run"]
+    assert '"$RESULT_REPORT_MODE" != "evening"' in live_step["run"]
+    assert 'Missing required Actions secret' in live_step["run"]
 
 
 def test_recovery_workflow_has_media_tools_and_ledger_only_vertical_recovery() -> None:

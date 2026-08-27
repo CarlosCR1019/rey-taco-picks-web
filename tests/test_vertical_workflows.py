@@ -98,44 +98,20 @@ def test_result_workflow_installs_local_media_tools_before_dependencies() -> Non
     )
 
 
-def test_result_workflow_runs_idempotent_final_vertical_after_verifier() -> None:
+def test_result_workflow_has_one_final_vertical_owner_inside_verifier() -> None:
     job = _load_workflow(RESULTS_WORKFLOW)["jobs"]["verificar"]
     names = [step["name"] for step in job["steps"]]
-    assert names.index("Validate final media configuration") == names.index(
-        "Verify Results"
-    ) + 1
-    assert names.index("Publish final vertical media") == names.index(
-        "Validate final media configuration"
-    ) + 1
-    step = next(
-        item for item in job["steps"] if item["name"] == "Publish final vertical media"
-    )
-    assert step["if"] == (
-        "${{ github.event_name != 'workflow_dispatch' || inputs.publish == true }}"
-    )
-    assert step["run"] == "python -m backend.vertical_publisher --mode final --live"
-    assert step["env"] == {
-        "SUPABASE_URL": "${{ secrets.SUPABASE_URL }}",
-        "SUPABASE_SERVICE_ROLE_KEY": "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}",
-        "META_SYSTEM_USER_ACCESS_TOKEN": (
-            "${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}"
-        ),
-        "FB_PAGE_ID": "${{ secrets.FB_PAGE_ID }}",
-        "IG_USER_ID": "${{ secrets.IG_USER_ID }}",
-        "META_GRAPH_VERSION": "v26.0",
-        "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
-        "TELEGRAM_ADMIN_ID": "${{ secrets.TELEGRAM_CHAT_ID }}",
-    }
+    assert "Validate final media configuration" not in names
+    assert "Publish final vertical media" not in names
+    verifier = next(item for item in job["steps"] if item["name"] == "Verify Results")
+    assert verifier["run"] == "python backend/verificar_resultados.py"
 
 
-def test_result_workflow_validates_live_vertical_configuration_before_publishing() -> None:
+def test_result_workflow_validates_all_live_configuration_before_verifying() -> None:
     job = _load_workflow(RESULTS_WORKFLOW)["jobs"]["verificar"]
     names = [step["name"] for step in job["steps"]]
     assert names.index("Validate result verifier configuration") < names.index(
         "Verify Results"
-    )
-    assert names.index("Validate final media configuration") < names.index(
-        "Publish final vertical media"
     )
     verifier_step = next(
         item
@@ -145,28 +121,15 @@ def test_result_workflow_validates_live_vertical_configuration_before_publishing
     assert verifier_step["env"] == {
         "SUPABASE_URL": "${{ secrets.SUPABASE_URL }}",
         "SUPABASE_SERVICE_ROLE_KEY": "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}",
-    }
-    assert 'Missing required Actions secret' in verifier_step["run"]
-    step = next(
-        item
-        for item in job["steps"]
-        if item["name"] == "Validate final media configuration"
-    )
-    assert step["if"] == (
-        "${{ github.event_name != 'workflow_dispatch' || inputs.publish == true }}"
-    )
-    assert step["env"] == {
-        "SUPABASE_URL": "${{ secrets.SUPABASE_URL }}",
-        "SUPABASE_SERVICE_ROLE_KEY": "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}",
-        "META_SYSTEM_USER_ACCESS_TOKEN": (
-            "${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}"
-        ),
-        "FB_PAGE_ID": "${{ secrets.FB_PAGE_ID }}",
-        "IG_USER_ID": "${{ secrets.IG_USER_ID }}",
         "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
         "TELEGRAM_CHAT_ID": "${{ secrets.TELEGRAM_CHAT_ID }}",
+        "TELEGRAM_VIP_CHANNEL_ID": "${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}",
+        "TELEGRAM_FREE_CHANNEL_ID": "${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}",
+        "META_SYSTEM_USER_ACCESS_TOKEN": "${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}",
+        "FB_PAGE_ID": "${{ secrets.FB_PAGE_ID }}",
+        "IG_USER_ID": "${{ secrets.IG_USER_ID }}",
     }
-    assert 'Missing required Actions secret' in step["run"]
+    assert 'Missing required Actions secret' in verifier_step["run"]
 
 
 def test_recovery_workflow_has_media_tools_and_ledger_only_vertical_recovery() -> None:

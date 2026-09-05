@@ -47,6 +47,18 @@ type MiniAppInput = Readonly<{
 const WINDOW_LABELS = ['12am–6am', '6am–12pm', '12pm–6pm', '6pm–12am'] as const;
 const PUBLIC_PICK_FIELDS = ['partido', 'pick', 'cuota', 'categoria', 'estado', 'source_starts_at'] as const;
 
+export function isTelegramMiniAppLocation(
+  location: Pick<Location, 'pathname' | 'search' | 'hash'> | URL,
+  configuredRoute = '/telegram',
+): boolean {
+  const query = new URLSearchParams(location.search);
+  if (query.get('view') === 'telegram' || location.hash === '#telegram') return true;
+  const configured = new URL(configuredRoute || '/telegram', 'https://reytacopicks.com');
+  const currentPath = location.pathname.replace(/\/$/, '') || '/';
+  const configuredPath = configured.pathname.replace(/\/$/, '') || '/';
+  return currentPath === configuredPath && (!configured.search || location.search === configured.search);
+}
+
 function isSlot(value: unknown): value is MiniAppSlot {
   return value === 0 || value === 1 || value === 2 || value === 3;
 }

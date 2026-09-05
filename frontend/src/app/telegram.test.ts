@@ -1,0 +1,34 @@
+import { describe, expect, it } from 'vitest';
+import { miniAppWindowState, publicMiniAppDto, renderTelegramMiniApp } from './telegram';
+
+describe('Telegram Mini App', () => {
+  it('keeps four visible windows including empty ones', () => {
+    const dto = publicMiniAppDto({ date: '2026-09-05', windows: [] });
+    expect(dto.windows).toHaveLength(4);
+    expect(dto.windows.every((window) => window.status === 'Sin selección')).toBe(true);
+  });
+
+  it('uses the same CDMX boundaries as the existing time board', () => {
+    expect(miniAppWindowState('2026-09-05T17:00:00.000Z', '2026-09-05', 1)).toBe('En curso');
+    expect(miniAppWindowState('2026-09-05T23:59:00.000Z', '2026-09-05', 0)).toBe('Cerrado');
+  });
+
+  it('removes premium rows from a public DTO and escapes rendered values', () => {
+    const dto = publicMiniAppDto({
+      date: '2026-09-05',
+      windows: [{
+        slot: 0,
+        vip_count: 1,
+        picks: [
+          { visibility: 'premium', partido: 'Privado', pick: 'No mostrar', cuota: '9.9' },
+          { partido: '<A vs B>', pick: '<A>', cuota: '1.8', categoria: 'Fútbol' },
+        ],
+      }],
+    });
+    expect(dto.windows[0].picks).toHaveLength(1);
+    const markup = renderTelegramMiniApp(dto, '@Rey Taco Bot');
+    expect(markup).toContain('&lt;A vs B&gt;');
+    expect(markup).not.toContain('Privado');
+    expect(markup).toContain('https://t.me/Rey%20Taco%20Bot?startapp=telegram');
+  });
+});

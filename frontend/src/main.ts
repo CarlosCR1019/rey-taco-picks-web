@@ -16,7 +16,7 @@ import { initPlausible, trackConversion, trackWhenVisible } from './services/ana
 import { escapeHtml, loadDailyPublicPicks, loadHistory, loadLocalPublicPicks, loadSubscriberPicks, type PickRow } from './services/data';
 import { isSubscriberRpcActive } from './services/membership';
 import { loadTicketManifest } from './services/tickets';
-import { initTelegramMiniApp } from './app/telegram';
+import { initTelegramMiniApp, isTelegramMiniAppLocation } from './app/telegram';
 
 type AppState = {
   picks: PickRow[];
@@ -44,8 +44,8 @@ function currentAnalyticsProperties() {
 renderShell();
 initPlausible();
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
-const telegramPath = import.meta.env.VITE_TELEGRAM_MINI_APP_PATH || '/telegram';
-const isTelegramMiniApp = window.location.pathname.replace(/\/$/, '') === telegramPath.replace(/\/$/, '');
+const telegramPath = import.meta.env.VITE_TELEGRAM_MINI_APP_PATH || '/?view=telegram';
+const isTelegramMiniApp = isTelegramMiniAppLocation(window.location, telegramPath);
 
 if (isTelegramMiniApp) {
   trackConversion('miniapp_opened', { surface: 'telegram_miniapp' });

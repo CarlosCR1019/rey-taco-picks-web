@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { initTelegramMiniApp, miniAppWindowState, publicMiniAppDto, renderTelegramMiniApp } from './telegram';
+import { initTelegramMiniApp, isTelegramMiniAppLocation, miniAppWindowState, publicMiniAppDto, renderTelegramMiniApp } from './telegram';
 
 afterEach(() => {
   delete window.Telegram;
 });
 
 describe('Telegram Mini App', () => {
+  it('supports both the clean route and the static-host query fallback', () => {
+    expect(isTelegramMiniAppLocation(new URL('https://reytacopicks.com/telegram'), '/telegram')).toBe(true);
+    expect(isTelegramMiniAppLocation(new URL('https://reytacopicks.com/?view=telegram'), '/telegram')).toBe(true);
+    expect(isTelegramMiniAppLocation(new URL('https://reytacopicks.com/'), '/telegram')).toBe(false);
+  });
+
   it('keeps four visible windows including empty ones', () => {
     const dto = publicMiniAppDto({ date: '2026-09-05', windows: [] });
     expect(dto.windows).toHaveLength(4);

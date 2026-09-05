@@ -9,7 +9,7 @@ la selección de picks ni los cuatro horarios de publicación.
 MEDIA_STORAGE_BACKEND=supabase
 REMOTION_ENABLED=false
 VITE_PLAUSIBLE_DOMAIN=
-VITE_TELEGRAM_MINI_APP_PATH=/telegram
+VITE_TELEGRAM_MINI_APP_PATH=/?view=telegram
 ```
 
 R2 permanece apagado hasta verificar manualmente el bucket privado, región,

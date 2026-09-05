@@ -47,6 +47,9 @@ La configuración, migración y salida controlada a producción están documenta
 en [el runbook de seguridad, pagos y scraper](docs/operations/security-and-payments.md).
 No ejecute el scraper en modo de publicación hasta completar ese procedimiento.
 
+El despliegue gradual de R2, Remotion, la Mini App de Telegram y la medición
+opcional está documentado en [el runbook de multimedia](docs/operations/media-rollout.md).
+
 ## Historias y reels
 
 El contenido vertical se genera localmente con las plantillas auditadas de Rey

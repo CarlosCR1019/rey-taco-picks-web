@@ -1,6 +1,7 @@
 export function applicationTemplate(): string {
   return `
     <a class="skip-link" href="#contenido">Saltar al contenido</a>
+    <div id="telegram-mini-app" class="telegram-app-host hidden"></div>
     <div class="site-shell">
       <header class="site-header">
         <a class="brand" href="#inicio" aria-label="Rey Taco Picks, inicio">
@@ -12,6 +13,7 @@ export function applicationTemplate(): string {
           <a href="#resultados">Resultados</a>
           <a href="#salmo">Salmo del día</a>
           <a href="#metodo">Cómo funciona</a>
+          <a href="/telegram">Mini App</a>
         </nav>
         <div class="header-actions">
           <button class="text-button" id="login-button" type="button">Iniciar sesión</button>

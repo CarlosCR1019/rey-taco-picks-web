@@ -12,10 +12,11 @@ import { statusLabel, type PickStatus } from './domain/picks';
 import { supabase } from './lib/supabase';
 import { getAdConfig, mountAd } from './services/ads';
 import { telegramLinkUrl } from './services/account';
-import { trackConversion, trackWhenVisible } from './services/analytics';
+import { initPlausible, trackConversion, trackWhenVisible } from './services/analytics';
 import { escapeHtml, loadDailyPublicPicks, loadHistory, loadLocalPublicPicks, loadSubscriberPicks, type PickRow } from './services/data';
 import { isSubscriberRpcActive } from './services/membership';
 import { loadTicketManifest } from './services/tickets';
+import { initTelegramMiniApp } from './app/telegram';
 
 type AppState = {
   picks: PickRow[];
@@ -34,11 +35,31 @@ const state: AppState = {
   pickFilter: 'all', historyFilter: 'all', user: null, isVip: false,
 };
 let membershipGeneration = 0;
+const WINDOW_SLOT_NAMES = ['12am', '6am', '12pm', '6pm'] as const;
+
+function currentAnalyticsProperties() {
+  return { surface: 'web' as const, window_slot: WINDOW_SLOT_NAMES[currentMexicoBlockIndex(new Date())] };
+}
 
 renderShell();
-initDailyVerseBanner();
-
+initPlausible();
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
+const telegramPath = import.meta.env.VITE_TELEGRAM_MINI_APP_PATH || '/telegram';
+const isTelegramMiniApp = window.location.pathname.replace(/\/$/, '') === telegramPath.replace(/\/$/, '');
+
+if (isTelegramMiniApp) {
+  trackConversion('miniapp_opened', { surface: 'telegram_miniapp' });
+  document.querySelector('.site-shell')?.classList.add('hidden');
+  const root = byId('telegram-mini-app');
+  root?.classList.remove('hidden');
+  if (root) {
+    void initTelegramMiniApp(root, {
+      botUsername: import.meta.env.VITE_TELEGRAM_BOT_USERNAME ?? '',
+      endpoint: import.meta.env.VITE_TELEGRAM_MINI_APP_ENDPOINT,
+    });
+  }
+} else {
+initDailyVerseBanner();
 
 function categoryKey(value: string): string {
   const text = value.toLowerCase();
@@ -121,8 +142,8 @@ async function refreshData(): Promise<void> {
   state.history = history;
   renderPicks();
   renderHistory();
-  if (board.some(row => row.estado === 'pendiente')) trackConversion('free_pick_viewed');
-  if (history.length) trackConversion('history_viewed');
+  if (board.some(row => row.estado === 'pendiente')) trackConversion('free_pick_viewed', currentAnalyticsProperties());
+  if (history.length) trackConversion('history_viewed', currentAnalyticsProperties());
 }
 
 async function checkMembership(user: User | null): Promise<void> {
@@ -146,7 +167,7 @@ async function checkMembership(user: User | null): Promise<void> {
   byId('auth-dialog')?.querySelector('.auth-tabs')?.classList.toggle('hidden', Boolean(user));
   byId('account-tools')?.classList.toggle('hidden', !user);
   if (state.isVip && supabase) {
-    trackConversion('subscription_confirmed');
+    trackConversion('subscription_confirmed', currentAnalyticsProperties());
     const premium = await loadSubscriberPicks(supabase);
     if (generation !== membershipGeneration) return;
     state.picks = [
@@ -242,7 +263,7 @@ async function startVipCheckout(): Promise<void> {
     return;
   }
   if (!supabase) return;
-  trackConversion('checkout_started');
+  trackConversion('checkout_started', currentAnalyticsProperties());
   const response = await supabase.functions.invoke('create-checkout', { body: { return_url: window.location.origin } });
   const url = typeof response.data?.url === 'string' ? response.data.url : '';
   if (url) window.location.assign(url);
@@ -316,8 +337,8 @@ function updateStake(): void {
 }
 byId('bankroll')?.addEventListener('input', updateStake);
 byId('risk-percent')?.addEventListener('change', updateStake);
-byId('telegram-cta')?.addEventListener('click', () => trackConversion('telegram_clicked'));
-trackWhenVisible(document.querySelector('.vip-section'), 'vip_offer_viewed');
+byId('telegram-cta')?.addEventListener('click', () => trackConversion('telegram_clicked', currentAnalyticsProperties()));
+trackWhenVisible(document.querySelector('.vip-section'), 'vip_offer_viewed', currentAnalyticsProperties());
 
 const cookie = byId('cookie-notice');
 const adConfig = getAdConfig(import.meta.env.VITE_ADSENSE_SLOT, import.meta.env.VITE_ADSENSE_CLIENT);
@@ -341,3 +362,4 @@ void (async () => {
     await checkMembership(data.session?.user ?? null);
   }
 })();
+}

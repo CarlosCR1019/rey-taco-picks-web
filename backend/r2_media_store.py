@@ -218,7 +218,14 @@ class R2MediaStore:
             )
         except Exception:
             raise RuntimeError("R2 client could not be created") from None
-        return cls(**values, client=client, public_base_url=public_base_url)
+        return cls(
+            account_id=values["R2_ACCOUNT_ID"],
+            access_key_id=values["R2_ACCESS_KEY_ID"],
+            secret_access_key=values["R2_SECRET_ACCESS_KEY"],
+            bucket=values["R2_BUCKET"],
+            client=client,
+            public_base_url=public_base_url,
+        )
 
     def put(
         self,

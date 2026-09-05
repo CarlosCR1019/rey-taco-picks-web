@@ -10,6 +10,17 @@ type CliOptions = Readonly<{
   pro: boolean;
 }>;
 
+export const REMOTION_PROCESS_TIMEOUT_MS = 180_000;
+
+const SAFE_CHILD_ENVIRONMENT_KEYS = new Set([
+  'PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'COMSPEC', 'PATHEXT',
+  'NODE_ENV', 'LANG', 'LC_ALL',
+]);
+
+export function safeChildEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(source).filter(([key, value]) => SAFE_CHILD_ENVIRONMENT_KEYS.has(key) && value));
+}
+
 function usage(): never {
   throw new Error('usage: render --input <json> --output <mp4> [--workdir <dir>] [--pro]');
 }
@@ -57,7 +68,12 @@ function render(options: CliOptions): void {
     '--codec=h264', '--pixel-format=yuv420p', `--frames=${frames}`, '--every=1',
   ];
   if (options.pro) args.push('--pro');
-  const result = spawnSync(binary, args, { cwd: resolve('.'), stdio: 'inherit' });
+  const result = spawnSync(binary, args, {
+    cwd: resolve('.'),
+    stdio: 'inherit',
+    timeout: REMOTION_PROCESS_TIMEOUT_MS,
+    env: safeChildEnvironment(),
+  });
   if (result.error || result.status !== 0) {
     rmSync(temporaryOutput, { force: true });
     throw new Error('Remotion render failed');

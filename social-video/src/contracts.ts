@@ -34,9 +34,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function boundedText(value: unknown, maximum: number): value is string {
+function boundedText(value: unknown, maximum: number, allowEmpty = false): value is string {
   return typeof value === 'string'
-    && value.length > 0
+    && (allowEmpty || value.length > 0)
     && value.length <= maximum
     && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
 }
@@ -55,7 +55,7 @@ export function parseReelInput(value: unknown): ReelInput {
   if (Number.isNaN(parsedDate.valueOf()) || parsedDate.toISOString().slice(0, 10) !== value.portfolio_date) invalid();
   if (value.kind !== 'results' && value.kind !== 'teaser') invalid();
   if (!Array.isArray(value.picks) || value.picks.length < 1 || value.picks.length > 6) invalid();
-  if (!boundedText(value.editorial_text, 1000)) invalid();
+  if (!boundedText(value.editorial_text, 1000, true)) invalid();
   if (typeof value.template_digest !== 'string' || !DIGEST_PATTERN.test(value.template_digest)) invalid();
   if (!Array.isArray(value.approved_image_refs) || value.approved_image_refs.some((ref) => (
     !boundedText(ref, 512) || ref.includes('://')

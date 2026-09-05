@@ -58,6 +58,31 @@ def test_r2_requires_complete_configuration(monkeypatch):
         R2MediaStore.from_environment(client_factory=lambda **_: object())
 
 
+def test_r2_factory_maps_environment_names_to_constructor_arguments(monkeypatch, fake_r2):
+    monkeypatch.setenv("R2_ACCOUNT_ID", "account")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("R2_BUCKET", "bucket")
+    captured = {}
+
+    def factory(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return fake_r2
+
+    store = R2MediaStore.from_environment(client_factory=factory)
+    digest = hashlib.sha256(b"bytes").hexdigest()
+    result = store.put(
+        "derived/2026-09-05/daily_results_reel/" + digest + ".mp4",
+        b"bytes",
+        "video/mp4",
+        {},
+    )
+    assert result.digest == digest
+    assert captured["args"] == ("s3",)
+    assert captured["kwargs"]["aws_access_key_id"] == "key"
+
+
 def test_delete_temporary_rejects_approved_derived_objects(fake_r2):
     store = R2MediaStore("account", "key", "secret", "bucket", client=fake_r2)
     with pytest.raises(ValueError, match="temporary object key is invalid"):

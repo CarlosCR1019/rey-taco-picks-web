@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+import os
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
@@ -10,6 +11,21 @@ from typing import Protocol
 
 from backend.reel_renderer import ReelRenderer
 from backend.remotion_input import ReelInput
+
+
+_SAFE_REMOTION_ENV_KEYS = frozenset({
+    "PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "COMSPEC", "PATHEXT",
+    "NODE_ENV", "LANG", "LC_ALL",
+})
+
+
+def remotion_child_environment(source: Mapping[str, str] | None = None) -> dict[str, str]:
+    values = os.environ if source is None else source
+    return {
+        key: str(value)
+        for key, value in values.items()
+        if key in _SAFE_REMOTION_ENV_KEYS and value
+    }
 
 
 class _FallbackRenderer(Protocol):
@@ -50,6 +66,7 @@ def _run_remotion_and_validate(package: ReelInput, command: list[str]) -> bytes:
                 stderr=subprocess.DEVNULL,
                 timeout=180,
                 check=True,
+                env=remotion_child_environment(),
             )
         except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
             raise RuntimeError("Remotion rendering failed") from None

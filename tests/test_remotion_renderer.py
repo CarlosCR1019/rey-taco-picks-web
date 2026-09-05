@@ -1,4 +1,4 @@
-from backend.remotion_renderer import render_with_fallback
+from backend.remotion_renderer import remotion_child_environment, render_with_fallback
 
 
 class FallbackRenderer:
@@ -32,3 +32,17 @@ def test_remotion_failure_uses_existing_renderer():
         enabled=True,
     ) == b"fallback"
     assert renderer.calls == 1
+
+
+def test_remotion_child_environment_excludes_application_secrets():
+    environment = remotion_child_environment({
+        "PATH": "path",
+        "SystemRoot": "root",
+        "NODE_ENV": "test",
+        "SUPABASE_SERVICE_ROLE_KEY": "secret",
+        "TELEGRAM_BOT_TOKEN": "secret",
+    })
+    assert environment["PATH"] == "path"
+    assert environment["NODE_ENV"] == "test"
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in environment
+    assert "TELEGRAM_BOT_TOKEN" not in environment

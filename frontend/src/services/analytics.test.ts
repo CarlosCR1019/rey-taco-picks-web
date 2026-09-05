@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resetAnalyticsForTests, trackConversion } from './analytics';
+import { initPlausible, resetAnalyticsForTests, trackConversion } from './analytics';
 
 describe('conversion analytics', () => {
   afterEach(() => {
     resetAnalyticsForTests();
     delete (window as typeof window & { dataLayer?: unknown[] }).dataLayer;
+    delete (window as typeof window & { plausible?: unknown }).plausible;
+    document.getElementById('plausible-script')?.remove();
     vi.unstubAllEnvs();
   });
 
@@ -26,18 +28,23 @@ describe('conversion analytics', () => {
     fetchSpy.mockRestore();
   });
 
-  it('drops identifiers and free-form values from transport properties', async () => {
+  it('queues early events and drops identifiers and free-form values', () => {
     vi.stubEnv('VITE_PLAUSIBLE_DOMAIN', 'reytacopicks.com');
     const fetchSpy = vi.spyOn(window, 'fetch').mockResolvedValue(new Response());
+    initPlausible();
     trackConversion('free_pick_viewed', {
       surface: 'web', window_slot: '6pm', pick_id: 'secret', partido: 'A vs B', cuota: '1.8',
     });
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const request = fetchSpy.mock.calls[0][1];
-    const payload = JSON.parse(String(request?.body));
-    expect(payload.props).toEqual({ surface: 'web', window_slot: '6pm' });
-    expect(JSON.stringify(payload)).not.toContain('A vs B');
-    expect(JSON.stringify(payload)).not.toContain('secret');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const plausible = (window as typeof window & {
+      plausible?: { q?: unknown[][] };
+    }).plausible;
+    expect(plausible?.q).toEqual([[
+      'free_pick_viewed',
+      { props: { surface: 'web', window_slot: '6pm' } },
+    ]]);
+    expect(JSON.stringify(plausible?.q)).not.toContain('A vs B');
+    expect(JSON.stringify(plausible?.q)).not.toContain('secret');
     fetchSpy.mockRestore();
   });
 });

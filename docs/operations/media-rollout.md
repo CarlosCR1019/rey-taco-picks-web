@@ -29,6 +29,9 @@ capturas o mensajes.
    si falta el dominio, no debe haber solicitudes externas.
 5. Publicar la Edge Function de Mini App solo después de revisar HMAC, CORS,
    expiración, perfil vinculado y separación VIP. La función es de solo lectura.
+   `supabase/config.toml` desactiva el JWT del gateway únicamente para esta
+   función porque Telegram autentica cada solicitud con `initData` firmado;
+   no retirar esa validación HMAC ni ampliar la excepción a otras funciones.
 6. Conservar la publicación textual existente como indicador operativo. Un
    fallo multimedia o de Mini App no debe impedir picks ni Telegram textual.
 

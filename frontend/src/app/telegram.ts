@@ -163,7 +163,30 @@ type MiniAppInitOptions = Readonly<{
   botUsername?: string;
   initData?: string;
   fetchImpl?: typeof fetch;
+  sdkLoader?: () => Promise<void>;
 }>;
+
+const TELEGRAM_SDK_ID = 'telegram-web-app-sdk';
+const TELEGRAM_SDK_URL = 'https://telegram.org/js/telegram-web-app.js?63';
+let telegramSdkPromise: Promise<void> | null = null;
+
+export function loadTelegramWebAppSdk(): Promise<void> {
+  if (window.Telegram?.WebApp) return Promise.resolve();
+  if (telegramSdkPromise) return telegramSdkPromise;
+  telegramSdkPromise = new Promise((resolve) => {
+    const existing = document.getElementById(TELEGRAM_SDK_ID) as HTMLScriptElement | null;
+    const script = existing ?? document.createElement('script');
+    const finish = () => resolve();
+    script.addEventListener('load', finish, { once: true });
+    script.addEventListener('error', finish, { once: true });
+    if (!existing) {
+      script.id = TELEGRAM_SDK_ID;
+      script.src = TELEGRAM_SDK_URL;
+      document.head.appendChild(script);
+    }
+  });
+  return telegramSdkPromise;
+}
 
 function unavailableMarkup(botUsername: string): string {
   const dto = publicMiniAppDto({ date: mexicoDateKey(new Date()), windows: [] });
@@ -171,6 +194,7 @@ function unavailableMarkup(botUsername: string): string {
 }
 
 export async function initTelegramMiniApp(root: HTMLElement, options: MiniAppInitOptions = {}): Promise<MiniAppDto | null> {
+  if (!options.initData) await (options.sdkLoader ?? loadTelegramWebAppSdk)();
   const webApp = window.Telegram?.WebApp;
   webApp?.ready?.();
   const initData = options.initData ?? webApp?.initData ?? '';

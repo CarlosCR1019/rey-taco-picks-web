@@ -1,7 +1,7 @@
 # Rey Taco Picks: archivo R2, Mini App de Telegram y video social
 
-**Fecha:** 5 de septiembre de 2026  
-**Estado:** aprobado para especificación; pendiente de revisión escrita  
+**Fecha:** 5 de septiembre de 2026
+**Estado:** aprobado para especificación; pendiente de revisión escrita
 **Alcance:** primera entrega de infraestructura multimedia, Mini App de consulta, video animado y medición de conversión
 
 ## Objetivo

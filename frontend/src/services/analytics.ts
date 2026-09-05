@@ -12,9 +12,14 @@ export type AnalyticsProperties = Partial<Readonly<{
   window_slot: '12am' | '6am' | '12pm' | '6pm';
 }>> & Readonly<Record<string, unknown>>;
 
+type PlausibleCall = [event: string, options?: { props?: Record<string, string> }];
+type PlausibleFunction = ((event: string, options?: { props?: Record<string, string> }) => void) & {
+  q?: PlausibleCall[];
+};
+
 type AnalyticsWindow = Window & {
   dataLayer?: Array<{ event: ConversionEvent }>;
-  plausible?: (event: string, options?: { props?: Record<string, string> }) => void;
+  plausible?: PlausibleFunction;
 };
 
 const emitted = new Set<string>();
@@ -36,20 +41,21 @@ function allowedProperties(properties?: AnalyticsProperties): Record<string, str
 function sendToPlausible(event: ConversionEvent, properties: Record<string, string>): void {
   if (!plausibleDomain()) return;
   const target = window as AnalyticsWindow;
-  if (typeof target.plausible === 'function') {
-    target.plausible(event, { props: properties });
-    return;
-  }
-  void target.fetch('/api/event', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: event, domain: plausibleDomain(), props: properties }),
-  }).catch(() => undefined);
+  target.plausible?.(event, { props: properties });
+}
+
+function ensurePlausibleQueue(target: AnalyticsWindow): void {
+  if (typeof target.plausible === 'function') return;
+  const queued = ((event: string, options?: { props?: Record<string, string> }) => {
+    (queued.q ??= []).push([event, options]);
+  }) as PlausibleFunction;
+  target.plausible = queued;
 }
 
 export function initPlausible(): void {
   const domain = plausibleDomain();
   if (!domain || typeof document === 'undefined' || document.getElementById('plausible-script')) return;
+  ensurePlausibleQueue(window as AnalyticsWindow);
   const script = document.createElement('script');
   script.id = 'plausible-script';
   script.defer = true;

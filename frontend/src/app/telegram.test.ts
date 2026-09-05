@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { miniAppWindowState, publicMiniAppDto, renderTelegramMiniApp } from './telegram';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { initTelegramMiniApp, miniAppWindowState, publicMiniAppDto, renderTelegramMiniApp } from './telegram';
+
+afterEach(() => {
+  delete window.Telegram;
+});
 
 describe('Telegram Mini App', () => {
   it('keeps four visible windows including empty ones', () => {
@@ -30,5 +34,31 @@ describe('Telegram Mini App', () => {
     expect(markup).toContain('&lt;A vs B&gt;');
     expect(markup).not.toContain('Privado');
     expect(markup).toContain('https://t.me/Rey%20Taco%20Bot?startapp=telegram');
+  });
+
+  it('loads the Telegram Web App SDK before reading signed initData', async () => {
+    const root = document.createElement('div');
+    const ready = vi.fn();
+    const sdkLoader = vi.fn(async () => {
+      window.Telegram = { WebApp: { initData: 'signed-init-data', ready } };
+    });
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.body).toBe(JSON.stringify({ initData: 'signed-init-data' }));
+      return new Response(JSON.stringify({ date: '2026-09-05', windows: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+
+    const result = await initTelegramMiniApp(root, {
+      endpoint: 'https://example.supabase.co/functions/v1/telegram-mini-app',
+      fetchImpl: fetchImpl as typeof fetch,
+      sdkLoader,
+    });
+
+    expect(sdkLoader).toHaveBeenCalledOnce();
+    expect(ready).toHaveBeenCalledOnce();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(result?.windows).toHaveLength(4);
   });
 });

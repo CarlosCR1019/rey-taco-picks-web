@@ -1,0 +1,88 @@
+name: Rey Taco Telegram Mini App
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the tested read-only Telegram Mini App function
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rey-taco-telegram-mini-app
+  cancel-in-progress: false
+
+jobs:
+  verify-and-deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SITE_URL: https://reytacopicks.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: main
+
+      - name: Verify Telegram Mini App contracts
+        run: >-
+          npx --yes deno@2.4.4 test --node-modules-dir=auto --allow-env
+          supabase/functions/telegram-mini-app/index.test.ts
+
+      - name: Validate deployment configuration
+        if: ${{ inputs.deploy == true }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_ACCESS_TOKEN"
+          test -n "$SUPABASE_PROJECT_REF"
+          test -n "$TELEGRAM_BOT_TOKEN"
+
+      - name: Configure protected function secrets
+        if: ${{ inputs.deploy == true }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx --yes supabase@2.115.0 secrets set \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+            SITE_URL="$SITE_URL"
+
+      - name: Deploy only Telegram Mini App
+        if: ${{ inputs.deploy == true }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          npx --yes supabase@2.115.0 functions deploy telegram-mini-app \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --no-verify-jwt
+
+      - name: Verify deployed function boundary
+        if: ${{ inputs.deploy == true }}
+        env:
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          endpoint="https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/telegram-mini-app"
+          status="$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' \
+            --request OPTIONS \
+            --header "Origin: $SITE_URL" \
+            --header 'Access-Control-Request-Method: POST' \
+            "$endpoint")"
+          test "$status" = '204'

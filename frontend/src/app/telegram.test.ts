@@ -6,6 +6,10 @@ afterEach(() => {
 });
 
 describe('Telegram Mini App', () => {
+  it('recognizes clean aliases when configured for static hosting', () => {
+    expect(isTelegramMiniAppLocation(new URL('https://reytacopicks.com/telegram'), '/?view=telegram')).toBe(true);
+    expect(isTelegramMiniAppLocation(new URL('https://reytacopicks.com/telegram/'), '/?view=telegram')).toBe(true);
+  });
   it('supports both the clean route and the static-host query fallback', () => {
     expect(isTelegramMiniAppLocation(new URL('https://reytacopicks.com/telegram'), '/telegram')).toBe(true);
     expect(isTelegramMiniAppLocation(new URL('https://reytacopicks.com/?view=telegram'), '/telegram')).toBe(true);

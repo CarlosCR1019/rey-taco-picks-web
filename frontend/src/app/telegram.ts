@@ -56,6 +56,7 @@ export function isTelegramMiniAppLocation(
   const configured = new URL(configuredRoute || '/telegram', 'https://reytacopicks.com');
   const currentPath = location.pathname.replace(/\/$/, '') || '/';
   const configuredPath = configured.pathname.replace(/\/$/, '') || '/';
+  if (currentPath === '/telegram') return true;
   return currentPath === configuredPath && (!configured.search || location.search === configured.search);
 }
 

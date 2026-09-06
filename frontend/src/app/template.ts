@@ -13,7 +13,7 @@ export function applicationTemplate(): string {
           <a href="#resultados">Resultados</a>
           <a href="#salmo">Salmo del día</a>
           <a href="#metodo">Cómo funciona</a>
-          <a href="/telegram">Mini App</a>
+          <a href="/?view=telegram">Mini App</a>
         </nav>
         <div class="header-actions">
           <button class="text-button" id="login-button" type="button">Iniciar sesión</button>

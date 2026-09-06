@@ -12,7 +12,7 @@ import { statusLabel, type PickStatus } from './domain/picks';
 import { supabase } from './lib/supabase';
 import { getAdConfig, mountAd } from './services/ads';
 import { telegramLinkUrl } from './services/account';
-import { initPlausible, trackConversion, trackWhenVisible } from './services/analytics';
+import { initUmami, trackConversion, trackWhenVisible } from './services/analytics';
 import { escapeHtml, loadDailyPublicPicks, loadHistory, loadLocalPublicPicks, loadSubscriberPicks, type PickRow } from './services/data';
 import { isSubscriberRpcActive } from './services/membership';
 import { loadTicketManifest } from './services/tickets';
@@ -42,7 +42,7 @@ function currentAnalyticsProperties() {
 }
 
 renderShell();
-initPlausible();
+initUmami();
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const telegramPath = import.meta.env.VITE_TELEGRAM_MINI_APP_PATH || '/?view=telegram';
 const isTelegramMiniApp = isTelegramMiniAppLocation(window.location, telegramPath);

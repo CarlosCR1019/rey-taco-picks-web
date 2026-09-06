@@ -12,21 +12,19 @@ export type AnalyticsProperties = Partial<Readonly<{
   window_slot: '12am' | '6am' | '12pm' | '6pm';
 }>> & Readonly<Record<string, unknown>>;
 
-type PlausibleCall = [event: string, options?: { props?: Record<string, string> }];
-type PlausibleFunction = ((event: string, options?: { props?: Record<string, string> }) => void) & {
-  q?: PlausibleCall[];
-};
+type UmamiCall = [event: string, options?: { data?: Record<string, string> }];
+type UmamiTracker = { track?: (event: string, data?: Record<string, string>) => void; q?: UmamiCall[] };
 
 type AnalyticsWindow = Window & {
   dataLayer?: Array<{ event: ConversionEvent }>;
-  plausible?: PlausibleFunction;
+  umami?: UmamiTracker;
 };
 
 const emitted = new Set<string>();
 
-function plausibleDomain(): string {
-  const value = String(import.meta.env.VITE_PLAUSIBLE_DOMAIN ?? '').trim();
-  return /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?$/i.test(value) ? value : '';
+function umamiWebsiteId(): string {
+  const value = String(import.meta.env.VITE_UMAMI_WEBSITE_ID ?? 'a100caee-dd0f-4380-b361-103eecbaed0e').trim();
+  return /^[a-z0-9-]{8,80}$/i.test(value) ? value : '';
 }
 
 function allowedProperties(properties?: AnalyticsProperties): Record<string, string> {
@@ -38,29 +36,34 @@ function allowedProperties(properties?: AnalyticsProperties): Record<string, str
   return result;
 }
 
-function sendToPlausible(event: ConversionEvent, properties: Record<string, string>): void {
-  if (!plausibleDomain()) return;
+function sendToUmami(event: ConversionEvent, properties: Record<string, string>): void {
+  if (!umamiWebsiteId()) return;
   const target = window as AnalyticsWindow;
-  target.plausible?.(event, { props: properties });
+  target.umami?.track?.(event, properties);
 }
 
-function ensurePlausibleQueue(target: AnalyticsWindow): void {
-  if (typeof target.plausible === 'function') return;
-  const queued = ((event: string, options?: { props?: Record<string, string> }) => {
-    (queued.q ??= []).push([event, options]);
-  }) as PlausibleFunction;
-  target.plausible = queued;
+function ensureUmamiQueue(target: AnalyticsWindow): void {
+  target.umami ??= {};
+  target.umami.q ??= [];
 }
 
-export function initPlausible(): void {
-  const domain = plausibleDomain();
-  if (!domain || typeof document === 'undefined' || document.getElementById('plausible-script')) return;
-  ensurePlausibleQueue(window as AnalyticsWindow);
+export function initUmami(): void {
+  const websiteId = umamiWebsiteId();
+  if (!websiteId || typeof document === 'undefined' || document.getElementById('umami-script')) return;
+  ensureUmamiQueue(window as AnalyticsWindow);
   const script = document.createElement('script');
-  script.id = 'plausible-script';
+  script.id = 'umami-script';
   script.defer = true;
-  script.dataset.domain = domain;
-  script.src = 'https://plausible.io/js/script.js';
+  script.dataset.websiteId = websiteId;
+  script.src = 'https://cloud.umami.is/script.js';
+  script.onload = () => {
+    const target = window as AnalyticsWindow;
+    const queued = target.umami?.q ?? [];
+    const track = target.umami?.track;
+    if (!track) return;
+    target.umami!.q = [];
+    queued.forEach(([event, options]) => track(event, options?.data));
+  };
   script.onerror = () => undefined;
   document.head.appendChild(script);
 }
@@ -72,7 +75,11 @@ export function trackConversion(event: ConversionEvent, properties?: AnalyticsPr
   emitted.add(key);
   const target = window as AnalyticsWindow;
   (target.dataLayer ??= []).push({ event });
-  sendToPlausible(event, safeProperties);
+  if (target.umami?.track) sendToUmami(event, safeProperties);
+  else if (umamiWebsiteId()) {
+    ensureUmamiQueue(target);
+    target.umami!.q!.push([event, { data: safeProperties }]);
+  }
 }
 
 export function resetAnalyticsForTests(): void {

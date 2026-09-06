@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { initPlausible, resetAnalyticsForTests, trackConversion } from './analytics';
+import { initUmami, resetAnalyticsForTests, trackConversion } from './analytics';
 
 describe('conversion analytics', () => {
   afterEach(() => {
     resetAnalyticsForTests();
     delete (window as typeof window & { dataLayer?: unknown[] }).dataLayer;
-    delete (window as typeof window & { plausible?: unknown }).plausible;
-    document.getElementById('plausible-script')?.remove();
+    delete (window as typeof window & { umami?: unknown }).umami;
+    document.getElementById('umami-script')?.remove();
     vi.unstubAllEnvs();
   });
 
@@ -17,8 +17,8 @@ describe('conversion analytics', () => {
     ]);
   });
 
-  it('keeps dataLayer and sends no network request without a domain', () => {
-    vi.stubEnv('VITE_PLAUSIBLE_DOMAIN', '');
+  it('keeps dataLayer and sends no network request without a website id', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', '');
     const fetchSpy = vi.spyOn(window, 'fetch').mockResolvedValue(new Response());
     trackConversion('miniapp_opened', { surface: 'telegram_miniapp', window_slot: '12pm' });
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -29,22 +29,22 @@ describe('conversion analytics', () => {
   });
 
   it('queues early events and drops identifiers and free-form values', () => {
-    vi.stubEnv('VITE_PLAUSIBLE_DOMAIN', 'reytacopicks.com');
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', 'test-website-id');
     const fetchSpy = vi.spyOn(window, 'fetch').mockResolvedValue(new Response());
-    initPlausible();
+    initUmami();
     trackConversion('free_pick_viewed', {
       surface: 'web', window_slot: '6pm', pick_id: 'secret', partido: 'A vs B', cuota: '1.8',
     });
     expect(fetchSpy).not.toHaveBeenCalled();
-    const plausible = (window as typeof window & {
-      plausible?: { q?: unknown[][] };
-    }).plausible;
-    expect(plausible?.q).toEqual([[
+    const umami = (window as typeof window & {
+      umami?: { q?: unknown[][] };
+    }).umami;
+    expect(umami?.q).toEqual([[
       'free_pick_viewed',
-      { props: { surface: 'web', window_slot: '6pm' } },
+      { data: { surface: 'web', window_slot: '6pm' } },
     ]]);
-    expect(JSON.stringify(plausible?.q)).not.toContain('A vs B');
-    expect(JSON.stringify(plausible?.q)).not.toContain('secret');
+    expect(JSON.stringify(umami?.q)).not.toContain('A vs B');
+    expect(JSON.stringify(umami?.q)).not.toContain('secret');
     fetchSpy.mockRestore();
   });
 });

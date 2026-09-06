@@ -1,0 +1,35 @@
+name: Rey Taco VIP Mini App Entry
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Send and pin the approved VIP entry (inspect channel before retrying a failed send)
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rey-taco-vip-miniapp-entry
+  cancel-in-progress: false
+
+jobs:
+  entry:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify entry safety
+        run: python -m unittest tests.test_vip_miniapp_entry
+      - name: Inspect or publish VIP entry
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_VIP_CHANNEL_ID: ${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}
+          PUBLISH_ENTRY: ${{ inputs.publish }}
+        run: python scripts/vip_miniapp_entry.py

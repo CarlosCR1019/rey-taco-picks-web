@@ -18,6 +18,11 @@ describe('approved application shell', () => {
     expect(document.querySelectorAll('.mobile-nav a')).toHaveLength(4);
   });
 
+  it('links the Mini App through the static-host fallback route', () => {
+    renderShell();
+    expect(document.querySelector('a[href="/?view=telegram"]')).not.toBeNull();
+  });
+
   it('includes responsible-play and no-guarantee copy', () => {
     renderShell();
     expect(document.body.textContent).toContain('+18');

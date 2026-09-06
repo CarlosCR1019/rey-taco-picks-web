@@ -17,6 +17,10 @@ def test_telegram_mini_app_deploy_is_manual_scoped_and_safe_by_default():
     assert "secrets set" in text
     assert 'TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN"' in text
     assert 'SITE_URL="$SITE_URL"' in text
+    assert "Validate signed Mini App request" in text
+    assert "setChatMenuButton" in text
+    assert "getChatMenuButton" in text
+    assert "sendMessage" not in text
     assert "backend/scraper.py" not in text
     assert "pick-release" not in text
     assert "database password" not in text.lower()

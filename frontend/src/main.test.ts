@@ -3,9 +3,9 @@ import type { PickRow } from './services/data';
 
 const mocks = vi.hoisted(() => ({
   loadActiveOfferCounts: vi.fn(),
+  loadDailyPublicPicks: vi.fn(),
   loadHistory: vi.fn(),
   loadLocalPublicPicks: vi.fn(),
-  loadPublicPicks: vi.fn(),
   loadSubscriberPicks: vi.fn(),
   loadTicketManifest: vi.fn(),
   trackConversion: vi.fn(),
@@ -30,9 +30,9 @@ vi.mock('./lib/supabase', () => ({
 vi.mock('./services/data', async importOriginal => ({
   ...await importOriginal<typeof import('./services/data')>(),
   loadActiveOfferCounts: mocks.loadActiveOfferCounts,
+  loadDailyPublicPicks: mocks.loadDailyPublicPicks,
   loadHistory: mocks.loadHistory,
   loadLocalPublicPicks: mocks.loadLocalPublicPicks,
-  loadPublicPicks: mocks.loadPublicPicks,
   loadSubscriberPicks: mocks.loadSubscriberPicks,
 }));
 vi.mock('./services/analytics', () => ({
@@ -52,7 +52,7 @@ const publicPick: PickRow = {
   confianza: '65%',
   razonamiento: '',
   fecha_generacion: '2026-09-10',
-  fecha_evento: '2026-09-11',
+  fecha_evento: '2026-09-10',
   horario: '12:00',
   estado: 'pendiente',
   es_parlay: false,
@@ -73,7 +73,7 @@ describe('active offer integration', () => {
     vi.clearAllMocks();
     localStorage.clear();
     window.history.replaceState({}, '', '/');
-    mocks.loadPublicPicks.mockResolvedValue([publicPick]);
+    mocks.loadDailyPublicPicks.mockResolvedValue([publicPick]);
     mocks.loadHistory.mockResolvedValue([]);
     mocks.loadSubscriberPicks.mockResolvedValue([]);
     mocks.loadTicketManifest.mockResolvedValue([]);

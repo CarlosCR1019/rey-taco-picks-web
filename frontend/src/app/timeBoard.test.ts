@@ -119,22 +119,4 @@ describe('time board rendering', () => {
     expect(html).not.toContain('Razonamiento premium confidencial');
   });
 
-  it('keeps future picks from the next calendar day visible', () => {
-    const html = renderTimeBoard([
-      rows[1],
-      {
-        ...rows[1],
-        id: 4,
-        partido: 'Partido de mañana',
-        fecha_evento: '2026-08-26',
-        horario: '08:00',
-      },
-    ], {
-      dateKey: '2026-08-25', activeBlock: 2, isVip: false,
-    });
-
-    expect(html).toContain('Partido de mañana');
-    expect(html).toContain('2026-08-26');
-    expect(html.match(/id="time-block-/g)).toHaveLength(8);
-  });
 });

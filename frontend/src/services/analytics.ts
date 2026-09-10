@@ -3,13 +3,18 @@ export type ConversionEvent =
   | 'history_viewed'
   | 'telegram_clicked'
   | 'vip_offer_viewed'
+  | 'vip_primary_clicked'
+  | 'vip_auth_required'
   | 'checkout_started'
+  | 'checkout_cancelled'
   | 'subscription_confirmed'
   | 'miniapp_opened';
 
 export type AnalyticsProperties = Partial<Readonly<{
   surface: 'web' | 'telegram_miniapp';
   window_slot: '12am' | '6am' | '12pm' | '6pm';
+  public_pick_count: number;
+  premium_pick_count: number;
 }>> & Readonly<Record<string, unknown>>;
 
 type PlausibleCall = [event: string, options?: { props?: Record<string, string> }];
@@ -34,6 +39,10 @@ function allowedProperties(properties?: AnalyticsProperties): Record<string, str
   if (properties?.surface === 'web' || properties?.surface === 'telegram_miniapp') result.surface = properties.surface;
   if (properties?.window_slot === '12am' || properties?.window_slot === '6am' || properties?.window_slot === '12pm' || properties?.window_slot === '6pm') {
     result.window_slot = properties.window_slot;
+  }
+  for (const key of ['public_pick_count', 'premium_pick_count'] as const) {
+    const value = properties?.[key];
+    if (Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 6) result[key] = String(value);
   }
   return result;
 }

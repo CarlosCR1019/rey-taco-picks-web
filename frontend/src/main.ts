@@ -38,11 +38,21 @@ let membershipGeneration = 0;
 const WINDOW_SLOT_NAMES = ['12am', '6am', '12pm', '6pm'] as const;
 
 function currentAnalyticsProperties() {
-  return { surface: 'web' as const, window_slot: WINDOW_SLOT_NAMES[currentMexicoBlockIndex(new Date())] };
+  const publicCount = state.publicBoard.filter(row => row.visibility === 'public').length;
+  const premiumCount = state.isVip ? Math.max(0, state.picks.length - publicCount) : undefined;
+  return {
+    surface: 'web' as const,
+    window_slot: WINDOW_SLOT_NAMES[currentMexicoBlockIndex(new Date())],
+    public_pick_count: publicCount,
+    ...(premiumCount === undefined ? {} : { premium_pick_count: premiumCount }),
+  };
 }
 
 renderShell();
 initPlausible();
+if (new URLSearchParams(window.location.search).get('checkout') === 'cancelled') {
+  trackConversion('checkout_cancelled', currentAnalyticsProperties());
+}
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const telegramPath = import.meta.env.VITE_TELEGRAM_MINI_APP_PATH || '/?view=telegram';
 const isTelegramMiniApp = isTelegramMiniAppLocation(window.location, telegramPath);
@@ -257,6 +267,7 @@ async function startVipCheckout(): Promise<void> {
     return;
   }
   if (!state.user) {
+    trackConversion('vip_auth_required', currentAnalyticsProperties());
     openAuth();
     const message = byId('auth-message');
     if (message) message.textContent = 'Crea una cuenta o inicia sesión antes de pagar.';
@@ -275,7 +286,10 @@ async function startVipCheckout(): Promise<void> {
 }
 
 byId('vip-button')?.addEventListener('click', startVipCheckout);
-byId('vip-primary-button')?.addEventListener('click', startVipCheckout);
+byId('vip-primary-button')?.addEventListener('click', () => {
+  trackConversion('vip_primary_clicked', currentAnalyticsProperties());
+  void startVipCheckout();
+});
 byId('vip-checkout-button')?.addEventListener('click', startVipCheckout);
 
 byId('filter-row')?.addEventListener('click', event => {

@@ -47,4 +47,20 @@ describe('conversion analytics', () => {
     expect(JSON.stringify(plausible?.q)).not.toContain('secret');
     fetchSpy.mockRestore();
   });
+
+  it('allows only bounded aggregate funnel properties', () => {
+    vi.stubEnv('VITE_PLAUSIBLE_DOMAIN', 'reytacopicks.com');
+    initPlausible();
+    trackConversion('vip_primary_clicked', {
+      surface: 'web', window_slot: '12am', public_pick_count: 2,
+      premium_pick_count: 4, email: 'private@example.com', pick: 'secret pick',
+    });
+    const plausible = (window as typeof window & { plausible?: { q?: unknown[][] } }).plausible;
+    expect(plausible?.q).toEqual([[
+      'vip_primary_clicked',
+      { props: { surface: 'web', window_slot: '12am', public_pick_count: '2', premium_pick_count: '4' } },
+    ]]);
+    expect(JSON.stringify(plausible?.q)).not.toContain('private@example.com');
+    expect(JSON.stringify(plausible?.q)).not.toContain('secret pick');
+  });
 });

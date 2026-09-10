@@ -28,6 +28,33 @@ function boundedPickCount(value: unknown): number | null {
     : null;
 }
 
+function isValidIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!match) return false;
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , , offsetHourText, offsetMinuteText] = match;
+  const [year, month, day, hour, minute, second] = [
+    yearText, monthText, dayText, hourText, minuteText, secondText,
+  ].map(Number);
+  const offsetHour = offsetHourText === undefined ? 0 : Number(offsetHourText);
+  const offsetMinute = offsetMinuteText === undefined ? 0 : Number(offsetMinuteText);
+  if (year === 0 || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) {
+    return false;
+  }
+
+  const calendarDate = new Date(0);
+  calendarDate.setUTCFullYear(year, month - 1, day);
+  calendarDate.setUTCHours(hour, minute, second, 0);
+  if (
+    calendarDate.getUTCFullYear() !== year
+    || calendarDate.getUTCMonth() !== month - 1
+    || calendarDate.getUTCDate() !== day
+  ) return false;
+
+  return !Number.isNaN(new Date(value).getTime());
+}
+
 export async function loadActiveOfferCounts(
   client: SupabaseClient,
 ): Promise<ActiveOfferCounts | null> {
@@ -39,11 +66,10 @@ export async function loadActiveOfferCounts(
   const row = rawRow as Record<string, unknown>;
   const publicCount = boundedPickCount(row.public_count);
   const premiumCount = boundedPickCount(row.premium_count);
-  const windowStart = String(row.window_start ?? '');
   if (publicCount === null || premiumCount === null || publicCount + premiumCount > 6) return null;
-  if (!windowStart || Number.isNaN(new Date(windowStart).getTime())) return null;
+  if (!isValidIsoTimestamp(row.window_start)) return null;
 
-  return { windowStart, publicCount, premiumCount };
+  return { windowStart: row.window_start, publicCount, premiumCount };
 }
 
 export function escapeHtml(value: unknown): string {

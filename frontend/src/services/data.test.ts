@@ -153,6 +153,19 @@ describe('active offer counts', () => {
     expect(rpc).toHaveBeenCalledWith('get_active_offer_counts');
   });
 
+  it('accepts an ISO timestamp with an explicit UTC offset', async () => {
+    const client = { rpc: vi.fn().mockResolvedValue({
+      data: [{ window_start: '2026-09-10T00:00:00.000-06:00', public_count: 2, premium_count: 4 }],
+      error: null,
+    }) } as unknown as SupabaseClient;
+
+    expect(await loadActiveOfferCounts(client)).toEqual({
+      windowStart: '2026-09-10T00:00:00.000-06:00',
+      publicCount: 2,
+      premiumCount: 4,
+    });
+  });
+
   it.each([
     ['RPC errors', { data: null, error: { message: 'denied' } }],
     ['zero rows', { data: [], error: null }],
@@ -165,6 +178,9 @@ describe('active offer counts', () => {
     ['a missing public count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', premium_count: 4 }], error: null }],
     ['a missing premium count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 2 }], error: null }],
     ['an invalid date', { data: [{ window_start: 'not-a-date', public_count: 2, premium_count: 4 }], error: null }],
+    ['a numeric timestamp', { data: [{ window_start: 0, public_count: 2, premium_count: 4 }], error: null }],
+    ['an object timestamp', { data: [{ window_start: { toString: () => '2026-09-10T00:00:00.000Z' }, public_count: 2, premium_count: 4 }], error: null }],
+    ['an impossible calendar date', { data: [{ window_start: '2026-02-30T00:00:00.000Z', public_count: 2, premium_count: 4 }], error: null }],
     ['a negative public count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: -1, premium_count: 4 }], error: null }],
     ['a negative premium count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 2, premium_count: -1 }], error: null }],
     ['a fractional public count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 1.5, premium_count: 4 }], error: null }],

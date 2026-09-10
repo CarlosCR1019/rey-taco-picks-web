@@ -36,7 +36,25 @@ const state: AppState = {
   pickFilter: 'all', historyFilter: 'all', user: null, isVip: false,
 };
 let membershipGeneration = 0;
+let offerCountsGeneration = 0;
 const WINDOW_SLOT_NAMES = ['12am', '6am', '12pm', '6pm'] as const;
+
+function mexicoWindowSignature(now: Date): string {
+  return `${mexicoDateKey(now)}:${currentMexicoBlockIndex(now)}`;
+}
+
+function startWindowRefreshMonitor(refresh: () => Promise<void>): void {
+  let observedWindow = mexicoWindowSignature(new Date());
+  let refreshing = false;
+  window.setInterval(() => {
+    const nextWindow = mexicoWindowSignature(new Date());
+    if (nextWindow === observedWindow || refreshing) return;
+    observedWindow = nextWindow;
+    refreshing = true;
+    void refresh()
+      .finally(() => { refreshing = false; });
+  }, 60_000);
+}
 
 function offerCountsForDisplayedBlock(
   offerCounts: ActiveOfferCounts | null,
@@ -151,10 +169,11 @@ async function refreshTickets(): Promise<void> {
 }
 
 function refreshOfferCounts(): void {
+  const generation = ++offerCountsGeneration;
   state.offerCounts = null;
   void loadActiveOfferCounts(supabase!)
     .then(offerCounts => {
-      if (!offerCounts) return;
+      if (generation !== offerCountsGeneration || !offerCounts) return;
       state.offerCounts = offerCounts;
       renderPicks();
     })
@@ -401,6 +420,10 @@ if (supabase) {
 void refreshTickets();
 void (async () => {
   await refreshData();
+  startWindowRefreshMonitor(async () => {
+    await refreshData();
+    await checkMembership(state.user);
+  });
   trackWhenVisible(document.querySelector('.vip-section'), 'vip_offer_viewed', currentAnalyticsProperties);
   if (supabase) {
     const { data } = await supabase.auth.getSession();

@@ -68,6 +68,7 @@ async function mountMain(): Promise<void> {
 describe('active offer integration', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.clearAllTimers();
     vi.setSystemTime(new Date('2026-09-10T17:59:59.999Z'));
     vi.resetModules();
     vi.clearAllMocks();
@@ -130,6 +131,48 @@ describe('active offer integration', () => {
       window_slot: '12pm',
       premium_pick_count: 3,
     }));
+  });
+
+  it('reloads the daily board and offer counts after crossing a Mexico window boundary', async () => {
+    mocks.loadActiveOfferCounts.mockResolvedValue({
+      windowStart: '2026-09-10T12:00:00.000Z', publicCount: 1, premiumCount: 3,
+    });
+
+    await mountMain();
+
+    const nextPick = { ...publicPick, id: 2, partido: 'Partido de la ventana nueva', horario: '18:00' };
+    mocks.loadDailyPublicPicks.mockResolvedValue([nextPick]);
+    mocks.loadActiveOfferCounts.mockResolvedValue({
+      windowStart: '2026-09-10T18:00:00.000Z', publicCount: 1, premiumCount: 2,
+    });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    await vi.waitFor(() => {
+      expect(mocks.loadDailyPublicPicks).toHaveBeenCalledTimes(2);
+      expect(mocks.loadActiveOfferCounts).toHaveBeenCalledTimes(2);
+      expect(document.body.textContent).toContain('Partido de la ventana nueva');
+    });
+  });
+
+  it('ignores an older offer-count response that arrives after the new window response', async () => {
+    let resolveOld!: (value: unknown) => void;
+    let resolveNew!: (value: unknown) => void;
+    mocks.loadActiveOfferCounts
+      .mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { resolveNew = resolve; }));
+
+    await mountMain();
+    await vi.advanceTimersByTimeAsync(60_000);
+    resolveNew({ windowStart: '2026-09-10T18:00:00.000Z', publicCount: 1, premiumCount: 2 });
+    await vi.waitFor(() => {
+      expect(document.querySelector('.vip-discovery strong')?.textContent).toContain('1 gratis y 2 en VIP');
+    });
+
+    resolveOld({ windowStart: '2026-09-10T12:00:00.000Z', publicCount: 1, premiumCount: 5 });
+    await Promise.resolve();
+
+    expect(document.querySelector('.vip-discovery strong')?.textContent).toContain('1 gratis y 2 en VIP');
   });
 
   it('registers vip_offer_viewed once with counts loaded by the initial refresh', async () => {

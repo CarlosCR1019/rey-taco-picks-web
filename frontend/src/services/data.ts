@@ -64,6 +64,8 @@ export async function loadActiveOfferCounts(
   const rawRow: unknown = response.data[0];
   if (rawRow === null || typeof rawRow !== 'object' || Array.isArray(rawRow)) return null;
   const row = rawRow as Record<string, unknown>;
+  const expectedKeys = ['premium_count', 'public_count', 'window_start'];
+  if (Object.keys(row).sort().join(',') !== expectedKeys.join(',')) return null;
   const publicCount = boundedPickCount(row.public_count);
   const premiumCount = boundedPickCount(row.premium_count);
   if (publicCount === null || premiumCount === null || publicCount + premiumCount > 6) return null;

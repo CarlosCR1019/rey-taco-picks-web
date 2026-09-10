@@ -150,6 +150,17 @@ async function refreshTickets(): Promise<void> {
   renderTickets();
 }
 
+function refreshOfferCounts(): void {
+  state.offerCounts = null;
+  void loadActiveOfferCounts(supabase!)
+    .then(offerCounts => {
+      if (!offerCounts) return;
+      state.offerCounts = offerCounts;
+      renderPicks();
+    })
+    .catch(() => undefined);
+}
+
 async function refreshData(): Promise<void> {
   if (!supabase) {
     state.offerCounts = null;
@@ -161,15 +172,14 @@ async function refreshData(): Promise<void> {
     return;
   }
   const now = new Date();
-  const [board, history, offerCounts] = await Promise.all([
+  refreshOfferCounts();
+  const [board, history] = await Promise.all([
     loadDailyPublicPicks(supabase, mexicoDateKey(now)),
     loadHistory(supabase),
-    loadActiveOfferCounts(supabase),
   ]);
   state.publicBoard = board;
   state.picks = board;
   state.history = history;
-  state.offerCounts = offerCounts;
   renderPicks();
   renderHistory();
   if (board.some(row => row.estado === 'pendiente')) trackConversion('free_pick_viewed', currentAnalyticsProperties());

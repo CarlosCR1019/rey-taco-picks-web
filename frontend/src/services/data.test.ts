@@ -132,13 +132,12 @@ describe('public pick data', () => {
 });
 
 describe('active offer counts', () => {
-  it('loads one bounded aggregate row without copying unknown fields', async () => {
+  it('loads one bounded aggregate row with the exact public response shape', async () => {
     const rpc = vi.fn().mockResolvedValue({
       data: [{
         window_start: '2026-09-10T00:00:00.000Z',
         public_count: 2,
         premium_count: 4,
-        unknown_private_field: 'must not escape',
       }],
       error: null,
     });
@@ -151,6 +150,20 @@ describe('active offer counts', () => {
     });
     expect(rpc).toHaveBeenCalledOnce();
     expect(rpc).toHaveBeenCalledWith('get_active_offer_counts');
+  });
+
+  it('rejects an aggregate row with an unknown field', async () => {
+    const client = { rpc: vi.fn().mockResolvedValue({
+      data: [{
+        window_start: '2026-09-10T00:00:00.000Z',
+        public_count: 2,
+        premium_count: 4,
+        unknown_private_field: 'must not escape',
+      }],
+      error: null,
+    }) } as unknown as SupabaseClient;
+
+    expect(await loadActiveOfferCounts(client)).toBeNull();
   });
 
   it('accepts an ISO timestamp with an explicit UTC offset', async () => {

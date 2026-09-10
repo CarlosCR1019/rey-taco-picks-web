@@ -182,6 +182,34 @@ describe('active offer integration', () => {
     });
   });
 
+  it('renders board and continues session flow while active counts remain pending', async () => {
+    mocks.loadActiveOfferCounts.mockReturnValue(new Promise(() => undefined));
+    mocks.loadHistory.mockResolvedValue([{ ...publicPick, id: 2, partido: 'Partido histórico', estado: 'ganado' }]);
+
+    await mountMain();
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('Partido público');
+      expect(document.body.textContent).toContain('Partido histórico');
+      expect(document.querySelector('.vip-discovery strong')?.textContent)
+        .toContain('Más selecciones disponibles en VIP');
+      expect(mocks.getSession).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('renders board and continues session flow when active counts reject', async () => {
+    mocks.loadActiveOfferCounts.mockRejectedValue(new Error('counts unavailable'));
+
+    await mountMain();
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent).toContain('Partido público');
+      expect(document.querySelector('.vip-discovery strong')?.textContent)
+        .toContain('Más selecciones disponibles en VIP');
+      expect(mocks.getSession).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('never infers a premium analytics count from VIP-visible picks', async () => {
     mocks.loadActiveOfferCounts.mockResolvedValue(null);
     mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'vip-user' } } } });

@@ -16,6 +16,36 @@ export type PickRow = {
   visibility: 'public' | 'premium';
 };
 
+export type ActiveOfferCounts = Readonly<{
+  windowStart: string;
+  publicCount: number;
+  premiumCount: number;
+}>;
+
+function boundedPickCount(value: unknown): number | null {
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 6
+    ? Number(value)
+    : null;
+}
+
+export async function loadActiveOfferCounts(
+  client: SupabaseClient,
+): Promise<ActiveOfferCounts | null> {
+  const response = await client.rpc('get_active_offer_counts');
+  if (response.error || !Array.isArray(response.data) || response.data.length !== 1) return null;
+
+  const rawRow: unknown = response.data[0];
+  if (rawRow === null || typeof rawRow !== 'object' || Array.isArray(rawRow)) return null;
+  const row = rawRow as Record<string, unknown>;
+  const publicCount = boundedPickCount(row.public_count);
+  const premiumCount = boundedPickCount(row.premium_count);
+  const windowStart = String(row.window_start ?? '');
+  if (publicCount === null || premiumCount === null || publicCount + premiumCount > 6) return null;
+  if (!windowStart || Number.isNaN(new Date(windowStart).getTime())) return null;
+
+  return { windowStart, publicCount, premiumCount };
+}
+
 export function escapeHtml(value: unknown): string {
   const node = document.createElement('div');
   node.textContent = String(value ?? '');

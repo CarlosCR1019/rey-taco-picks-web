@@ -1,13 +1,25 @@
 import { formatEvidenceSupport } from '../domain/evidence';
 import { groupDailyPicks } from '../domain/timeBlocks';
 import { statusLabel, type PickStatus } from '../domain/picks';
-import { escapeHtml, type PickRow } from '../services/data';
+import { escapeHtml, type ActiveOfferCounts, type PickRow } from '../services/data';
 
 type BoardOptions = Readonly<{
   dateKey: string;
   activeBlock: number;
   isVip: boolean;
+  offerCounts?: Pick<ActiveOfferCounts, 'publicCount' | 'premiumCount'> | null;
 }>;
+
+export function activeOfferLabel(
+  counts: Pick<ActiveOfferCounts, 'publicCount' | 'premiumCount'>,
+): string | null {
+  if (counts.publicCount > 0 && counts.premiumCount > 0) {
+    return `${counts.publicCount} gratis y ${counts.premiumCount} en VIP`;
+  }
+  if (counts.publicCount > 0) return `${counts.publicCount} gratis`;
+  if (counts.premiumCount > 0) return `${counts.premiumCount} en VIP`;
+  return null;
+}
 
 function card(row: PickRow): string {
   return `<article class="pick-card public-pick-card">
@@ -36,6 +48,8 @@ export function renderTimeBoard(rows: PickRow[], options: BoardOptions): string 
       <div class="time-block-grid">${content}</div>
     </section>`;
   }).join('');
-  const cta = options.isVip ? '' : `<aside class="vip-discovery"><div><strong>👑 Más selecciones disponibles en VIP</strong><span>Consulta la cartera completa antes del inicio.</span></div><button id="inline-vip-button" type="button">Quiero acceso VIP</button></aside>`;
+  const offerLabel = options.offerCounts ? activeOfferLabel(options.offerCounts) : null;
+  const headline = offerLabel ?? 'Más selecciones disponibles en VIP';
+  const cta = options.isVip ? '' : `<aside class="vip-discovery"><div><strong>👑 ${headline}</strong><span>Consulta la cartera completa antes del inicio.</span></div><button id="inline-vip-button" type="button">Quiero acceso VIP</button></aside>`;
   return `<div class="time-board">${sections}${cta}</div>`;
 }

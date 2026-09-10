@@ -13,7 +13,7 @@ import { supabase } from './lib/supabase';
 import { getAdConfig, mountAd } from './services/ads';
 import { telegramLinkUrl } from './services/account';
 import { initPlausible, trackConversion, trackWhenVisible } from './services/analytics';
-import { escapeHtml, loadDailyPublicPicks, loadHistory, loadLocalPublicPicks, loadSubscriberPicks, type PickRow } from './services/data';
+import { escapeHtml, loadActiveOfferCounts, loadDailyPublicPicks, loadHistory, loadLocalPublicPicks, loadSubscriberPicks, type ActiveOfferCounts, type PickRow } from './services/data';
 import { isSubscriberRpcActive } from './services/membership';
 import { loadTicketManifest } from './services/tickets';
 import { initTelegramMiniApp, isTelegramMiniAppLocation } from './app/telegram';
@@ -22,6 +22,7 @@ type AppState = {
   picks: PickRow[];
   publicBoard: PickRow[];
   history: PickRow[];
+  offerCounts: ActiveOfferCounts | null;
   tickets: string[];
   visibleTickets: number;
   pickFilter: string;
@@ -31,20 +32,20 @@ type AppState = {
 };
 
 const state: AppState = {
-  picks: [], publicBoard: [], history: [], tickets: [], visibleTickets: 6,
+  picks: [], publicBoard: [], history: [], offerCounts: null, tickets: [], visibleTickets: 6,
   pickFilter: 'all', historyFilter: 'all', user: null, isVip: false,
 };
 let membershipGeneration = 0;
 const WINDOW_SLOT_NAMES = ['12am', '6am', '12pm', '6pm'] as const;
 
 function currentAnalyticsProperties() {
-  const publicCount = state.publicBoard.filter(row => row.visibility === 'public').length;
-  const premiumCount = state.isVip ? Math.max(0, state.picks.length - publicCount) : undefined;
+  const publicCount = state.offerCounts?.publicCount
+    ?? state.publicBoard.filter(row => row.visibility === 'public').length;
   return {
     surface: 'web' as const,
     window_slot: WINDOW_SLOT_NAMES[currentMexicoBlockIndex(new Date())],
     public_pick_count: publicCount,
-    ...(premiumCount === undefined ? {} : { premium_pick_count: premiumCount }),
+    ...(state.offerCounts ? { premium_pick_count: state.offerCounts.premiumCount } : {}),
   };
 }
 
@@ -95,6 +96,7 @@ function renderPicks(): void {
     dateKey: mexicoDateKey(now),
     activeBlock: currentMexicoBlockIndex(now),
     isVip: state.isVip,
+    offerCounts: state.offerCounts,
   });
   const updated = byId('picks-updated');
   if (updated) {
@@ -135,6 +137,7 @@ async function refreshTickets(): Promise<void> {
 
 async function refreshData(): Promise<void> {
   if (!supabase) {
+    state.offerCounts = null;
     state.picks = await loadLocalPublicPicks();
     state.publicBoard = state.picks;
     state.history = [];
@@ -143,13 +146,15 @@ async function refreshData(): Promise<void> {
     return;
   }
   const now = new Date();
-  const [board, history] = await Promise.all([
+  const [board, history, offerCounts] = await Promise.all([
     loadDailyPublicPicks(supabase, mexicoDateKey(now)),
     loadHistory(supabase),
+    loadActiveOfferCounts(supabase),
   ]);
   state.publicBoard = board;
   state.picks = board;
   state.history = history;
+  state.offerCounts = offerCounts;
   renderPicks();
   renderHistory();
   if (board.some(row => row.estado === 'pendiente')) trackConversion('free_pick_viewed', currentAnalyticsProperties());

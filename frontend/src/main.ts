@@ -38,6 +38,18 @@ const state: AppState = {
 let membershipGeneration = 0;
 const WINDOW_SLOT_NAMES = ['12am', '6am', '12pm', '6pm'] as const;
 
+function offerCountsForDisplayedBlock(
+  offerCounts: ActiveOfferCounts | null,
+  now: Date,
+): ActiveOfferCounts | null {
+  if (!offerCounts) return null;
+  const windowStart = new Date(offerCounts.windowStart);
+  return mexicoDateKey(windowStart) === mexicoDateKey(now)
+    && currentMexicoBlockIndex(windowStart) === currentMexicoBlockIndex(now)
+    ? offerCounts
+    : null;
+}
+
 function currentAnalyticsProperties() {
   const publicCount = state.offerCounts?.publicCount
     ?? state.publicBoard.filter(row => row.visibility === 'public').length;
@@ -154,7 +166,7 @@ async function refreshData(): Promise<void> {
   state.publicBoard = board;
   state.picks = board;
   state.history = history;
-  state.offerCounts = offerCounts;
+  state.offerCounts = offerCountsForDisplayedBlock(offerCounts, new Date());
   renderPicks();
   renderHistory();
   if (board.some(row => row.estado === 'pendiente')) trackConversion('free_pick_viewed', currentAnalyticsProperties());
@@ -358,7 +370,6 @@ function updateStake(): void {
 byId('bankroll')?.addEventListener('input', updateStake);
 byId('risk-percent')?.addEventListener('change', updateStake);
 byId('telegram-cta')?.addEventListener('click', () => trackConversion('telegram_clicked', currentAnalyticsProperties()));
-trackWhenVisible(document.querySelector('.vip-section'), 'vip_offer_viewed', currentAnalyticsProperties());
 
 const cookie = byId('cookie-notice');
 const adConfig = getAdConfig(import.meta.env.VITE_ADSENSE_SLOT, import.meta.env.VITE_ADSENSE_CLIENT);
@@ -377,6 +388,7 @@ if (supabase) {
 void refreshTickets();
 void (async () => {
   await refreshData();
+  trackWhenVisible(document.querySelector('.vip-section'), 'vip_offer_viewed', currentAnalyticsProperties());
   if (supabase) {
     const { data } = await supabase.auth.getSession();
     await checkMembership(data.session?.user ?? null);

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   loadSubscriberPicks: vi.fn(),
   loadTicketManifest: vi.fn(),
   trackConversion: vi.fn(),
+  trackWhenVisible: vi.fn(),
   getSession: vi.fn(),
   rpc: vi.fn(),
 }));
@@ -37,7 +38,7 @@ vi.mock('./services/data', async importOriginal => ({
 vi.mock('./services/analytics', () => ({
   initPlausible: vi.fn(),
   trackConversion: mocks.trackConversion,
-  trackWhenVisible: vi.fn(),
+  trackWhenVisible: mocks.trackWhenVisible,
 }));
 vi.mock('./services/tickets', () => ({ loadTicketManifest: mocks.loadTicketManifest }));
 vi.mock('./dailyVerse', () => ({ initDailyVerseBanner: vi.fn() }));
@@ -66,6 +67,8 @@ async function mountMain(): Promise<void> {
 
 describe('active offer integration', () => {
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-10T17:59:59.999Z'));
     vi.resetModules();
     vi.clearAllMocks();
     localStorage.clear();
@@ -93,6 +96,55 @@ describe('active offer integration', () => {
       public_pick_count: 1,
       premium_pick_count: 3,
     }));
+  });
+
+  it('ignores offer counts from a different six-hour Mexico block', async () => {
+    mocks.loadActiveOfferCounts.mockResolvedValue({
+      windowStart: '2026-09-10T18:00:00.000Z', publicCount: 1, premiumCount: 3,
+    });
+
+    await mountMain();
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.vip-discovery strong')?.textContent)
+        .toContain('Más selecciones disponibles en VIP');
+    });
+    expect(mocks.trackConversion).toHaveBeenCalledWith(
+      'free_pick_viewed',
+      expect.not.objectContaining({ premium_pick_count: expect.anything() }),
+    );
+  });
+
+  it('switches offer counts at the exact Mexico block boundary', async () => {
+    vi.setSystemTime(new Date('2026-09-10T18:00:00.000Z'));
+    mocks.loadActiveOfferCounts.mockResolvedValue({
+      windowStart: '2026-09-10T18:00:00.000Z', publicCount: 1, premiumCount: 3,
+    });
+
+    await mountMain();
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('.vip-discovery strong')?.textContent).toContain('1 gratis y 3 en VIP');
+    });
+    expect(mocks.trackConversion).toHaveBeenCalledWith('free_pick_viewed', expect.objectContaining({
+      window_slot: '12pm',
+      premium_pick_count: 3,
+    }));
+  });
+
+  it('registers vip_offer_viewed once with counts loaded by the initial refresh', async () => {
+    mocks.loadActiveOfferCounts.mockResolvedValue({
+      windowStart: '2026-09-10T12:00:00.000Z', publicCount: 1, premiumCount: 3,
+    });
+
+    await mountMain();
+
+    expect(mocks.trackWhenVisible).toHaveBeenCalledTimes(1);
+    expect(mocks.trackWhenVisible).toHaveBeenCalledWith(
+      document.querySelector('.vip-section'),
+      'vip_offer_viewed',
+      expect.objectContaining({ public_pick_count: 1, premium_pick_count: 3 }),
+    );
   });
 
   it('renders the exact generic fallback when active counts are unavailable', async () => {

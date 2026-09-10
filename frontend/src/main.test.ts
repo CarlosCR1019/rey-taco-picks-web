@@ -143,8 +143,33 @@ describe('active offer integration', () => {
     expect(mocks.trackWhenVisible).toHaveBeenCalledWith(
       document.querySelector('.vip-section'),
       'vip_offer_viewed',
-      expect.objectContaining({ public_pick_count: 1, premium_pick_count: 3 }),
+      expect.any(Function),
     );
+  });
+
+  it('expires loaded counts for rerenders, checkout analytics, and delayed visibility', async () => {
+    mocks.loadActiveOfferCounts.mockResolvedValue({
+      windowStart: '2026-09-10T12:00:00.000Z', publicCount: 1, premiumCount: 3,
+    });
+    await mountMain();
+    const propertiesFactory = mocks.trackWhenVisible.mock.calls[0]?.[2] as (() => Record<string, unknown>);
+
+    vi.setSystemTime(new Date('2026-09-10T18:00:00.000Z'));
+    document.querySelector<HTMLButtonElement>('[data-filter="all"]')?.click();
+    Object.assign(document.querySelector<HTMLDialogElement>('#auth-dialog')!, { showModal: vi.fn() });
+    document.querySelector<HTMLButtonElement>('#vip-button')?.click();
+
+    expect(document.querySelector('.vip-discovery strong')?.textContent)
+      .toContain('Más selecciones disponibles en VIP');
+    expect(mocks.trackConversion).toHaveBeenCalledWith('vip_auth_required', expect.objectContaining({
+      window_slot: '12pm',
+    }));
+    expect(mocks.trackConversion).toHaveBeenCalledWith(
+      'vip_auth_required',
+      expect.not.objectContaining({ premium_pick_count: expect.anything() }),
+    );
+    expect(propertiesFactory()).toEqual(expect.objectContaining({ window_slot: '12pm' }));
+    expect(propertiesFactory()).not.toEqual(expect.objectContaining({ premium_pick_count: expect.anything() }));
   });
 
   it('renders the exact generic fallback when active counts are unavailable', async () => {

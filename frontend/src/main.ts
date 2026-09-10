@@ -51,13 +51,15 @@ function offerCountsForDisplayedBlock(
 }
 
 function currentAnalyticsProperties() {
-  const publicCount = state.offerCounts?.publicCount
+  const now = new Date();
+  const offerCounts = offerCountsForDisplayedBlock(state.offerCounts, now);
+  const publicCount = offerCounts?.publicCount
     ?? state.publicBoard.filter(row => row.visibility === 'public').length;
   return {
     surface: 'web' as const,
-    window_slot: WINDOW_SLOT_NAMES[currentMexicoBlockIndex(new Date())],
+    window_slot: WINDOW_SLOT_NAMES[currentMexicoBlockIndex(now)],
     public_pick_count: publicCount,
-    ...(state.offerCounts ? { premium_pick_count: state.offerCounts.premiumCount } : {}),
+    ...(offerCounts ? { premium_pick_count: offerCounts.premiumCount } : {}),
   };
 }
 
@@ -104,11 +106,12 @@ function renderPicks(): void {
   if (!root) return;
   const rows = state.picks.filter(row => state.pickFilter === 'all' || categoryKey(row.categoria) === state.pickFilter);
   const now = new Date();
+  const offerCounts = offerCountsForDisplayedBlock(state.offerCounts, now);
   root.innerHTML = renderTimeBoard(rows, {
     dateKey: mexicoDateKey(now),
     activeBlock: currentMexicoBlockIndex(now),
     isVip: state.isVip,
-    offerCounts: state.offerCounts,
+    offerCounts,
   });
   const updated = byId('picks-updated');
   if (updated) {
@@ -166,7 +169,7 @@ async function refreshData(): Promise<void> {
   state.publicBoard = board;
   state.picks = board;
   state.history = history;
-  state.offerCounts = offerCountsForDisplayedBlock(offerCounts, new Date());
+  state.offerCounts = offerCounts;
   renderPicks();
   renderHistory();
   if (board.some(row => row.estado === 'pendiente')) trackConversion('free_pick_viewed', currentAnalyticsProperties());
@@ -388,7 +391,7 @@ if (supabase) {
 void refreshTickets();
 void (async () => {
   await refreshData();
-  trackWhenVisible(document.querySelector('.vip-section'), 'vip_offer_viewed', currentAnalyticsProperties());
+  trackWhenVisible(document.querySelector('.vip-section'), 'vip_offer_viewed', currentAnalyticsProperties);
   if (supabase) {
     const { data } = await supabase.auth.getSession();
     await checkMembership(data.session?.user ?? null);

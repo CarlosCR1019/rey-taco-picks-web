@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { initPlausible, resetAnalyticsForTests, trackConversion } from './analytics';
+import {
+  initPlausible,
+  resetAnalyticsForTests,
+  trackConversion,
+  trackWhenVisible,
+  type AnalyticsProperties,
+} from './analytics';
 
 describe('conversion analytics', () => {
   afterEach(() => {
@@ -8,6 +14,7 @@ describe('conversion analytics', () => {
     delete (window as typeof window & { plausible?: unknown }).plausible;
     document.getElementById('plausible-script')?.remove();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it('emits an approved event without personal data', () => {
@@ -62,5 +69,28 @@ describe('conversion analytics', () => {
     ]]);
     expect(JSON.stringify(plausible?.q)).not.toContain('private@example.com');
     expect(JSON.stringify(plausible?.q)).not.toContain('secret pick');
+  });
+
+  it('resolves visible-event property factories when intersection occurs', () => {
+    vi.stubEnv('VITE_PLAUSIBLE_DOMAIN', 'reytacopicks.com');
+    initPlausible();
+    let intersect: IntersectionObserverCallback | undefined;
+    const disconnect = vi.fn();
+    vi.stubGlobal('IntersectionObserver', vi.fn((callback: IntersectionObserverCallback) => {
+      intersect = callback;
+      return { observe: vi.fn(), disconnect };
+    }));
+    let properties: AnalyticsProperties = { surface: 'web', window_slot: '6am', premium_pick_count: 3 };
+
+    trackWhenVisible(document.body, 'vip_offer_viewed', () => properties);
+    properties = { surface: 'web', window_slot: '12pm', premium_pick_count: 0 };
+    intersect?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+
+    const plausible = (window as typeof window & { plausible?: { q?: unknown[][] } }).plausible;
+    expect(plausible?.q).toEqual([[
+      'vip_offer_viewed',
+      { props: { surface: 'web', window_slot: '12pm', premium_pick_count: '0' } },
+    ]]);
+    expect(disconnect).toHaveBeenCalledTimes(1);
   });
 });

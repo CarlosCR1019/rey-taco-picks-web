@@ -17,6 +17,8 @@ export type AnalyticsProperties = Partial<Readonly<{
   premium_pick_count: number;
 }>> & Readonly<Record<string, unknown>>;
 
+type AnalyticsPropertiesSource = AnalyticsProperties | (() => AnalyticsProperties);
+
 type PlausibleCall = [event: string, options?: { props?: Record<string, string> }];
 type PlausibleFunction = ((event: string, options?: { props?: Record<string, string> }) => void) & {
   q?: PlausibleCall[];
@@ -88,11 +90,15 @@ export function resetAnalyticsForTests(): void {
   emitted.clear();
 }
 
-export function trackWhenVisible(element: Element | null, event: ConversionEvent, properties?: AnalyticsProperties): void {
+export function trackWhenVisible(
+  element: Element | null,
+  event: ConversionEvent,
+  properties?: AnalyticsPropertiesSource,
+): void {
   if (!element || typeof IntersectionObserver === 'undefined') return;
   const observer = new IntersectionObserver(entries => {
     if (entries.some(entry => entry.isIntersecting)) {
-      trackConversion(event, properties);
+      trackConversion(event, typeof properties === 'function' ? properties() : properties);
       observer.disconnect();
     }
   }, { threshold: 0.25 });

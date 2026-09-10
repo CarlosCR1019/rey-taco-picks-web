@@ -275,6 +275,7 @@ async function startVipCheckout(): Promise<void> {
 }
 
 byId('vip-button')?.addEventListener('click', startVipCheckout);
+byId('vip-primary-button')?.addEventListener('click', startVipCheckout);
 byId('vip-checkout-button')?.addEventListener('click', startVipCheckout);
 
 byId('filter-row')?.addEventListener('click', event => {

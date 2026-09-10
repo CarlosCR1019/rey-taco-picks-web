@@ -29,6 +29,17 @@ describe('approved application shell', () => {
     expect(document.body.textContent).toContain('No garantizamos ganancias');
   });
 
+  it('makes the audience and VIP offer clear on the first screen', () => {
+    renderShell();
+    const hero = document.querySelector('.hero')!;
+    expect(hero.textContent).toContain('aficionados recreativos en México');
+    expect(hero.querySelector<HTMLButtonElement>('#vip-primary-button')?.textContent).toBe('Suscribirme a VIP — $299 MXN/mes');
+    expect(hero.querySelector('a[href="#picks"]')?.textContent).toBe('Ver picks gratis');
+    expect(hero.textContent).toContain('puedes perder');
+    expect(hero.textContent).toContain('Hasta 6 picks por ventana');
+    expect(hero.textContent).toContain('Cancela tu membresía cuando quieras');
+  });
+
   it('links to public privacy and terms pages', () => {
     renderShell();
     expect(document.querySelector('a[href="/privacidad.html"]')).not.toBeNull();

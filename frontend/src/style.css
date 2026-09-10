@@ -97,6 +97,7 @@ main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
 .hero h1 { max-width: 780px; margin: 14px 0 20px; color: var(--espresso); font-family: Georgia, "Times New Roman", serif; font-size: clamp(2.8rem, 7vw, 5.8rem); line-height: .92; letter-spacing: -.055em; }
 .hero h1 em { color: var(--red); font-weight: inherit; }
 .hero-copy > p { max-width: 650px; margin: 0; color: var(--muted); font-size: 1.06rem; line-height: 1.75; }
+.hero-benefits { display: grid; gap: 7px; margin: 18px 0 0; padding-left: 20px; color: #4f4038; font-size: .9rem; line-height: 1.45; }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 11px; margin-top: 28px; }
 .trust-line { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
 .trust-line span { padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; color: #6b554a; background: rgba(255, 255, 255, .5); font-size: .72rem; font-weight: 700; }
@@ -267,7 +268,7 @@ tbody tr:last-child td { border-bottom: 0; }
   .hero { padding: 50px 0 54px; }
   .hero h1 { font-size: clamp(2.65rem, 14vw, 4rem); }
   .hero-copy > p { font-size: .94rem; }
-  .hero-actions a { flex: 1 1 150px; }
+  .hero-actions a, .hero-actions button { flex: 1 1 190px; }
   .proof-card { padding: 21px; }
   .content-section { padding: 50px 0; }
   .section-heading { align-items: flex-start; flex-direction: column; }

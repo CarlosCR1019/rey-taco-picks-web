@@ -28,12 +28,13 @@ export function applicationTemplate(): string {
       <main id="contenido">
         <section class="hero" id="inicio">
           <div class="hero-copy">
-            <span class="eyebrow">Picks para México · Hora CDMX</span>
-            <h1>Los picks van <em>primero.</em><br />El historial también.</h1>
-            <p>Análisis directo, cuotas claras y resultados públicos. Sin promesas de dinero fácil ni resultados garantizados.</p>
+            <span class="eyebrow">Para aficionados recreativos en México · Hora CDMX</span>
+            <h1>Picks deportivos claros.<br /><em>Resultados públicos.</em></h1>
+            <p>Recibe selecciones analizadas sin promesas de dinero fácil: puedes perder y ningún resultado está garantizado.</p>
+            <ul class="hero-benefits"><li>Hasta 6 picks por ventana, solo cuando cumplen los filtros</li><li>Alertas por Telegram e historial público</li><li>Cancela tu membresía cuando quieras</li></ul>
             <div class="hero-actions">
-              <a class="primary-button" href="#picks">Ver pick gratis</a>
-              <a class="secondary-button" id="telegram-cta" href="https://t.me/ReyTacoPicksFree" target="_blank" rel="noopener noreferrer">Unirme a Telegram</a>
+              <button class="primary-button" id="vip-primary-button" type="button">Suscribirme a VIP — $299 MXN/mes</button>
+              <a class="secondary-button" href="#picks">Ver picks gratis</a>
             </div>
             <div class="trust-line"><span>+18</span><span>Juego responsable</span><span>Registro completo</span></div>
           </div>

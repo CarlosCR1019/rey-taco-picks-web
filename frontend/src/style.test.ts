@@ -34,4 +34,8 @@ describe('responsive navigation contract', () => {
 
     expect(ticketImage).toMatch(/object-fit:\s*contain/);
   });
+
+  it('keeps both hero actions usable on phones', () => {
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.hero-actions a, \.hero-actions button\s*\{[^}]*flex:\s*1 1 190px/);
+  });
 });

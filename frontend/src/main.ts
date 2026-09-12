@@ -12,7 +12,7 @@ import { statusLabel, type PickStatus } from './domain/picks';
 import { supabase } from './lib/supabase';
 import { getAdConfig, mountAd } from './services/ads';
 import { telegramLinkUrl } from './services/account';
-import { initPlausible, trackConversion, trackWhenVisible } from './services/analytics';
+import { initUmami, trackConversion, trackWhenVisible } from './services/analytics';
 import { escapeHtml, loadActiveOfferCounts, loadDailyPublicPicks, loadHistory, loadLocalPublicPicks, loadSubscriberPicks, type ActiveOfferCounts, type PickRow } from './services/data';
 import { isSubscriberRpcActive } from './services/membership';
 import { loadTicketManifest } from './services/tickets';
@@ -82,7 +82,11 @@ function currentAnalyticsProperties() {
 }
 
 renderShell();
-initPlausible();
+try {
+  initUmami();
+} catch {
+  // Analytics must never block the application.
+}
 if (new URLSearchParams(window.location.search).get('checkout') === 'cancelled') {
   trackConversion('checkout_cancelled', currentAnalyticsProperties());
 }

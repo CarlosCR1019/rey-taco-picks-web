@@ -102,6 +102,15 @@ describe('active offer integration', () => {
     }));
   });
 
+  it('mounts and loads data when Umami initialization throws', async () => {
+    mocks.initUmami.mockImplementation(() => { throw new Error('analytics unavailable'); });
+
+    await mountMain();
+
+    expect(document.body.textContent).toContain('Partido público');
+    expect(mocks.loadHistory).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores offer counts from a different six-hour Mexico block', async () => {
     mocks.loadActiveOfferCounts.mockResolvedValue({
       windowStart: '2026-09-10T18:00:00.000Z', publicCount: 1, premiumCount: 3,

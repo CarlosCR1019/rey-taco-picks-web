@@ -30,9 +30,11 @@ type AnalyticsWindow = Window & {
 };
 
 const emitted = new Set<string>();
+const pendingUmamiEvents: Array<{ event: ConversionEvent; properties: Record<string, string> }> = [];
+const MAX_PENDING_UMAMI_EVENTS = 32;
 
 function umamiWebsiteId(): string {
-  const value = String(import.meta.env.VITE_UMAMI_WEBSITE_ID ?? '').trim();
+  const value = String(import.meta.env.VITE_UMAMI_WEBSITE_ID ?? '').trim().toLowerCase();
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value) ? value : '';
 }
 
@@ -54,11 +56,24 @@ function allowedProperties(properties?: AnalyticsProperties): Record<string, str
 }
 
 function sendToUmami(event: ConversionEvent, properties: Record<string, string>): void {
+  if (!umamiWebsiteId()) return;
   try {
-    (window as AnalyticsWindow).umami?.track(event, properties);
+    const target = window as AnalyticsWindow;
+    if (target.umami) {
+      target.umami.track(event, properties);
+    } else if (pendingUmamiEvents.length < MAX_PENDING_UMAMI_EVENTS) {
+      pendingUmamiEvents.push({ event, properties });
+    }
   } catch {
     // Analytics must never block the application.
   }
+}
+
+function flushPendingUmamiEvents(): void {
+  const target = window as AnalyticsWindow;
+  if (!umamiWebsiteId() || !target.umami) return;
+  const pending = pendingUmamiEvents.splice(0);
+  for (const item of pending) sendToUmami(item.event, item.properties);
 }
 
 export function initUmami(): void {
@@ -68,7 +83,10 @@ export function initUmami(): void {
   script.id = 'umami-script';
   script.defer = true;
   script.dataset.websiteId = websiteId;
+  script.dataset.excludeSearch = 'true';
+  script.dataset.excludeHash = 'true';
   script.src = 'https://cloud.umami.is/script.js';
+  script.onload = flushPendingUmamiEvents;
   script.onerror = () => undefined;
   document.head.appendChild(script);
 }
@@ -85,6 +103,7 @@ export function trackConversion(event: ConversionEvent, properties?: AnalyticsPr
 
 export function resetAnalyticsForTests(): void {
   emitted.clear();
+  pendingUmamiEvents.splice(0);
 }
 
 export function trackWhenVisible(

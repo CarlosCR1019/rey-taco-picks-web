@@ -34,9 +34,17 @@ describe('conversion analytics', () => {
     expect(scripts[0]?.src).toBe('https://cloud.umami.is/script.js');
     expect(scripts[0]?.defer).toBe(true);
     expect(scripts[0]?.dataset.websiteId).toBe(WEBSITE_ID);
+    expect(scripts[0]?.dataset.excludeSearch).toBe('true');
+    expect(scripts[0]?.dataset.excludeHash).toBe('true');
   });
 
-  it.each(['', 'not-a-uuid', '123E4567-E89B-42D3-A456-426614174000', '123e4567-e89b-02d3-a456-426614174000'])(
+  it('accepts uppercase UUIDs and normalizes the dataset value', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID.toUpperCase());
+    initUmami();
+    expect(document.querySelector<HTMLScriptElement>('#umami-script')?.dataset.websiteId).toBe(WEBSITE_ID);
+  });
+
+  it.each(['', 'not-a-uuid', '123e4567-e89b-02d3-a456-426614174000'])(
     'loads nothing for missing or invalid website ID %j',
     websiteId => {
       vi.stubEnv('VITE_UMAMI_WEBSITE_ID', websiteId);
@@ -46,6 +54,7 @@ describe('conversion analytics', () => {
   );
 
   it('keeps dataLayer behavior and calls Umami when available', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID);
     const track = vi.fn();
     (window as TestWindow).umami = { track };
 
@@ -73,6 +82,24 @@ describe('conversion analytics', () => {
     vi.stubEnv('VITE_UMAMI_WEBSITE_ID', '');
     expect(() => trackConversion('telegram_clicked')).not.toThrow();
     expect((window as TestWindow).dataLayer).toEqual([{ event: 'telegram_clicked' }]);
+  });
+
+  it('does not deliver to stale Umami or queue events when config is invalid', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', '');
+    const track = vi.fn();
+    (window as TestWindow).umami = { track };
+    trackConversion('checkout_cancelled');
+    expect(track).not.toHaveBeenCalled();
+  });
+
+  it('delivers an early conversion after the Umami script loads', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID);
+    initUmami();
+    trackConversion('checkout_started', { surface: 'web', plan: 'monthly' });
+    const track = vi.fn();
+    (window as TestWindow).umami = { track };
+    document.getElementById('umami-script')?.dispatchEvent(new Event('load'));
+    expect(track).toHaveBeenCalledWith('checkout_started', { surface: 'web', plan: 'monthly' });
   });
 
   it('allows only approved funnel properties and drops identifiers, details, tokens, and free text', () => {

@@ -110,12 +110,19 @@ export function applicationTemplate(): string {
         <aside class="ad-container hidden" id="ad-slot-feed" data-ad-unit aria-label="Publicidad"></aside>
 
         <section class="vip-section" id="vip" aria-labelledby="vip-title">
-          <div><span class="eyebrow">Acceso VIP</span><h2 id="vip-title">La cartera completa, protegida de verdad</h2><p>Acceso a picks premium, alertas y canal privado. Cancela cuando quieras. No garantizamos ganancias.</p></div>
-          <div class="vip-price">
-            <div class="vip-plan"><strong>$349</strong><span>MXN / mes · recomendado</span><button class="primary-button" id="vip-checkout-button" data-plan="monthly" type="button">Suscribirme al VIP</button></div>
-            <div class="vip-plan"><strong>$129</strong><span>MXN · pase de 7 días</span><button class="secondary-button" id="vip-weekly-button" data-plan="weekly" type="button">Probar 7 días</button></div>
+          <div><span class="eyebrow">Acceso VIP</span><h2 id="vip-title">Elige cómo entrar a la cartera completa</h2><p>Acceso a picks premium, alertas y canal privado. Cancela cuando quieras. Ningún resultado está garantizado.</p></div>
+          <div class="pricing-grid">
+            <article class="pricing-card"><span class="pricing-label">Pase flexible</span><h3>7 días VIP</h3><strong>$129 MXN</strong><p>Una semana de acceso a la cartera completa.</p><button class="secondary-button" id="vip-weekly-button" data-plan="weekly" type="button">Entrar por 7 días</button></article>
+            <article class="pricing-card pricing-card-featured"><span class="pricing-label">Más elegido</span><h3>VIP mensual</h3><strong>$349 MXN/mes</strong><p>Acceso continuo y alertas privadas cada ventana.</p><button class="primary-button" id="vip-checkout-button" data-plan="monthly" type="button">Suscribirme al VIP</button></article>
           </div>
         </section>
+
+        <section id="vip-access-panel" class="access-panel hidden" aria-labelledby="vip-access-title">
+          <div><span class="section-kicker">Acceso confirmado</span><h2 id="vip-access-title">Tu membresía VIP está activa</h2><p>Solicita el acceso al canal privado desde el bot oficial. Nunca mostramos ni almacenamos una invitación permanente.</p></div>
+          <div class="access-destinations"><a id="miniapp-access-link" class="secondary-button" href="/?view=telegram">Abrir Mini App</a><a id="telegram-access-link" class="primary-button hidden">Solicitar acceso por Telegram</a></div>
+        </section>
+
+        <p id="checkout-status" class="checkout-status" aria-live="polite"></p>
 
         <section class="legal-grid" aria-label="Información y juego responsable">
           <article><h2>Método y límites</h2><p>Analizamos datos y cuotas disponibles. Un modelo puede fallar y las líneas cambian. Publicamos el resultado de cada pick para evitar sesgos.</p></article>

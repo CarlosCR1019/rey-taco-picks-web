@@ -64,14 +64,16 @@ const publicPick: PickRow = {
   visibility: 'public',
 };
 
-async function mountMain(): Promise<void> {
+async function mountMain(): Promise<typeof import('./main')> {
   document.body.innerHTML = '<div id="app"></div><div id="telegram-mini-app" class="hidden"></div>';
-  await import('./main');
+  const app = await import('./main');
   await vi.waitFor(() => expect(mocks.loadHistory).toHaveBeenCalled());
+  return app;
 }
 
 describe('active offer integration', () => {
   beforeEach(() => {
+    vi.unstubAllEnvs();
     vi.useFakeTimers();
     vi.clearAllTimers();
     vi.setSystemTime(new Date('2026-09-10T17:59:59.999Z'));
@@ -449,6 +451,104 @@ describe('active offer integration', () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain('Partido público'));
     expect(document.querySelector('#auth-form')?.classList.contains('hidden')).toBe(false);
     expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('reveals VIP access only after the authoritative subscriber RPC is true', async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'vip' } } } });
+    mocks.rpc.mockResolvedValue({ data: true, error: null });
+    await mountMain();
+    await vi.waitFor(() => expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(false));
+
+    mocks.authCallback?.('SIGNED_OUT', null);
+    await vi.waitFor(() => expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(true));
+  });
+
+  it('builds a safe Telegram bot deep link without embedding a channel invite', async () => {
+    vi.stubEnv('VITE_TELEGRAM_BOT_USERNAME', '@ReyTacoBot');
+    await mountMain();
+
+    const link = document.querySelector<HTMLAnchorElement>('#telegram-access-link');
+    expect(link?.href).toBe('https://t.me/ReyTacoBot?start=vip_access');
+    expect(link?.classList.contains('hidden')).toBe(false);
+  });
+
+  it('rejects a configured Telegram destination that is not the official bot', async () => {
+    vi.stubEnv('VITE_TELEGRAM_BOT_USERNAME', '@ReyTacoBot');
+    vi.stubEnv('VITE_TELEGRAM_VIP_ACCESS_URL', 'https://t.me/unrelated_channel?start=vip_access');
+    await mountMain();
+
+    const link = document.querySelector<HTMLAnchorElement>('#telegram-access-link');
+    expect(link?.href).toBe('https://t.me/ReyTacoBot?start=vip_access');
+    expect(link?.href).not.toContain('unrelated_channel');
+  });
+
+  it('keeps access hidden when the subscriber RPC is inactive or errors', async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'user' } } } });
+    mocks.rpc.mockResolvedValue({ data: false, error: null });
+    await mountMain();
+    expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(true);
+  });
+
+  it('retries checkout success membership four times over 15 seconds and stays closed on failure', async () => {
+    window.history.replaceState({}, '', '/?checkout=success');
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'buyer' } } } });
+    mocks.rpc.mockResolvedValue({ data: false, error: null });
+    const app = await mountMain();
+    await vi.waitFor(() => expect(mocks.rpc).toHaveBeenCalledTimes(1));
+    expect(document.querySelector('#checkout-status')?.textContent).toContain('Confirmando pago…');
+    expect(app.CHECKOUT_RETRY_DELAYS).toEqual([1000, 2000, 4000, 8000]);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(mocks.rpc).toHaveBeenCalledTimes(5);
+    expect(document.querySelector('#checkout-status')?.textContent).toContain('soporte');
+    expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(true);
+  });
+
+  it('reveals access when a checkout success retry becomes active and does not trust the URL alone', async () => {
+    window.history.replaceState({}, '', '/?checkout=success');
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'buyer' } } } });
+    mocks.rpc.mockResolvedValueOnce({ data: false, error: null }).mockResolvedValueOnce({ data: true, error: null });
+    await mountMain();
+    expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(false));
+    expect(mocks.rpc).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('#checkout-status')?.textContent).toContain('Pago confirmado');
+  });
+
+  it('stops checkout confirmation if the authenticated session changes', async () => {
+    window.history.replaceState({}, '', '/?checkout=success');
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'buyer' } } } });
+    mocks.rpc.mockResolvedValue({ data: false, error: null });
+    await mountMain();
+    await vi.waitFor(() => expect(mocks.rpc).toHaveBeenCalledTimes(1));
+
+    mocks.authCallback?.('SIGNED_OUT', null);
+    await vi.waitFor(() => expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(true));
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(mocks.rpc).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('#checkout-status')?.textContent).toContain('cambió tu sesión');
+    expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(true);
+  });
+
+  it('does not report checkout success when the session changes during the initial membership lookup', async () => {
+    window.history.replaceState({}, '', '/?checkout=success');
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'buyer-a' } } } });
+    let resolveBuyerA!: (result: { data: boolean; error: null }) => void;
+    mocks.rpc
+      .mockReturnValueOnce(new Promise(resolve => { resolveBuyerA = resolve; }))
+      .mockResolvedValueOnce({ data: false, error: null });
+    await mountMain();
+    await vi.waitFor(() => expect(mocks.rpc).toHaveBeenCalledTimes(1));
+
+    mocks.authCallback?.('SIGNED_IN', { user: { id: 'buyer-b' } });
+    await vi.waitFor(() => expect(mocks.rpc).toHaveBeenCalledTimes(2));
+    resolveBuyerA({ data: true, error: null });
+    await vi.waitFor(() => expect(document.querySelector('#checkout-status')?.textContent).toContain('cambió tu sesión'));
+
+    expect(document.querySelector('#checkout-status')?.textContent).not.toContain('Pago confirmado');
+    expect(document.querySelector('#vip-access-panel')?.classList.contains('hidden')).toBe(true);
   });
 
   it('guards duplicate portal clicks and never emits plan selection for VIP management', async () => {

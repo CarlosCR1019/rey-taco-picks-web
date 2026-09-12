@@ -43,6 +43,7 @@ let checkoutAuthActive = false;
 let authResumeInFlight = false;
 const membershipLookups = new Map<string, Promise<boolean>>();
 const WINDOW_SLOT_NAMES = ['12am', '6am', '12pm', '6pm'] as const;
+export const CHECKOUT_RETRY_DELAYS = [1000, 2000, 4000, 8000] as const;
 
 function mexicoWindowSignature(now: Date): string {
   return `${mexicoDateKey(now)}:${currentMexicoBlockIndex(now)}`;
@@ -87,6 +88,26 @@ function currentAnalyticsProperties() {
 }
 
 renderShell();
+const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
+const vipAccessLink = byId<HTMLAnchorElement>('telegram-access-link');
+const configuredVipAccess = (import.meta.env.VITE_TELEGRAM_VIP_ACCESS_URL ?? '').trim();
+const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME ?? '').trim().replace(/^@/, '');
+const fallbackVipAccess = telegramBotUsername
+  ? `https://t.me/${telegramBotUsername}?start=vip_access`
+  : '';
+const configuredVipAccessMatch = configuredVipAccess.match(/^https:\/\/t\.me\/([A-Za-z0-9_]+)\?start=[A-Za-z0-9_-]+$/);
+const configuredTargetsOfficialBot = Boolean(
+  telegramBotUsername
+  && configuredVipAccessMatch?.[1].toLowerCase() === telegramBotUsername.toLowerCase(),
+);
+const safeVipAccess = configuredTargetsOfficialBot ? configuredVipAccess : fallbackVipAccess;
+if (vipAccessLink && /^https:\/\/t\.me\/[A-Za-z0-9_]+\?start=[A-Za-z0-9_-]+$/.test(safeVipAccess)) {
+  vipAccessLink.href = safeVipAccess;
+  vipAccessLink.classList.remove('hidden');
+} else {
+  vipAccessLink?.removeAttribute('href');
+  vipAccessLink?.classList.add('hidden');
+}
 try {
   initUmami();
 } catch {
@@ -95,7 +116,6 @@ try {
 if (new URLSearchParams(window.location.search).get('checkout') === 'cancelled') {
   trackConversion('checkout_cancelled', currentAnalyticsProperties());
 }
-const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const telegramPath = import.meta.env.VITE_TELEGRAM_MINI_APP_PATH || '/?view=telegram';
 const isTelegramMiniApp = isTelegramMiniAppLocation(window.location, telegramPath);
 
@@ -231,6 +251,7 @@ async function checkMembership(user: User | null): Promise<boolean> {
   const generation = ++membershipGeneration;
   state.user = user;
   state.isVip = false;
+  byId('vip-access-panel')?.classList.add('hidden');
   state.picks = state.publicBoard;
   renderPicks();
   if (user && supabase) {
@@ -238,6 +259,7 @@ async function checkMembership(user: User | null): Promise<boolean> {
     if (generation !== membershipGeneration) return isVip;
     state.isVip = isVip;
   }
+  byId('vip-access-panel')?.classList.toggle('hidden', !state.isVip);
   const login = byId<HTMLButtonElement>('login-button');
   if (login) login.textContent = user ? 'Mi cuenta' : 'Iniciar sesión';
   const vip = byId<HTMLButtonElement>('vip-button');
@@ -262,6 +284,32 @@ async function checkMembership(user: User | null): Promise<boolean> {
   }
   renderPicks();
   return state.isVip;
+}
+
+async function confirmCheckoutMembership(user: User, initialStatus: boolean): Promise<void> {
+  const message = byId('checkout-status');
+  const stopForChangedSession = (): boolean => {
+    if (state.user?.id === user.id) return false;
+    if (message) message.textContent = 'La confirmación se pausó porque cambió tu sesión. Inicia sesión para continuar.';
+    return true;
+  };
+  if (stopForChangedSession()) return;
+  if (initialStatus) {
+    if (message) message.textContent = 'Pago confirmado. Tu acceso VIP está listo.';
+    return;
+  }
+  if (message) message.textContent = 'Confirmando pago…';
+  for (let attempt = 0; attempt < CHECKOUT_RETRY_DELAYS.length; attempt += 1) {
+    await new Promise(resolve => window.setTimeout(resolve, CHECKOUT_RETRY_DELAYS[attempt]));
+    if (stopForChangedSession()) return;
+    const isVip = await checkMembership(user);
+    if (stopForChangedSession()) return;
+    if (isVip) {
+      if (message) message.textContent = 'Pago confirmado. Tu acceso VIP está listo.';
+      return;
+    }
+  }
+  if (message) message.textContent = 'No pudimos confirmar el pago todavía. Escríbenos a soporte y revisaremos tu membresía.';
 }
 
 const dialog = byId<HTMLDialogElement>('auth-dialog');
@@ -531,7 +579,13 @@ void (async () => {
   trackWhenVisible(document.querySelector('.vip-section'), 'vip_offer_viewed', currentAnalyticsProperties);
   if (supabase) {
     const { data } = await supabase.auth.getSession();
-    await checkMembership(data.session?.user ?? null);
+    const initialMembership = await checkMembership(data.session?.user ?? null);
+    if (new URLSearchParams(window.location.search).get('checkout') === 'success' && data.session?.user) {
+      void confirmCheckoutMembership(data.session.user, initialMembership);
+    } else if (new URLSearchParams(window.location.search).get('checkout') === 'success') {
+      const message = byId('checkout-status');
+      if (message) message.textContent = 'Inicia sesión para confirmar tu pago y habilitar el acceso VIP.';
+    }
   }
 })();
 }

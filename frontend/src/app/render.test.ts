@@ -48,6 +48,30 @@ describe('approved application shell', () => {
     expect(document.querySelector('.vip-section')?.textContent).toContain('$129');
   });
 
+  it('renders the Editorial Royal pricing hierarchy and both access destinations', () => {
+    renderShell();
+    const vip = document.querySelector('.vip-section')!;
+    expect(vip.querySelector('h2')?.textContent).toBe('Elige cómo entrar a la cartera completa');
+    expect(vip.querySelector('[data-plan="weekly"]')?.closest('article')?.textContent).toContain('7 días VIP');
+    expect(vip.querySelector('[data-plan="weekly"]')?.closest('article')?.textContent).toContain('$129 MXN');
+    expect(vip.querySelector('[data-plan="monthly"]')?.closest('article')?.textContent).toContain('VIP mensual');
+    expect(vip.querySelector('[data-plan="monthly"]')?.closest('article')?.textContent).toContain('$349 MXN/mes');
+    expect(vip.textContent).toContain('Ningún resultado está garantizado');
+    expect(document.querySelector<HTMLAnchorElement>('#miniapp-access-link')?.getAttribute('href')).toBe('/?view=telegram');
+    expect(document.querySelector('#telegram-access-link')).not.toBeNull();
+    expect(document.querySelector('#telegram-access-link')?.hasAttribute('href')).toBe(false);
+    expect(document.querySelector('#vip-access-link')).toBeNull();
+  });
+
+  it('starts the VIP access panel hidden and never embeds a channel invite', () => {
+    renderShell();
+    const panel = document.querySelector('#vip-access-panel');
+    expect(panel?.className).toContain('access-panel');
+    expect(panel?.className).toContain('hidden');
+    expect(panel?.querySelector('a')?.getAttribute('href')).toBe('/?view=telegram');
+    expect(panel?.innerHTML).not.toMatch(/t\.me\/(?![^?]*start=)/);
+  });
+
   it('links to public privacy and terms pages', () => {
     renderShell();
     expect(document.querySelector('a[href="/privacidad.html"]')).not.toBeNull();

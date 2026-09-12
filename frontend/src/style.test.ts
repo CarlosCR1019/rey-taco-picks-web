@@ -38,4 +38,18 @@ describe('responsive navigation contract', () => {
   it('keeps both hero actions usable on phones', () => {
     expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.hero-actions a, \.hero-actions button\s*\{[^}]*flex:\s*1 1 190px/);
   });
+
+  it('defines Editorial Royal tokens and responsive access-panel rules', () => {
+    expect(styleSheet).toMatch(/--royal-navy\s*:/);
+    expect(styleSheet).toMatch(/--royal-gold\s*:/);
+    expect(styleSheet).toMatch(/--royal-cream\s*:/);
+    expect(styleSheet).toMatch(/\.access-panel\s*\{/);
+    expect(styleSheet).toMatch(/\.pricing-grid\s*\{/);
+    expect(styleSheet).toMatch(/\.pricing-card\s*\{/);
+    expect(styleSheet).toMatch(/\.pricing-card-featured/);
+    expect(styleSheet).toMatch(/\.primary-button:focus-visible/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*760px\)/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*760px\)[\s\S]*\.pricing-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*760px\)[\s\S]*\.pricing-card-featured\s*\{[^}]*order:\s*-1/);
+  });
 });

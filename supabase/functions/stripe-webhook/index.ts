@@ -38,7 +38,7 @@ serve(async (req) => {
     }
 
     const object = event.data.object as unknown as Record<string, unknown>;
-    if (!shouldPersistSubscription(event.type)) {
+    if (!shouldPersistSubscription(event.type, object)) {
       return Response.json({ received: true, pending_payment: true });
     }
     let subscriptionObject = object;

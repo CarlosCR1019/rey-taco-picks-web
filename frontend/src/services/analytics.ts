@@ -6,6 +6,7 @@ export type ConversionEvent =
   | 'vip_primary_clicked'
   | 'vip_auth_required'
   | 'checkout_started'
+  | 'vip_plan_selected'
   | 'checkout_cancelled'
   | 'subscription_confirmed'
   | 'miniapp_opened';

@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.112.3";
 import Stripe from "https://esm.sh/stripe@11.1.0?target=deno";
-import { checkoutParams } from "./checkout.ts";
+import { checkoutParams, type CheckoutMode } from "./checkout.ts";
 
 const siteUrl = Deno.env.get("SITE_URL") ?? "https://reytacopicks.com";
 const corsHeaders = {
@@ -23,7 +23,15 @@ serve(async request => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
     const stripeKey = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
-    const priceId = Deno.env.get("STRIPE_PRICE_ID") ?? "";
+    const body = await request.json().catch(() => ({}));
+    if (body?.plan !== undefined && body.plan !== "weekly" && body.plan !== "monthly") {
+      return new Response("Unsupported plan", { status: 400, headers: corsHeaders });
+    }
+    const plan = body?.plan ?? "monthly";
+    const priceId = plan === "weekly"
+      ? Deno.env.get("STRIPE_WEEKLY_PRICE_ID") ?? ""
+      : Deno.env.get("STRIPE_MONTHLY_PRICE_ID") ?? Deno.env.get("STRIPE_PRICE_ID") ?? "";
+    const mode: CheckoutMode = plan === "weekly" ? "payment" : "subscription";
     if (!supabaseUrl || !anonKey || !stripeKey || !priceId) throw new Error("Server configuration is incomplete");
 
     const supabase = createClient(supabaseUrl, anonKey, { auth: { persistSession: false } });
@@ -35,7 +43,7 @@ serve(async request => {
       httpClient: Stripe.createFetchHttpClient(),
     });
     const session = await stripe.checkout.sessions.create(
-      checkoutParams(data.user.id, data.user.email ?? "", priceId, siteUrl),
+      checkoutParams(data.user.id, data.user.email ?? "", priceId, siteUrl, mode),
     );
     if (!session.url) throw new Error("Stripe did not return a checkout URL");
     return Response.json({ url: session.url }, { headers: corsHeaders });

@@ -17,6 +17,7 @@ import { escapeHtml, loadActiveOfferCounts, loadDailyPublicPicks, loadHistory, l
 import { isSubscriberRpcActive } from './services/membership';
 import { loadTicketManifest } from './services/tickets';
 import { initTelegramMiniApp, isTelegramMiniAppLocation } from './app/telegram';
+import { clearCheckoutIntent, navigateWithCheckoutIntent, readCheckoutIntent, saveCheckoutIntent, type CheckoutPlan } from './services/checkoutIntent';
 
 type AppState = {
   picks: PickRow[];
@@ -37,6 +38,10 @@ const state: AppState = {
 };
 let membershipGeneration = 0;
 let offerCountsGeneration = 0;
+let checkoutInFlight = false;
+let checkoutAuthActive = false;
+let authResumeInFlight = false;
+const membershipLookups = new Map<string, Promise<boolean>>();
 const WINDOW_SLOT_NAMES = ['12am', '6am', '12pm', '6pm'] as const;
 
 function mexicoWindowSignature(now: Date): string {
@@ -209,16 +214,29 @@ async function refreshData(): Promise<void> {
   if (history.length) trackConversion('history_viewed', currentAnalyticsProperties());
 }
 
-async function checkMembership(user: User | null): Promise<void> {
+function lookupMembership(user: User): Promise<boolean> {
+  const existing = membershipLookups.get(user.id);
+  if (existing) return existing;
+  const lookup = supabase
+    ? Promise.resolve(supabase.rpc('is_active_subscriber', { check_user: user.id }))
+      .then(response => !response.error && isSubscriberRpcActive(response.data))
+      .catch(() => false)
+    : Promise.resolve(false);
+  membershipLookups.set(user.id, lookup);
+  void lookup.then(() => { if (membershipLookups.get(user.id) === lookup) membershipLookups.delete(user.id); });
+  return lookup;
+}
+
+async function checkMembership(user: User | null): Promise<boolean> {
   const generation = ++membershipGeneration;
   state.user = user;
   state.isVip = false;
   state.picks = state.publicBoard;
   renderPicks();
   if (user && supabase) {
-    const response = await supabase.rpc('is_active_subscriber', { check_user: user.id });
-    if (generation !== membershipGeneration) return;
-    state.isVip = !response.error && isSubscriberRpcActive(response.data);
+    const isVip = await lookupMembership(user);
+    if (generation !== membershipGeneration) return isVip;
+    state.isVip = isVip;
   }
   const login = byId<HTMLButtonElement>('login-button');
   if (login) login.textContent = user ? 'Mi cuenta' : 'Iniciar sesión';
@@ -234,7 +252,7 @@ async function checkMembership(user: User | null): Promise<void> {
   if (state.isVip && supabase) {
     trackConversion('subscription_confirmed', currentAnalyticsProperties());
     const premium = await loadSubscriberPicks(supabase);
-    if (generation !== membershipGeneration) return;
+    if (generation !== membershipGeneration) return state.isVip;
     state.picks = [
       ...state.publicBoard,
       ...premium.filter(pick => !state.publicBoard.some(row => row.id === pick.id)),
@@ -243,10 +261,14 @@ async function checkMembership(user: User | null): Promise<void> {
     state.picks = state.publicBoard;
   }
   renderPicks();
+  return state.isVip;
 }
 
 const dialog = byId<HTMLDialogElement>('auth-dialog');
-const openAuth = () => dialog?.showModal();
+const openAuth = () => { if (dialog && !dialog.open && typeof dialog.showModal === 'function') dialog.showModal(); };
+const clearCheckoutAuth = () => { checkoutAuthActive = false; clearCheckoutIntent(); };
+dialog?.addEventListener('cancel', clearCheckoutAuth);
+dialog?.addEventListener('close', () => { if (checkoutAuthActive) clearCheckoutAuth(); });
 
 document.querySelectorAll<HTMLButtonElement>('[data-auth-mode]').forEach(button => {
   button.addEventListener('click', () => {
@@ -260,11 +282,13 @@ document.querySelectorAll<HTMLButtonElement>('[data-auth-mode]').forEach(button 
 });
 
 byId('login-button')?.addEventListener('click', async () => {
+  clearCheckoutAuth();
   openAuth();
 });
 
 byId('signout-button')?.addEventListener('click', async () => {
   if (supabase) await supabase.auth.signOut();
+  clearCheckoutAuth();
   dialog?.close();
 });
 
@@ -306,41 +330,104 @@ byId<HTMLFormElement>('auth-form')?.addEventListener('submit', async event => {
     ? await supabase.auth.signUp({ email, password })
     : await supabase.auth.signInWithPassword({ email, password });
   if (message) message.textContent = response.error ? response.error.message : mode === 'register' ? 'Revisa tu correo para confirmar la cuenta.' : 'Sesión iniciada.';
-  if (!response.error && mode !== 'register') dialog?.close();
+  if (!response.error && mode !== 'register') {
+    const shouldResume = checkoutAuthActive;
+    const intent = readCheckoutIntent();
+    checkoutAuthActive = false;
+    dialog?.close();
+    if (shouldResume && response.data.user && state.user && state.user.id !== response.data.user.id) return;
+    let authoritativeIsVip = false;
+    if (response.data.user) {
+      authoritativeIsVip = await checkMembership(response.data.user);
+    }
+    if (shouldResume && intent && response.data.user) {
+      void resumeCheckoutAfterAuth(response.data.user, authoritativeIsVip, intent);
+    }
+  }
 });
 
-type VipPlan = 'weekly' | 'monthly';
+type VipPlan = CheckoutPlan;
 
-async function startVipCheckout(plan: VipPlan = 'monthly'): Promise<void> {
-  if (state.isVip && supabase) {
-    const response = await supabase.functions.invoke('create-portal');
-    const url = typeof response.data?.url === 'string' ? response.data.url : '';
-    if (url) window.location.assign(url);
-    else {
-      openAuth();
-      const message = byId('auth-message');
-      if (message) message.textContent = 'No pudimos abrir la administración de Stripe. Escríbenos a soporte.';
-    }
+function validatedCheckoutUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && (url.hostname === 'stripe.com' || url.hostname.endsWith('.stripe.com')) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function checkoutAnalyticsProperties(plan: VipPlan) {
+  return {
+    ...currentAnalyticsProperties(),
+    plan,
+    billing_mode: plan === 'weekly' ? 'payment' as const : 'subscription' as const,
+  };
+}
+
+async function startVipCheckout(plan: VipPlan = 'monthly', authoritativeIsVip?: boolean): Promise<void> {
+  if (checkoutInFlight) return;
+  const isVip = authoritativeIsVip ?? state.isVip;
+  if (!isVip) trackConversion('vip_plan_selected', checkoutAnalyticsProperties(plan));
+  if (isVip && supabase) {
+    checkoutInFlight = true;
+    try {
+      const response = await supabase.functions.invoke('create-portal');
+      const url = validatedCheckoutUrl(response.data?.url);
+      if (!url) throw new Error('invalid portal URL');
+      try { window.location.assign(url); } catch { checkoutInFlight = false; showCheckoutRecovery(); }
+    } catch { checkoutInFlight = false; showCheckoutRecovery(); }
     return;
   }
   if (!state.user) {
-    trackConversion('vip_auth_required', currentAnalyticsProperties());
+    saveCheckoutIntent(plan);
+    checkoutAuthActive = true;
+    trackConversion('vip_auth_required', checkoutAnalyticsProperties(plan));
     openAuth();
     const message = byId('auth-message');
     if (message) message.textContent = 'Crea una cuenta o inicia sesión antes de pagar.';
     return;
   }
   if (!supabase) return;
-  trackConversion('vip_plan_selected', currentAnalyticsProperties());
-  trackConversion('checkout_started', currentAnalyticsProperties());
-  const response = await supabase.functions.invoke('create-checkout', { body: { plan, return_url: window.location.origin } });
-  const url = typeof response.data?.url === 'string' ? response.data.url : '';
-  if (url) window.location.assign(url);
-  else {
-    openAuth();
-    const message = byId('auth-message');
-    if (message) message.textContent = 'El pago con tarjeta está en preparación. Puedes solicitar revisión manual por SPEI en WhatsApp.';
+  checkoutInFlight = true;
+  trackConversion('checkout_started', checkoutAnalyticsProperties(plan));
+  let redirectStarted = false;
+  try {
+    const response = await supabase.functions.invoke('create-checkout', { body: { plan, return_url: window.location.origin } });
+    const url = validatedCheckoutUrl(response.data?.url);
+    if (url) {
+      redirectStarted = true;
+      if (!navigateWithCheckoutIntent(url, plan, target => window.location.assign(target))) {
+        checkoutInFlight = false; redirectStarted = false; showCheckoutRecovery();
+      }
+    } else {
+      checkoutInFlight = false;
+      showCheckoutRecovery();
+    }
+  } catch {
+    checkoutInFlight = false;
+    showCheckoutRecovery();
+  } finally {
+    if (!redirectStarted) checkoutInFlight = false;
   }
+}
+
+async function resumeCheckoutAfterAuth(user: User, authoritativeIsVip: boolean, intent: VipPlan): Promise<void> {
+  if (authResumeInFlight || state.user?.id !== user.id) return;
+  authResumeInFlight = true;
+  checkoutAuthActive = false;
+  try {
+    await startVipCheckout(intent, authoritativeIsVip);
+  } finally {
+    authResumeInFlight = false;
+  }
+}
+
+function showCheckoutRecovery(): void {
+  openAuth();
+  const message = byId('auth-message');
+  if (message) message.textContent = 'No pudimos abrir Stripe. Intenta de nuevo o escríbenos a soporte.';
 }
 
 byId('vip-primary-button')?.addEventListener('click', () => {
@@ -425,7 +512,14 @@ byId('cookie-accept')?.addEventListener('click', () => {
 });
 
 if (supabase) {
-  supabase.auth.onAuthStateChange((_event, session) => void checkMembership(session?.user ?? null));
+  supabase.auth.onAuthStateChange(async (event, session) => {
+    const user = session?.user ?? null;
+    const status = await checkMembership(user);
+    const intent = event === 'SIGNED_IN' ? readCheckoutIntent() : null;
+    if (event === 'SIGNED_IN' && intent && user) {
+      void resumeCheckoutAfterAuth(user, status, intent);
+    }
+  });
 }
 void refreshTickets();
 void (async () => {

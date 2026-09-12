@@ -162,6 +162,18 @@ describe('conversion analytics', () => {
     expect((window as TestWindow).dataLayer).toEqual([{ event: 'free_pick_viewed' }]);
   });
 
+  it('deduplicates plan repeats but delivers weekly and monthly selections separately', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID);
+    const track = vi.fn();
+    (window as TestWindow).umami = { track };
+
+    trackConversion('vip_plan_selected', { surface: 'web', window_slot: '6am', plan: 'weekly', billing_mode: 'payment' });
+    trackConversion('vip_plan_selected', { surface: 'web', window_slot: '6am', plan: 'monthly', billing_mode: 'subscription' });
+    trackConversion('vip_plan_selected', { surface: 'web', window_slot: '6am', plan: 'weekly', billing_mode: 'payment' });
+
+    expect(track).toHaveBeenCalledTimes(2);
+  });
+
   it('resolves visible-event property factories when intersection occurs', () => {
     vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID);
     const track = vi.fn();

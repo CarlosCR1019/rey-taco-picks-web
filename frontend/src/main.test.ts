@@ -13,18 +13,22 @@ const mocks = vi.hoisted(() => ({
   trackWhenVisible: vi.fn(),
   getSession: vi.fn(),
   rpc: vi.fn(),
+  signInWithPassword: vi.fn(),
+  signUp: vi.fn(),
+  invoke: vi.fn(),
+  authCallback: undefined as ((event: string, session: unknown) => void) | undefined,
 }));
 
 vi.mock('./lib/supabase', () => ({
   supabase: {
     auth: {
       getSession: mocks.getSession,
-      onAuthStateChange: vi.fn(),
-      signInWithPassword: vi.fn(),
+      onAuthStateChange: (callback: (event: string, session: unknown) => void) => { mocks.authCallback = callback; },
+      signInWithPassword: mocks.signInWithPassword,
       signOut: vi.fn(),
-      signUp: vi.fn(),
+      signUp: mocks.signUp,
     },
-    functions: { invoke: vi.fn() },
+    functions: { invoke: mocks.invoke },
     rpc: mocks.rpc,
   },
 }));
@@ -75,13 +79,18 @@ describe('active offer integration', () => {
     vi.clearAllMocks();
     mocks.initUmami.mockReset();
     localStorage.clear();
+    sessionStorage.clear();
     window.history.replaceState({}, '', '/');
     mocks.loadDailyPublicPicks.mockResolvedValue([publicPick]);
+    mocks.loadActiveOfferCounts.mockResolvedValue(null);
     mocks.loadHistory.mockResolvedValue([]);
     mocks.loadSubscriberPicks.mockResolvedValue([]);
     mocks.loadTicketManifest.mockResolvedValue([]);
     mocks.getSession.mockResolvedValue({ data: { session: null } });
     mocks.rpc.mockResolvedValue({ data: false, error: null });
+    mocks.signInWithPassword.mockResolvedValue({ data: { user: { id: 'user' } }, error: null });
+    mocks.signUp.mockResolvedValue({ data: { user: null }, error: null });
+    mocks.authCallback = undefined;
   });
 
   it('loads active offer counts and renders their truthful headline', async () => {
@@ -282,5 +291,215 @@ describe('active offer integration', () => {
       'subscription_confirmed',
       expect.not.objectContaining({ premium_pick_count: expect.anything() }),
     ));
+  });
+
+  it('keeps the selected weekly plan while requesting authentication', async () => {
+    await mountMain();
+    const dialog = document.querySelector<HTMLDialogElement>('#auth-dialog')!;
+    dialog.showModal = vi.fn();
+    dialog.close = vi.fn();
+    document.querySelector<HTMLButtonElement>('[data-plan="weekly"]')?.click();
+    expect(sessionStorage.getItem('rey_taco_checkout_plan')).toBe('weekly');
+    expect(dialog.showModal).toHaveBeenCalledTimes(1);
+    expect(mocks.trackConversion).toHaveBeenCalledWith('vip_auth_required', expect.anything());
+    expect(mocks.trackConversion).toHaveBeenCalledWith('vip_auth_required', expect.objectContaining({ plan: 'weekly', billing_mode: 'payment' }));
+    expect(mocks.trackConversion).toHaveBeenCalledWith('vip_plan_selected', expect.objectContaining({ plan: 'weekly', billing_mode: 'payment' }));
+  });
+
+  it('retains the monthly plan after sign-up while waiting for confirmation', async () => {
+    await mountMain();
+    const dialog = document.querySelector<HTMLDialogElement>('#auth-dialog')!;
+    dialog.showModal = vi.fn();
+    dialog.close = vi.fn();
+    document.querySelector<HTMLButtonElement>('[data-plan="monthly"]')?.click();
+    document.querySelector<HTMLButtonElement>('[data-auth-mode="register"]')?.click();
+    document.querySelector<HTMLInputElement>('#auth-email')!.value = 'a@b.com';
+    document.querySelector<HTMLInputElement>('#auth-password')!.value = 'secret';
+    document.querySelector<HTMLFormElement>('#auth-form')?.requestSubmit();
+    await vi.waitFor(() => expect(mocks.signUp).toHaveBeenCalled());
+    expect(sessionStorage.getItem('rey_taco_checkout_plan')).toBe('monthly');
+    expect(document.querySelector('#auth-message')?.textContent).toContain('Revisa tu correo');
+  });
+
+  it('resumes a fresh sign-up intent after the confirmation page reloads', async () => {
+    mocks.invoke.mockResolvedValue({ data: {}, error: null });
+    await mountMain();
+    document.querySelector<HTMLButtonElement>('[data-plan="monthly"]')?.click();
+    document.querySelector<HTMLButtonElement>('[data-auth-mode="register"]')?.click();
+    document.querySelector<HTMLInputElement>('#auth-email')!.value = 'a@b.com';
+    document.querySelector<HTMLInputElement>('#auth-password')!.value = 'secret';
+    document.querySelector<HTMLFormElement>('#auth-form')?.requestSubmit();
+    await vi.waitFor(() => expect(mocks.signUp).toHaveBeenCalled());
+
+    vi.resetModules();
+    await mountMain();
+    mocks.authCallback?.('SIGNED_IN', { user: { id: 'confirmed' } });
+
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('create-checkout', {
+      body: { plan: 'monthly', return_url: window.location.origin },
+    }));
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not resume an expired intent from a signed-in callback', async () => {
+    sessionStorage.setItem('rey_taco_checkout_plan', 'weekly');
+    sessionStorage.setItem('rey_taco_checkout_plan_at', String(Date.now() - 31 * 60 * 1000));
+    await mountMain();
+
+    mocks.authCallback?.('SIGNED_IN', { user: { id: 'confirmed' } });
+
+    await vi.waitFor(() => expect(sessionStorage.getItem('rey_taco_checkout_plan')).toBeNull());
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+
+  it('resumes the selected weekly checkout after password login', async () => {
+    mocks.invoke.mockResolvedValue({ data: {}, error: null });
+    await mountMain();
+    const dialog = document.querySelector<HTMLDialogElement>('#auth-dialog')!;
+    dialog.showModal = vi.fn();
+    dialog.close = vi.fn();
+    document.querySelector<HTMLButtonElement>('[data-plan="weekly"]')?.click();
+    document.querySelector<HTMLInputElement>('#auth-email')!.value = 'a@b.com';
+    document.querySelector<HTMLInputElement>('#auth-password')!.value = 'secret';
+    document.querySelector<HTMLFormElement>('#auth-form')?.requestSubmit();
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('create-checkout', {
+      body: { plan: 'weekly', return_url: window.location.origin },
+    }));
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not create duplicate checkout requests for duplicate clicks', async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'user' } } } });
+    mocks.rpc.mockResolvedValue({ data: false, error: null });
+    mocks.invoke.mockReturnValue(new Promise(() => undefined));
+    await mountMain();
+    document.querySelector<HTMLButtonElement>('[data-plan="weekly"]')?.click();
+    document.querySelector<HTMLButtonElement>('[data-plan="weekly"]')?.click();
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+    expect(mocks.trackConversion).toHaveBeenCalledWith('vip_plan_selected', expect.objectContaining({ plan: 'weekly', billing_mode: 'payment' }));
+    expect(mocks.trackConversion).toHaveBeenCalledWith('checkout_started', expect.objectContaining({ plan: 'weekly', billing_mode: 'payment' }));
+  });
+
+  it('labels monthly checkout analytics as a subscription', async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'user' } } } });
+    mocks.rpc.mockResolvedValue({ data: false, error: null });
+    mocks.invoke.mockReturnValue(new Promise(() => undefined));
+    await mountMain();
+    document.querySelector<HTMLButtonElement>('[data-plan="monthly"]')?.click();
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+    expect(mocks.trackConversion).toHaveBeenCalledWith('vip_plan_selected', expect.objectContaining({ plan: 'monthly', billing_mode: 'subscription' }));
+    expect(mocks.trackConversion).toHaveBeenCalledWith('checkout_started', expect.objectContaining({ plan: 'monthly', billing_mode: 'subscription' }));
+  });
+
+  it('does not start checkout for an ordinary account login', async () => {
+    mocks.invoke.mockResolvedValue({ data: {}, error: null });
+    await mountMain();
+    const dialog = document.querySelector<HTMLDialogElement>('#auth-dialog')!;
+    dialog.showModal = vi.fn();
+    dialog.close = vi.fn();
+    document.querySelector<HTMLButtonElement>('#login-button')?.click();
+    document.querySelector<HTMLInputElement>('#auth-email')!.value = 'a@b.com';
+    document.querySelector<HTMLInputElement>('#auth-password')!.value = 'secret';
+    document.querySelector<HTMLFormElement>('#auth-form')?.requestSubmit();
+    await vi.waitFor(() => expect(mocks.signInWithPassword).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('create-checkout', expect.anything());
+  });
+
+  it('clears a stale intent before an ordinary login', async () => {
+    sessionStorage.setItem('rey_taco_checkout_plan', 'weekly');
+    sessionStorage.setItem('rey_taco_checkout_plan_at', String(Date.now()));
+    await mountMain();
+    const dialog = document.querySelector<HTMLDialogElement>('#auth-dialog')!;
+    dialog.showModal = vi.fn(); dialog.close = vi.fn();
+    document.querySelector<HTMLButtonElement>('#login-button')?.click();
+    document.querySelector<HTMLInputElement>('#auth-email')!.value = 'a@b.com';
+    document.querySelector<HTMLInputElement>('#auth-password')!.value = 'secret';
+    document.querySelector<HTMLFormElement>('#auth-form')?.requestSubmit();
+    await vi.waitFor(() => expect(mocks.signInWithPassword).toHaveBeenCalled());
+    expect(sessionStorage.getItem('rey_taco_checkout_plan')).toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('handles a concurrent signed-in auth callback with one authoritative membership lookup', async () => {
+    let resolveMembership!: (value: unknown) => void;
+    mocks.rpc.mockReturnValue(new Promise(resolve => { resolveMembership = resolve; }));
+    mocks.signInWithPassword.mockImplementation(async () => {
+      mocks.authCallback?.('SIGNED_IN', { user: { id: 'race' } });
+      return { data: { user: { id: 'race' } }, error: null };
+    });
+    mocks.invoke.mockResolvedValue({ data: {}, error: null });
+    await mountMain();
+    document.querySelector<HTMLButtonElement>('[data-plan="weekly"]')?.click();
+    document.querySelector<HTMLDialogElement>('#auth-dialog')!.close = vi.fn();
+    document.querySelector<HTMLInputElement>('#auth-email')!.value = 'a@b.com';
+    document.querySelector<HTMLInputElement>('#auth-password')!.value = 'secret';
+    document.querySelector<HTMLFormElement>('#auth-form')?.requestSubmit();
+    await vi.waitFor(() => expect(mocks.signInWithPassword).toHaveBeenCalled());
+    resolveMembership({ data: true, error: null });
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('create-portal'));
+    expect(mocks.invoke).not.toHaveBeenCalledWith('create-checkout', expect.anything());
+    expect(mocks.rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when membership lookup rejects and keeps the free app usable', async () => {
+    mocks.rpc.mockRejectedValue(new Error('membership unavailable'));
+    await mountMain();
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Partido público'));
+    expect(document.querySelector('#auth-form')?.classList.contains('hidden')).toBe(false);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('guards duplicate portal clicks and never emits plan selection for VIP management', async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'vip' } } } });
+    mocks.rpc.mockResolvedValue({ data: true, error: null });
+    mocks.invoke.mockReturnValue(new Promise(() => undefined));
+    await mountMain();
+    document.querySelector<HTMLButtonElement>('#vip-button')?.click();
+    document.querySelector<HTMLButtonElement>('#vip-button')?.click();
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(1));
+    expect(mocks.invoke).toHaveBeenCalledWith('create-portal');
+    expect(mocks.trackConversion).not.toHaveBeenCalledWith('vip_plan_selected', expect.anything());
+  });
+
+  it('recovers from rejected checkout and permits a retry', async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'user' } } } });
+    mocks.rpc.mockResolvedValue({ data: false, error: null });
+    mocks.invoke.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ data: {}, error: null });
+    await mountMain();
+    const dialog = document.querySelector<HTMLDialogElement>('#auth-dialog')!;
+    dialog.showModal = vi.fn();
+    document.querySelector<HTMLButtonElement>('[data-plan="weekly"]')?.click();
+    await vi.waitFor(() => expect(document.querySelector('#auth-message')?.textContent).toContain('No pudimos abrir Stripe'));
+    document.querySelector<HTMLButtonElement>('[data-plan="weekly"]')?.click();
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(2));
+  });
+
+  it('recovers from rejected or invalid portal creation without navigation', async () => {
+    mocks.getSession.mockResolvedValue({ data: { session: { user: { id: 'vip' } } } });
+    mocks.rpc.mockResolvedValue({ data: true, error: null });
+    mocks.invoke.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ data: { url: 'https://evil.example/pay' }, error: null });
+    await mountMain();
+    document.querySelector<HTMLDialogElement>('#auth-dialog')!.showModal = vi.fn();
+    document.querySelector<HTMLButtonElement>('#vip-button')?.click();
+    await vi.waitFor(() => expect(document.querySelector('#auth-message')?.textContent).toContain('No pudimos abrir Stripe'));
+    document.querySelector<HTMLButtonElement>('#vip-button')?.click();
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(2));
+    expect(window.location.href).not.toContain('evil.example');
+  });
+
+  it('clears checkout intent when auth dialog is cancelled', async () => {
+    await mountMain();
+    document.querySelector<HTMLButtonElement>('[data-plan="weekly"]')?.click();
+    document.querySelector<HTMLDialogElement>('#auth-dialog')?.dispatchEvent(new Event('cancel'));
+    expect(sessionStorage.getItem('rey_taco_checkout_plan')).toBeNull();
+  });
+
+  it('emits checkout_cancelled once without starting checkout', async () => {
+    window.history.replaceState({}, '', '/?checkout=cancelled');
+    await mountMain();
+    expect(mocks.trackConversion).toHaveBeenCalledWith('checkout_cancelled', expect.anything());
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 });

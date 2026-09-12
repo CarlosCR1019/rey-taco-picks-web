@@ -93,7 +93,7 @@ export function initUmami(): void {
 
 export function trackConversion(event: ConversionEvent, properties?: AnalyticsProperties): void {
   const safeProperties = allowedProperties(properties);
-  const key = `${event}|${safeProperties.surface ?? ''}|${safeProperties.window_slot ?? ''}`;
+  const key = `${event}|${safeProperties.surface ?? ''}|${safeProperties.window_slot ?? ''}|${safeProperties.plan ?? ''}|${safeProperties.billing_mode ?? ''}`;
   if (emitted.has(key)) return;
   emitted.add(key);
   const target = window as AnalyticsWindow;

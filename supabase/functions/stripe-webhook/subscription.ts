@@ -6,10 +6,11 @@ export type SubscriptionRecord = {
   current_period_end: string | null;
 };
 
-export function shouldPersistSubscription(type: string): boolean {
+export function shouldPersistSubscription(type: string, object: Record<string, unknown> = {}): boolean {
   // Access begins from a paid invoice or an authoritative subscription event.
   // Persisting checkout.completed could arrive after invoice.paid and downgrade access.
-  return type !== "checkout.session.completed";
+  if (type !== "checkout.session.completed") return true;
+  return object.mode === "payment" && object.payment_status === "paid";
 }
 
 
@@ -17,6 +18,12 @@ function unixPeriodEnd(object: Record<string, unknown>): number | null {
   if (typeof object.current_period_end === "number") return object.current_period_end;
   const lines = object.lines as { data?: Array<{ period?: { end?: number } }> } | undefined;
   return lines?.data?.[0]?.period?.end ?? null;
+}
+
+function unixWeeklyPeriodEnd(object: Record<string, unknown>): number | null {
+  if (object.mode !== "payment" || object.payment_status !== "paid") return null;
+  const created = typeof object.created === "number" ? object.created : null;
+  return created === null ? null : created + 7 * 24 * 60 * 60;
 }
 
 
@@ -47,12 +54,14 @@ export function subscriptionPatch(
   type: string,
   object: Record<string, unknown>,
 ): SubscriptionRecord {
-  const periodEnd = unixPeriodEnd(object);
+  const periodEnd = unixPeriodEnd(object) ?? unixWeeklyPeriodEnd(object);
   return {
     provider: "stripe",
     provider_customer_id: String(object.customer ?? ""),
     provider_subscription_id: String(object.subscription ?? object.id ?? ""),
-    status: normalizedStatus(type, object),
+    status: type === "checkout.session.completed" && object.mode === "payment" && object.payment_status === "paid"
+      ? "active"
+      : normalizedStatus(type, object),
     current_period_end: periodEnd ? new Date(periodEnd * 1000).toISOString() : null,
   };
 }

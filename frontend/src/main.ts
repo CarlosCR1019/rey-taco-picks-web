@@ -136,7 +136,7 @@ function renderPicks(): void {
     const pendingPublic = rows.filter(row => row.estado === 'pendiente' && row.visibility === 'public').length;
     updated.textContent = state.isVip ? 'Cartera VIP activa' : publicCounterLabel(pendingPublic);
   }
-  byId<HTMLButtonElement>('inline-vip-button')?.addEventListener('click', startVipCheckout);
+  byId<HTMLButtonElement>('inline-vip-button')?.addEventListener('click', () => startVipCheckout('monthly'));
 }
 
 function renderHistory(): void {
@@ -219,9 +219,11 @@ async function checkMembership(user: User | null): Promise<void> {
   const login = byId<HTMLButtonElement>('login-button');
   if (login) login.textContent = user ? 'Mi cuenta' : 'Iniciar sesión';
   const vip = byId<HTMLButtonElement>('vip-button');
-  if (vip) vip.textContent = state.isVip ? 'Administrar VIP' : 'VIP $299';
+  if (vip) vip.textContent = state.isVip ? 'Administrar VIP' : 'VIP $349/mes';
   const checkout = byId<HTMLButtonElement>('vip-checkout-button');
-  if (checkout) checkout.textContent = state.isVip ? 'Administrar membresía' : 'Quiero ser VIP';
+  if (checkout) checkout.textContent = state.isVip ? 'Administrar membresía' : 'Suscribirme al VIP';
+  const weekly = byId<HTMLButtonElement>('vip-weekly-button');
+  if (weekly) weekly.textContent = state.isVip ? 'Administrar membresía' : 'Probar 7 días';
   byId('auth-form')?.classList.toggle('hidden', Boolean(user));
   byId('auth-dialog')?.querySelector('.auth-tabs')?.classList.toggle('hidden', Boolean(user));
   byId('account-tools')?.classList.toggle('hidden', !user);
@@ -303,7 +305,9 @@ byId<HTMLFormElement>('auth-form')?.addEventListener('submit', async event => {
   if (!response.error && mode !== 'register') dialog?.close();
 });
 
-async function startVipCheckout(): Promise<void> {
+type VipPlan = 'weekly' | 'monthly';
+
+async function startVipCheckout(plan: VipPlan = 'monthly'): Promise<void> {
   if (state.isVip && supabase) {
     const response = await supabase.functions.invoke('create-portal');
     const url = typeof response.data?.url === 'string' ? response.data.url : '';
@@ -323,8 +327,9 @@ async function startVipCheckout(): Promise<void> {
     return;
   }
   if (!supabase) return;
+  trackConversion('vip_plan_selected', currentAnalyticsProperties());
   trackConversion('checkout_started', currentAnalyticsProperties());
-  const response = await supabase.functions.invoke('create-checkout', { body: { return_url: window.location.origin } });
+  const response = await supabase.functions.invoke('create-checkout', { body: { plan, return_url: window.location.origin } });
   const url = typeof response.data?.url === 'string' ? response.data.url : '';
   if (url) window.location.assign(url);
   else {
@@ -334,12 +339,13 @@ async function startVipCheckout(): Promise<void> {
   }
 }
 
-byId('vip-button')?.addEventListener('click', startVipCheckout);
 byId('vip-primary-button')?.addEventListener('click', () => {
   trackConversion('vip_primary_clicked', currentAnalyticsProperties());
-  void startVipCheckout();
+  void startVipCheckout('monthly');
 });
-byId('vip-checkout-button')?.addEventListener('click', startVipCheckout);
+document.querySelectorAll<HTMLButtonElement>('[data-plan]').forEach(button => {
+  button.addEventListener('click', () => startVipCheckout(button.dataset.plan === 'weekly' ? 'weekly' : 'monthly'));
+});
 
 byId('filter-row')?.addEventListener('click', event => {
   const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-filter]');

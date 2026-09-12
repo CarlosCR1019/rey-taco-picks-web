@@ -17,7 +17,7 @@ export function applicationTemplate(): string {
         </nav>
         <div class="header-actions">
           <button class="text-button" id="login-button" type="button">Iniciar sesión</button>
-          <button class="vip-button" id="vip-button" type="button">VIP $299</button>
+          <button class="vip-button" id="vip-button" data-plan="monthly" type="button">VIP $349/mes</button>
         </div>
       </header>
 
@@ -33,7 +33,7 @@ export function applicationTemplate(): string {
             <p>Recibe selecciones analizadas sin promesas de dinero fácil: puedes perder y ningún resultado está garantizado.</p>
             <ul class="hero-benefits"><li>Hasta 6 picks por ventana, solo cuando cumplen los filtros</li><li>Alertas por Telegram e historial público</li><li>Cancela tu membresía cuando quieras</li></ul>
             <div class="hero-actions">
-              <button class="primary-button" id="vip-primary-button" type="button">Suscribirme a VIP — $299 MXN/mes</button>
+              <button class="primary-button" id="vip-primary-button" type="button">Suscribirme a VIP — $349 MXN/mes</button>
               <a class="secondary-button" href="#picks">Ver picks gratis</a>
             </div>
             <div class="trust-line"><span>+18</span><span>Juego responsable</span><span>Registro completo</span></div>
@@ -110,8 +110,11 @@ export function applicationTemplate(): string {
         <aside class="ad-container hidden" id="ad-slot-feed" data-ad-unit aria-label="Publicidad"></aside>
 
         <section class="vip-section" id="vip" aria-labelledby="vip-title">
-          <div><span class="eyebrow">Membresía mensual</span><h2 id="vip-title">La cartera completa, protegida de verdad</h2><p>Acceso a picks premium, alertas y canal privado. Cancela cuando quieras. No garantizamos ganancias.</p></div>
-          <div class="vip-price"><strong>$299</strong><span>MXN / mes</span><button class="primary-button" id="vip-checkout-button" type="button">Quiero ser VIP</button></div>
+          <div><span class="eyebrow">Acceso VIP</span><h2 id="vip-title">La cartera completa, protegida de verdad</h2><p>Acceso a picks premium, alertas y canal privado. Cancela cuando quieras. No garantizamos ganancias.</p></div>
+          <div class="vip-price">
+            <div class="vip-plan"><strong>$349</strong><span>MXN / mes · recomendado</span><button class="primary-button" id="vip-checkout-button" data-plan="monthly" type="button">Suscribirme al VIP</button></div>
+            <div class="vip-plan"><strong>$129</strong><span>MXN · pase de 7 días</span><button class="secondary-button" id="vip-weekly-button" data-plan="weekly" type="button">Probar 7 días</button></div>
+          </div>
         </section>
 
         <section class="legal-grid" aria-label="Información y juego responsable">

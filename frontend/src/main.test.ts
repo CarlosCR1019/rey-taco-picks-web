@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   loadLocalPublicPicks: vi.fn(),
   loadSubscriberPicks: vi.fn(),
   loadTicketManifest: vi.fn(),
+  initUmami: vi.fn(),
   trackConversion: vi.fn(),
   trackWhenVisible: vi.fn(),
   getSession: vi.fn(),
@@ -36,7 +37,7 @@ vi.mock('./services/data', async importOriginal => ({
   loadSubscriberPicks: mocks.loadSubscriberPicks,
 }));
 vi.mock('./services/analytics', () => ({
-  initPlausible: vi.fn(),
+  initUmami: mocks.initUmami,
   trackConversion: mocks.trackConversion,
   trackWhenVisible: mocks.trackWhenVisible,
 }));
@@ -72,6 +73,7 @@ describe('active offer integration', () => {
     vi.setSystemTime(new Date('2026-09-10T17:59:59.999Z'));
     vi.resetModules();
     vi.clearAllMocks();
+    mocks.initUmami.mockReset();
     localStorage.clear();
     window.history.replaceState({}, '', '/');
     mocks.loadDailyPublicPicks.mockResolvedValue([publicPick]);
@@ -89,6 +91,7 @@ describe('active offer integration', () => {
 
     await mountMain();
 
+    expect(mocks.initUmami).toHaveBeenCalledTimes(1);
     expect(mocks.loadActiveOfferCounts).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => {
       expect(document.querySelector('.vip-discovery strong')?.textContent).toContain('1 gratis y 3 en VIP');

@@ -9,7 +9,8 @@ export type ConversionEvent =
   | 'vip_plan_selected'
   | 'checkout_cancelled'
   | 'subscription_confirmed'
-  | 'miniapp_opened';
+  | 'miniapp_opened'
+  | 'spei_whatsapp_clicked';
 
 export type AnalyticsProperties = Partial<Readonly<{
   surface: 'web' | 'telegram_miniapp';

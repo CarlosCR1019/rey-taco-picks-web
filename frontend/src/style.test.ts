@@ -52,4 +52,14 @@ describe('responsive navigation contract', () => {
     expect(styleSheet).toMatch(/@media\s*\(max-width:\s*760px\)[\s\S]*\.pricing-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
     expect(styleSheet).toMatch(/@media\s*\(max-width:\s*760px\)[\s\S]*\.pricing-card-featured\s*\{[^}]*order:\s*-1/);
   });
+
+  it('keeps both SPEI plan links tappable and stacks them on phones', () => {
+    const actions = styleSheet.match(/\.spei-actions\s*\{([^}]*)\}/)?.[1] ?? '';
+    const links = styleSheet.match(/\.spei-actions a\s*\{([^}]*)\}/)?.[1] ?? '';
+
+    expect(actions).toMatch(/display:\s*grid/);
+    expect(actions).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    expect(links).toMatch(/min-height:\s*44px/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.spei-actions\s*\{[^}]*grid-template-columns:\s*1fr/);
+  });
 });

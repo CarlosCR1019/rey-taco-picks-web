@@ -174,6 +174,21 @@ describe('conversion analytics', () => {
     expect(track).toHaveBeenCalledTimes(2);
   });
 
+  it('records SPEI handoffs with the plan and no payment details', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID);
+    const track = vi.fn();
+    (window as TestWindow).umami = { track };
+
+    trackConversion('spei_whatsapp_clicked', {
+      surface: 'web', window_slot: '6pm', plan: 'weekly', phone: 'private', clabe: 'private',
+    });
+
+    expect(track).toHaveBeenCalledWith('spei_whatsapp_clicked', {
+      surface: 'web', window_slot: '6pm', plan: 'weekly',
+    });
+    expect(JSON.stringify(track.mock.calls)).not.toContain('private');
+  });
+
   it('resolves visible-event property factories when intersection occurs', () => {
     vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID);
     const track = vi.fn();

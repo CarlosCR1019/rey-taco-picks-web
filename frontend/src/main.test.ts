@@ -308,6 +308,20 @@ describe('active offer integration', () => {
     expect(mocks.trackConversion).toHaveBeenCalledWith('vip_plan_selected', expect.objectContaining({ plan: 'weekly', billing_mode: 'payment' }));
   });
 
+  it('measures the selected SPEI WhatsApp handoff without starting Stripe', async () => {
+    await mountMain();
+    const link = document.querySelector<HTMLAnchorElement>('[data-spei-plan="weekly"]')!;
+    link.addEventListener('click', event => event.preventDefault());
+
+    link.click();
+
+    expect(mocks.trackConversion).toHaveBeenCalledWith(
+      'spei_whatsapp_clicked',
+      expect.objectContaining({ surface: 'web', plan: 'weekly' }),
+    );
+    expect(mocks.invoke).not.toHaveBeenCalledWith('create-checkout', expect.anything());
+  });
+
   it('retains the monthly plan after sign-up while waiting for confirmation', async () => {
     await mountMain();
     const dialog = document.querySelector<HTMLDialogElement>('#auth-dialog')!;

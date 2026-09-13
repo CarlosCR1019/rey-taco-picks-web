@@ -1,5 +1,19 @@
 # Frontend release runbook
 
+## Stripe-first SPEI handoff
+
+Stripe Checkout remains the primary VIP purchase action. Customers who choose
+SPEI can open the secondary WhatsApp options for the seven-day `$129 MXN` plan
+or the monthly `$349 MXN` plan. Those links use the public commercial number
+`+52 33 3964 3226` and contain only a prefilled plan request.
+
+Do not place a CLABE, bank name, beneficiary, receipt, email address, Telegram
+identifier, or other payment details in frontend source or analytics. WhatsApp
+handles the manual handoff, and access is activated only after the deposit is
+confirmed independently. The `spei_whatsapp_clicked` analytics event permits
+only aggregate funnel context and `plan=weekly|monthly`; it never activates or
+extends a membership.
+
 ## Build variables
 
 - Required for accounts: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_TELEGRAM_BOT_USERNAME`.
@@ -50,6 +64,7 @@ Required anonymous funnel events:
 - `checkout_cancelled`
 - `subscription_confirmed`
 - `miniapp_opened`
+- `spei_whatsapp_clicked`
 
 Production smoke evidence for this release:
 

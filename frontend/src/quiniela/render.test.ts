@@ -11,7 +11,7 @@ const snapshot: QuinielaSnapshot = {
   week: {
     id: 'week-id', seasonKey: 'apertura-2026', weekKey: 'j7', title: 'Jornada 7',
     status: 'open', opensAt: '2026-09-10T00:00:00Z', closesAt: '2026-09-13T17:00:00Z',
-    termsVersion: '2026-09-12', resultSourceName: 'Liga MX',
+    termsVersion: 'quiniela-apertura-2026-v1', resultSourceName: 'Liga MX',
     resultSourceUrl: 'https://example.com/results', resultsCheckedAt: null,
   },
   matches: [{
@@ -67,7 +67,24 @@ describe('quiniela rendering', () => {
     expect(document.querySelector('[name="home:match-id"]')).not.toBeNull();
     expect(document.querySelector('[name="away:match-id"]')).not.toBeNull();
     expect(document.querySelector<HTMLInputElement>('#quiniela-attestation')?.required).toBe(true);
+    expect(document.querySelector(
+      'a[href="/terminos.html#reglamento-quiniela-apertura-2026-v1"]',
+    )).not.toBeNull();
     expect(document.querySelector('a[href="/privacidad.html"]')).not.toBeNull();
+  });
+
+  it('falls back to the terms page when a server version is not anchor-safe', () => {
+    const unsafe: QuinielaSnapshot = {
+      ...snapshot,
+      week: { ...snapshot.week!, termsVersion: 'bad version" onclick="alert(1)' },
+    };
+    document.getElementById('app')!.innerHTML = renderQuinielaState(
+      unsafe, { isAuthenticated: true },
+    );
+    expect(document.querySelector(
+      '#quiniela-entry-form a[href="/terminos.html"]',
+    )).not.toBeNull();
+    expect(document.querySelector('[onclick]')).toBeNull();
   });
 
   it('renders an immutable receipt instead of the form', () => {

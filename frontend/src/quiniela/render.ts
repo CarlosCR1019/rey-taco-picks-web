@@ -26,6 +26,13 @@ function safeHttpsUrl(value: string | null): string {
   }
 }
 
+function rulesHref(termsVersion: string): string {
+  const normalized = termsVersion.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized)
+    ? `/terminos.html#reglamento-${normalized}`
+    : '/terminos.html';
+}
+
 function resultLabel(match: QuinielaMatch): string {
   if (match.homeScore === null || match.awayScore === null) return 'Pendiente';
   return `${match.homeScore} – ${match.awayScore}`;
@@ -87,6 +94,7 @@ function predictionFields(match: QuinielaMatch): string {
 
 function entryForm(snapshot: QuinielaSnapshot, busy: boolean): string {
   const week = snapshot.week!;
+  const publishedRulesHref = rulesHref(week.termsVersion);
   return `
     <form id="quiniela-entry-form" class="quiniela-entry-form">
       <h2>Tu pronóstico</h2>
@@ -95,7 +103,7 @@ function entryForm(snapshot: QuinielaSnapshot, busy: boolean): string {
         <input id="quiniela-attestation" name="attestation" type="checkbox" required />
         Confirmo que soy mayor de 18 años, estoy ubicado en México y acepto los términos ${escapeHtml(week.termsVersion)}.
       </label>
-      <p>Consulta el <a href="/terminos.html">reglamento</a> y nuestro <a href="/privacidad.html">aviso de privacidad</a>.</p>
+      <p>Consulta el <a href="${publishedRulesHref}">reglamento aceptado</a> y nuestro <a href="/privacidad.html">aviso de privacidad</a>.</p>
       <button class="quiniela-primary" type="submit" ${busy ? 'disabled' : ''}>${busy ? 'Enviando…' : 'Enviar participación'}</button>
     </form>`;
 }

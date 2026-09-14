@@ -11,7 +11,8 @@ export function applicationTemplate(): string {
           <a href="#picks">Picks del día</a>
           <a href="#resultados">Resultados</a>
           <a href="#salmo">Salmo del día</a>
-          <a href="#metodo">Cómo funciona</a>
+          <a href="/aprende/">Aprende</a>
+          <a href="/metodologia.html">Metodología</a>
         </nav>
         <div class="header-actions">
           <button class="text-button" id="login-button" type="button">Iniciar sesión</button>
@@ -121,7 +122,7 @@ export function applicationTemplate(): string {
       <footer class="site-footer">
         <div class="brand footer-brand"><img src="/logo.jpg" alt="" width="44" height="44" /><span><strong>Rey Taco Picks</strong><small>México</small></span></div>
         <p>Contenido informativo y recreativo. +18. No garantizamos ganancias.</p>
-        <p>© 2026 Rey Taco Picks · <a href="/privacidad.html">Privacidad</a> · <a href="/terminos.html">Términos</a> · <a href="mailto:soporte@reytacopicks.com">Soporte</a></p>
+        <p>© 2026 Rey Taco Picks · <a href="/aprende/">Aprende</a> · <a href="/metodologia.html">Metodología</a> · <a href="/privacidad.html">Privacidad</a> · <a href="/terminos.html">Términos</a> · <a href="mailto:soporte@reytacopicks.com">Soporte</a></p>
       </footer>
 
       <nav class="mobile-nav" aria-label="Navegación móvil">

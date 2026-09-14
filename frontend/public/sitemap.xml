@@ -1,6 +1,67 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://reytacopicks.com/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
-  <url><loc>https://reytacopicks.com/privacidad.html</loc><changefreq>yearly</changefreq><priority>0.4</priority></url>
-  <url><loc>https://reytacopicks.com/terminos.html</loc><changefreq>yearly</changefreq><priority>0.4</priority></url>
+  <!-- Portada Principal -->
+  <url>
+    <loc>https://reytacopicks.com/</loc>
+    <changefreq>hourly</changefreq>
+    <priority>1.0</priority>
+  </url>
+
+  <!-- Sección Aprende: Hub Principal -->
+  <url>
+    <loc>https://reytacopicks.com/aprende/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+
+  <!-- Guías Educativas Originales -->
+  <url>
+    <loc>https://reytacopicks.com/aprende/momios-americanos-y-decimales.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/margen-de-la-casa-overround.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/apuesta-simple-frente-a-parlay.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/por-que-una-racha-no-garantiza-resultados.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/como-interpretar-nuestro-historial.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/que-puede-y-que-no-puede-hacer-la-ia.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.85</priority>
+  </url>
+
+  <!-- Metodología Oficial -->
+  <url>
+    <loc>https://reytacopicks.com/metodologia.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- Legales -->
+  <url>
+    <loc>https://reytacopicks.com/privacidad.html</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/terminos.html</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.4</priority>
+  </url>
 </urlset>

@@ -5,6 +5,7 @@ Deno.test("creates a monthly subscription bound to the signed-in user", () => {
   const params = checkoutParams("user-1", "cliente@example.com", "price_monthly", "https://reytacopicks.com", "subscription");
   assertEquals(params.mode, "subscription");
   assertEquals(params.client_reference_id, "user-1");
+  if (!("subscription_data" in params)) throw new Error("Expected subscription metadata");
   assertEquals(params.subscription_data.metadata.user_id, "user-1");
   assertEquals(params.line_items, [{ price: "price_monthly", quantity: 1 }]);
 });

@@ -148,6 +148,31 @@ describe('educational and methodology content for AdSense compliance', () => {
     expect(methodology).not.toContain('únicamente coincidencias válidas');
   });
 
+  it('describes administrative corrections without promising immutable public rows', () => {
+    const methodology = fs.readFileSync(path.join(publicDir, 'metodologia.html'), 'utf-8');
+
+    expect(methodology).toContain('correcciones administrativas');
+    expect(methodology).toContain('campos de auditoría de la fuente');
+    expect(methodology).not.toContain('Cero edición retroactiva');
+    expect(methodology).not.toContain('Ningún pronóstico publicado es eliminado');
+    expect(methodology).not.toContain('permanece inalterable');
+  });
+
+  it('labels proportional de-vig as an estimate and keeps the example arithmetic exact', () => {
+    const marginGuide = fs.readFileSync(
+      path.join(aprendeDir, 'margen-de-la-casa-overround.html'),
+      'utf-8',
+    );
+
+    expect(marginGuide).toContain('estimación proporcional sin margen');
+    expect(marginGuide).toContain('<strong>44.72%</strong>');
+    expect(marginGuide).toContain('<strong>28.46%</strong>');
+    expect(marginGuide).toContain('<strong>26.83%</strong>');
+    expect(marginGuide).toContain('cuota de referencia sin margen');
+    expect(marginGuide).not.toContain('Probabilidad Real');
+    expect(marginGuide).not.toContain('cuota matemáticamente justa');
+  });
+
   it('qualifies parlay probability examples with their mathematical assumptions', () => {
     const parlayGuide = fs.readFileSync(
       path.join(aprendeDir, 'apuesta-simple-frente-a-parlay.html'),

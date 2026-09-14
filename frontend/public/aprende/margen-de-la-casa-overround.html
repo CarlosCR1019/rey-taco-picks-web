@@ -9,14 +9,14 @@
   <link rel="icon" href="/favicon.svg" />
   <link rel="stylesheet" href="/editorial.css" />
   <title>Qué significa el margen de la casa (Overround / Vig) en las apuestas | Rey Taco Picks</title>
-  <meta name="description" content="Descubre cómo las casas de apuestas cobran su comisión silenciosa inflando las probabilidades (overround) y aprende a calcular las cuotas justas sin margen." />
+  <meta name="description" content="Aprende a medir el margen incorporado en las cuotas (overround) y a obtener una estimación proporcional sin margen, sin confundirla con la probabilidad real." />
 
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": "Qué significa el margen de la casa (Overround / Vigorish) y cómo afecta al apostador",
-    "description": "Explicación matemática del margen oculto en las cuotas deportivas, fórmulas de cálculo para mercados de 2 y 3 opciones y cómo deducir las cuotas justas.",
+    "description": "Explicación matemática del margen incorporado en las cuotas deportivas y de una estimación proporcional sin margen para mercados de varias opciones.",
     "author": {
       "@type": "Organization",
       "name": "Equipo Editorial de Rey Taco Picks"
@@ -27,7 +27,7 @@
       "logo": "https://reytacopicks.com/logo.jpg"
     },
     "datePublished": "2026-09-02",
-    "dateModified": "2026-09-13",
+    "dateModified": "2026-09-14",
     "mainEntityOfPage": "https://reytacopicks.com/aprende/margen-de-la-casa-overround.html"
   }
   </script>
@@ -58,7 +58,7 @@
       <span>⏱️ Lectura: 8 minutos</span>
       <span>📐 Cálculo de ventaja matemática</span>
     </div>
-    <p class="byline">Por el Equipo Editorial de Rey Taco Picks · Actualizado el <time datetime="2026-09-13">13 de septiembre de 2026</time>.</p>
+    <p class="byline">Por el Equipo Editorial de Rey Taco Picks · Actualizado el <time datetime="2026-09-14">14 de septiembre de 2026</time>.</p>
 
     <p>
       Las cuotas suelen incorporar un margen a favor del operador. Ese margen no garantiza un beneficio en cada evento aislado, pero sí modifica el precio que recibe el apostador. En mercados de varias opciones puede observarse mediante el <em>vigorish</em>, <em>juice</em> u <strong>overround</strong>.
@@ -116,7 +116,7 @@
             <th>Cuota ofrecida</th>
             <th>Cálculo de probabilidad implícita</th>
             <th>Probabilidad con margen</th>
-            <th>Probabilidad Real (Descontando margen)</th>
+            <th>Estimación proporcional sin margen</th>
           </tr>
         </thead>
         <tbody>
@@ -125,21 +125,21 @@
             <td>2.10</td>
             <td>1 / 2.10</td>
             <td>47.62%</td>
-            <td><strong>44.69%</strong></td>
+            <td><strong>44.72%</strong></td>
           </tr>
           <tr>
             <td>Empate</td>
             <td>3.30</td>
             <td>1 / 3.30</td>
             <td>30.30%</td>
-            <td><strong>28.44%</strong></td>
+            <td><strong>28.46%</strong></td>
           </tr>
           <tr>
             <td>Chivas (Visita)</td>
             <td>3.50</td>
             <td>1 / 3.50</td>
             <td>28.57%</td>
-            <td><strong>26.87%</strong></td>
+            <td><strong>26.83%</strong></td>
           </tr>
           <tr>
             <td><strong>Total del Mercado</strong></td>
@@ -153,28 +153,28 @@
     </div>
 
     <p>
-      En este ejemplo, el overround es de <strong>106.49%</strong>. Al normalizar las probabilidades, la diferencia de precio equivale aproximadamente a un <strong>6.10%</strong>. Es una simplificación matemática para comparar cuotas; no significa que el operador retenga exactamente esa cantidad en cada partido.
+      En este ejemplo, las probabilidades implícitas suman <strong>106.49%</strong>: 6.49 puntos porcentuales por encima de 100%. Medido respecto del total, el margen relativo es aproximadamente <strong>6.10%</strong>. Ambas cifras describen estos precios; no significan que el operador retenga exactamente esa cantidad en cada partido.
     </p>
 
-    <h2>4. Cómo calcular la "Cuota Justa" (Fair Odds)</h2>
+    <h2>4. Cómo obtener una referencia proporcional sin margen</h2>
     <p>
-      Para evaluar si un momio tiene valor, los analistas profesionales "limpian" el margen de la casa para conocer cuál sería la cuota matemáticamente justa:
+      Una forma sencilla de comparar precios consiste en repartir el overround de manera proporcional. Este método produce una estimación sin margen bajo ese supuesto; no descubre la probabilidad real del evento ni demuestra por sí solo que una cuota tenga valor:
     </p>
     <div class="formula-box">
-      <strong>Fórmula de Probabilidad Real Descontando Margen:</strong>
-      <span class="formula-code">Probabilidad Real = Probabilidad Implícita / Overround Total</span>
+      <strong>Fórmula de estimación proporcional sin margen:</strong>
+      <span class="formula-code">Estimación sin margen = Probabilidad implícita / Overround total</span>
       <p style="margin-top: 10px;">
-        <strong>Fórmula de Cuota Justa (Fair Odd):</strong><br />
-        <span class="formula-code">Cuota Justa = 1 / Probabilidad Real</span>
+        <strong>Fórmula de cuota de referencia sin margen:</strong><br />
+        <span class="formula-code">Cuota de referencia = 1 / Estimación sin margen</span>
       </p>
     </div>
     <p>
       Siguiendo nuestro ejemplo del América:
     </p>
     <ul>
-      <li>Probabilidad Real = 0.4762 / 1.0649 = <strong>44.69%</strong>.</li>
-      <li>Cuota Justa = 1 / 0.4469 = <strong>2.24</strong>.</li>
-      <li>Como la casa te está pagando <code>2.10</code> en vez de la cuota justa de <code>2.24</code>, estás recibiendo un precio con descuento desfavorable.</li>
+      <li>Estimación proporcional sin margen = 0.4762 / 1.0649 = <strong>44.72%</strong>.</li>
+      <li>Cuota de referencia sin margen = 1 / 0.4472 = <strong>2.24</strong>.</li>
+      <li>La cuota ofrecida de <code>2.10</code> es menor que esa referencia de <code>2.24</code>. La comparación muestra el efecto del margen bajo el reparto proporcional; no establece la probabilidad verdadera ni el valor esperado.</li>
     </ul>
 
     <h2>5. Por qué el margen erosiona tu capital a largo plazo</h2>

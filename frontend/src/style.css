@@ -329,3 +329,78 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+/* Isolated Liga MX quiniela route. */
+.quiniela-route { padding: 0; background: radial-gradient(circle at 85% 0%, rgba(242, 169, 30, .2), transparent 30rem), #08111f; color: #f7f1e8; }
+.quiniela-route :focus-visible { outline: 3px solid #ffd56a; outline-offset: 3px; }
+.quiniela-page { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+.quiniela-nav { width: min(1120px, calc(100% - 40px)); min-height: 78px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.quiniela-nav > a:last-child { color: #f5cf58; font-size: .78rem; font-weight: 800; }
+.quiniela-brand { display: inline-flex; align-items: center; gap: 11px; color: #fff8ee; text-decoration: none; }
+.quiniela-brand img { border-radius: 50%; }
+.quiniela-brand span { display: grid; line-height: 1.08; }
+.quiniela-brand small { margin-top: 4px; color: #aebbd0; font-size: .64rem; letter-spacing: .09em; text-transform: uppercase; }
+.quiniela-main { width: min(1120px, calc(100% - 40px)); display: grid; gap: 22px; margin: 0 auto; padding: clamp(34px, 7vw, 76px) 0; }
+.quiniela-hero { padding: clamp(26px, 5vw, 52px); border: 1px solid #33445d; border-radius: 28px; background: linear-gradient(135deg, #14243b, #0b1628); box-shadow: 0 22px 70px rgba(0, 0, 0, .28); }
+.quiniela-hero > span { color: #f5cf58; font-size: .7rem; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+.quiniela-hero h1 { margin: 10px 0; color: #fff8ee; font: 700 clamp(2.6rem, 8vw, 5.8rem)/.95 Georgia, serif; letter-spacing: -.05em; }
+.quiniela-hero > p { margin: 0; color: #d9e0eb; }
+.quiniela-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 24px; color: #aebbd0; font-size: .74rem; }
+.quiniela-rules, .quiniela-slate, .quiniela-entry-form, .quiniela-receipt, .quiniela-closed, .quiniela-signin, .quiniela-leaderboard, .quiniela-empty, .quiniela-loading, .quiniela-admin { padding: clamp(22px, 4vw, 36px); border: 1px solid #33445d; border-radius: 22px; background: #101d30; }
+.quiniela-rules h2, .quiniela-slate h2, .quiniela-entry-form h2, .quiniela-receipt h2, .quiniela-closed h2, .quiniela-signin h2, .quiniela-leaderboard h2, .quiniela-empty h1, .quiniela-loading h1 { margin: 0 0 14px; color: #fff8ee; font-family: Georgia, serif; }
+.quiniela-rules ol { display: grid; gap: 8px; padding-left: 22px; color: #d9e0eb; line-height: 1.55; }
+.quiniela-rules p, .quiniela-closed p, .quiniela-signin p, .quiniela-empty p { color: #aebbd0; line-height: 1.6; }
+.quiniela-responsible { padding-top: 15px; border-top: 1px solid #33445d; }
+.quiniela-section-heading { display: flex; justify-content: space-between; gap: 18px; align-items: end; margin-bottom: 18px; }
+.quiniela-section-heading > span { color: #aebbd0; font-size: .72rem; }
+.quiniela-section-heading a { color: #f5cf58; }
+.quiniela-match-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.quiniela-match { min-width: 0; padding: 18px; border: 1px solid #3a4d68; border-radius: 16px; background: #0a1526; }
+.quiniela-match-order, .quiniela-match legend > span { display: block; color: #e1b74c; font-size: .63rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+.quiniela-match h3 { margin: 8px 0; color: #fff8ee; font-size: 1rem; overflow-wrap: anywhere; }
+.quiniela-match h3 span { color: #788aa2; font-weight: 400; }
+.quiniela-match time { display: block; color: #aebbd0; font-size: .72rem; }
+.quiniela-final { display: block; margin-top: 11px; color: #f5cf58; }
+.quiniela-entry-form { display: grid; gap: 13px; }
+.quiniela-prediction { margin: 0; }
+.quiniela-prediction legend { padding: 0 7px; color: #fff8ee; font-weight: 800; }
+.quiniela-prediction-grid { display: grid; grid-template-columns: 1.1fr .7fr .7fr; gap: 10px; margin-top: 14px; }
+.quiniela-prediction-grid label, .quiniela-admin-form label, #quiniela-auth-form label { display: grid; gap: 6px; color: #aebbd0; font-size: .7rem; font-weight: 800; }
+.quiniela-prediction-grid input, .quiniela-prediction-grid select, .quiniela-admin-form input, .quiniela-admin-form textarea, #quiniela-auth-form input { width: 100%; min-height: 44px; padding: 10px 11px; border: 1px solid #536781; border-radius: 9px; background: #fffaf1; color: #24120c; }
+.quiniela-attestation { display: flex; gap: 10px; align-items: flex-start; color: #d9e0eb; line-height: 1.5; }
+.quiniela-attestation input { flex: 0 0 auto; width: 20px; height: 20px; margin-top: 2px; }
+.quiniela-entry-form a { color: #f5cf58; }
+.quiniela-primary { min-height: 44px; padding: 11px 18px; border: 0; border-radius: 999px; background: #f5cf58; color: #17110a; cursor: pointer; font-weight: 900; }
+.quiniela-primary:disabled { cursor: wait; opacity: .65; }
+.quiniela-message { min-height: 0; margin: 0; padding: 0; }
+.quiniela-message:not(:empty) { min-height: 44px; padding: 12px 16px; border-radius: 12px; background: #1b2c43; }
+.quiniela-message-error { border: 1px solid #e87c8d; color: #ffd8de; }
+.quiniela-message-success { border: 1px solid #8fb657; color: #e1f5bf; }
+.quiniela-success-mark { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 50%; background: #769b36; font-size: 1.4rem; }
+.quiniela-receipt-list { display: grid; gap: 8px; margin-top: 18px; }
+.quiniela-receipt-list > div { display: flex; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid #33445d; }
+.quiniela-receipt-list span { color: #aebbd0; }
+.quiniela-receipt-list strong { color: #f5cf58; }
+.quiniela-table-wrap { overflow-x: auto; border: 1px solid #33445d; border-radius: 14px; }
+.quiniela-table-wrap table { min-width: 650px; color: #d9e0eb; }
+.quiniela-table-wrap th { background: #0a1526; color: #f5cf58; }
+.quiniela-table-wrap th, .quiniela-table-wrap td { border-color: #33445d; }
+.quiniela-winner { background: rgba(118, 155, 54, .14); }
+.quiniela-admin summary { color: #f5cf58; cursor: pointer; font-weight: 900; }
+.quiniela-admin-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; padding: 18px; border: 1px solid #3a4d68; border-radius: 14px; }
+.quiniela-admin-form h3 { grid-column: 1 / -1; margin: 0; }
+.quiniela-admin-form button, .quiniela-admin > button { min-height: 44px; padding: 10px 14px; border: 0; border-radius: 9px; background: #f5cf58; color: #17110a; cursor: pointer; font-weight: 900; }
+.quiniela-admin > button { margin-top: 15px; }
+.quiniela-footer { padding: 28px 20px; border-top: 1px solid #293b55; color: #aebbd0; font-size: .7rem; text-align: center; }
+.quiniela-footer a { color: #f5cf58; }
+.quiniela-route #quiniela-auth-form { display: grid; gap: 11px; margin-top: 18px; }
+
+@media (max-width: 700px) {
+  .quiniela-route { padding-bottom: 0; }
+  .quiniela-nav, .quiniela-main { width: min(100% - 26px, 1120px); }
+  .quiniela-brand small { display: none; }
+  .quiniela-match-list { grid-template-columns: 1fr; }
+  .quiniela-prediction-grid { grid-template-columns: 1fr; }
+  .quiniela-section-heading, .quiniela-receipt-list > div { align-items: flex-start; flex-direction: column; }
+  .quiniela-admin-form { grid-template-columns: 1fr; }
+  .quiniela-admin-form h3 { grid-column: auto; }
+}

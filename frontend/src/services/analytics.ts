@@ -10,6 +10,9 @@ export type ConversionEvent =
   | 'checkout_cancelled'
   | 'subscription_confirmed'
   | 'miniapp_opened'
+  | 'quiniela_viewed'
+  | 'quiniela_started'
+  | 'quiniela_submitted'
   | 'spei_whatsapp_clicked';
 
 export type AnalyticsProperties = Partial<Readonly<{
@@ -17,6 +20,7 @@ export type AnalyticsProperties = Partial<Readonly<{
   window_slot: '12am' | '6am' | '12pm' | '6pm';
   public_pick_count: number;
   premium_pick_count: number;
+  week_key: string;
   plan: 'weekly' | 'monthly';
   billing_mode: 'payment' | 'subscription';
 }>> & Readonly<Record<string, unknown>>;
@@ -48,6 +52,10 @@ function allowedProperties(properties?: AnalyticsProperties): Record<string, str
   for (const key of ['public_pick_count', 'premium_pick_count'] as const) {
     const value = properties?.[key];
     if (Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 6) result[key] = String(value);
+  }
+  const weekKey = properties?.week_key;
+  if (typeof weekKey === 'string' && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(weekKey)) {
+    result.week_key = weekKey;
   }
   if (properties?.plan === 'weekly' || properties?.plan === 'monthly') result.plan = properties.plan;
   if (properties?.billing_mode === 'payment' || properties?.billing_mode === 'subscription') {
@@ -94,7 +102,7 @@ export function initUmami(): void {
 
 export function trackConversion(event: ConversionEvent, properties?: AnalyticsProperties): void {
   const safeProperties = allowedProperties(properties);
-  const key = `${event}|${safeProperties.surface ?? ''}|${safeProperties.window_slot ?? ''}|${safeProperties.plan ?? ''}|${safeProperties.billing_mode ?? ''}`;
+  const key = `${event}|${safeProperties.surface ?? ''}|${safeProperties.window_slot ?? ''}|${safeProperties.week_key ?? ''}|${safeProperties.plan ?? ''}|${safeProperties.billing_mode ?? ''}`;
   if (emitted.has(key)) return;
   emitted.add(key);
   const target = window as AnalyticsWindow;

@@ -18,6 +18,8 @@ import { isSubscriberRpcActive } from './services/membership';
 import { loadTicketManifest } from './services/tickets';
 import { initTelegramMiniApp, isTelegramMiniAppLocation } from './app/telegram';
 import { clearCheckoutIntent, navigateWithCheckoutIntent, readCheckoutIntent, saveCheckoutIntent, type CheckoutPlan } from './services/checkoutIntent';
+import { initQuiniela, type QuinielaAppClient } from './quiniela/controller';
+import { renderQuinielaShell, renderQuinielaUnavailable } from './quiniela/render';
 
 type AppState = {
   picks: PickRow[];
@@ -87,6 +89,24 @@ function currentAnalyticsProperties() {
   };
 }
 
+const isQuinielaRoute = window.location.pathname === '/quiniela'
+  || window.location.pathname === '/quiniela/';
+
+if (isQuinielaRoute) {
+  try {
+    initUmami();
+  } catch {
+    // Analytics must never block the promotion.
+  }
+  const root = document.getElementById('app');
+  if (!root) throw new Error('Missing #app root');
+  if (supabase) {
+    void initQuiniela(root, supabase as unknown as QuinielaAppClient);
+  } else {
+    renderQuinielaShell(root);
+    renderQuinielaUnavailable(root);
+  }
+} else {
 renderShell();
 const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
 const vipAccessLink = byId<HTMLAnchorElement>('telegram-access-link');
@@ -598,4 +618,5 @@ void (async () => {
     }
   }
 })();
+}
 }

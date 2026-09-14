@@ -1,0 +1,390 @@
+:root {
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #24120c;
+  background: #fffaf0;
+  --wine: #7f0f22;
+  --wine-dark: #5c0b19;
+  --red: #c51c32;
+  --gold: #f2a91e;
+  --gold-light: #fff4de;
+  --line: #eadbc6;
+  --muted: #6c584d;
+  --surface: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #fffaf0;
+  color: #24120c;
+  font-size: 1rem;
+  line-height: 1.75;
+}
+
+header, main, footer, .container {
+  width: min(840px, calc(100% - 36px));
+  margin: auto;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+header .brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--wine);
+  font-weight: 900;
+  text-decoration: none;
+  font-size: 1.15rem;
+}
+
+header .brand img {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid var(--gold);
+}
+
+header nav {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+
+header nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.88rem;
+  transition: color 0.15s ease;
+}
+
+header nav a:hover, header nav a.active {
+  color: var(--wine);
+  font-weight: 800;
+}
+
+main {
+  padding: 48px 0 64px;
+}
+
+.breadcrumbs {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.breadcrumbs a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.breadcrumbs a:hover {
+  color: var(--wine);
+  text-decoration: underline;
+}
+
+h1, h2, h3 {
+  font-family: Georgia, serif;
+  color: var(--wine);
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: clamp(2.2rem, 6vw, 3.4rem);
+  letter-spacing: -0.035em;
+  margin: 0 0 16px;
+  color: var(--wine-dark);
+}
+
+h2 {
+  font-size: 1.65rem;
+  margin: 42px 0 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+h3 {
+  font-size: 1.25rem;
+  margin: 28px 0 12px;
+}
+
+p, li {
+  color: #4a382e;
+  line-height: 1.8;
+  margin-bottom: 16px;
+}
+
+ul, ol {
+  padding-left: 24px;
+  margin-bottom: 24px;
+}
+
+li {
+  margin-bottom: 8px;
+}
+
+.article-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  padding: 12px 0 20px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 32px;
+}
+
+.article-meta span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.byline {
+  margin: -18px 0 30px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.sources {
+  margin: 40px 0 24px;
+  padding: 20px 24px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.sources h2 {
+  margin-top: 0;
+  font-size: 1.25rem;
+}
+
+.sources ul {
+  margin-bottom: 0;
+}
+
+.sources a {
+  color: var(--wine);
+  font-weight: 700;
+}
+
+.formula-box {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--wine);
+  border-radius: 8px;
+  padding: 20px 24px;
+  margin: 28px 0;
+  box-shadow: 0 2px 8px rgba(127, 15, 34, 0.04);
+}
+
+.formula-box strong {
+  color: var(--wine);
+  display: block;
+  margin-bottom: 8px;
+  font-size: 1.05rem;
+}
+
+.formula-code {
+  font-family: "Courier New", Courier, monospace;
+  background: var(--gold-light);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #633200;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  margin: 28px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  text-align: left;
+}
+
+th {
+  background: var(--wine);
+  color: #ffffff;
+  padding: 12px 16px;
+  font-weight: 700;
+}
+
+td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  color: #4a382e;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+tr:nth-child(even) {
+  background: #fffdf9;
+}
+
+.callout-warning {
+  background: #fff4de;
+  border: 1px solid #ebd4ab;
+  border-left: 5px solid var(--gold);
+  border-radius: 8px;
+  padding: 18px 22px;
+  margin: 28px 0;
+}
+
+.callout-warning h4 {
+  margin: 0 0 6px;
+  color: #7d4d00;
+  font-size: 1.05rem;
+}
+
+.callout-warning p {
+  margin: 0;
+  color: #5c3800;
+  font-size: 0.92rem;
+}
+
+.responsible-gaming-box {
+  background: #fdf2f2;
+  border: 1px solid #f8c8c8;
+  border-left: 5px solid var(--red);
+  border-radius: 8px;
+  padding: 20px 24px;
+  margin: 40px 0 20px;
+}
+
+.responsible-gaming-box h4 {
+  margin: 0 0 8px;
+  color: var(--wine);
+  font-size: 1.05rem;
+}
+
+.responsible-gaming-box p {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #702525;
+}
+
+.guide-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 24px;
+  margin: 36px 0;
+}
+
+.guide-card {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.guide-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(127, 15, 34, 0.08);
+  border-color: var(--wine);
+}
+
+.guide-card .card-number {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--wine);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.guide-card h3 {
+  margin: 0 0 10px;
+  font-size: 1.2rem;
+  color: var(--wine-dark);
+}
+
+.guide-card p {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin-bottom: 16px;
+  flex-grow: 1;
+}
+
+.guide-card .read-more {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--red);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+footer {
+  padding: 32px 0 54px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+footer .footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+footer a {
+  color: var(--wine);
+  text-decoration: none;
+}
+
+footer a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 650px) {
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  header nav {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+  .guide-grid {
+    grid-template-columns: 1fr;
+  }
+  h1 {
+    font-size: 2.1rem;
+  }
+}

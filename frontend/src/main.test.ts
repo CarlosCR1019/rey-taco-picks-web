@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   signInWithPassword: vi.fn(),
   signUp: vi.fn(),
   invoke: vi.fn(),
+  initQuiniela: vi.fn(),
   authCallback: undefined as ((event: string, session: unknown) => void) | undefined,
 }));
 
@@ -47,6 +48,7 @@ vi.mock('./services/analytics', () => ({
 }));
 vi.mock('./services/tickets', () => ({ loadTicketManifest: mocks.loadTicketManifest }));
 vi.mock('./dailyVerse', () => ({ initDailyVerseBanner: vi.fn() }));
+vi.mock('./quiniela/controller', () => ({ initQuiniela: mocks.initQuiniela }));
 
 const publicPick: PickRow = {
   id: 1,
@@ -93,6 +95,21 @@ describe('active offer integration', () => {
     mocks.signInWithPassword.mockResolvedValue({ data: { user: { id: 'user' } }, error: null });
     mocks.signUp.mockResolvedValue({ data: { user: null }, error: null });
     mocks.authCallback = undefined;
+  });
+
+  it('dispatches /quiniela without loading the picks or checkout application', async () => {
+    window.history.replaceState({}, '', '/quiniela');
+    document.body.innerHTML = '<div id="app"></div><div id="telegram-mini-app" class="hidden"></div>';
+
+    await import('./main');
+
+    await vi.waitFor(() => expect(mocks.initQuiniela).toHaveBeenCalledTimes(1));
+    expect(mocks.loadDailyPublicPicks).not.toHaveBeenCalled();
+    expect(mocks.loadActiveOfferCounts).not.toHaveBeenCalled();
+    expect(mocks.loadHistory).not.toHaveBeenCalled();
+    expect(mocks.loadSubscriberPicks).not.toHaveBeenCalled();
+    expect(mocks.loadTicketManifest).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('loads active offer counts and renders their truthful headline', async () => {

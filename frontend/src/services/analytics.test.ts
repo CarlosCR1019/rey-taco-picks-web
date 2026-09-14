@@ -189,6 +189,29 @@ describe('conversion analytics', () => {
     expect(JSON.stringify(track.mock.calls)).not.toContain('private');
   });
 
+  it('records quiniela events with only the public week key', () => {
+    vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID);
+    const track = vi.fn();
+    (window as TestWindow).umami = { track };
+
+    trackConversion('quiniela_viewed', {
+      surface: 'web',
+      week_key: 'apertura_2026_j7',
+      email: 'private@example.com',
+      user_id: 'user-123',
+      prediction: '2-1',
+      source_url: 'https://private.example',
+    });
+    trackConversion('quiniela_viewed', { surface: 'web', week_key: 'apertura_2026_j8' });
+
+    expect(track).toHaveBeenCalledTimes(2);
+    expect(track).toHaveBeenNthCalledWith(1, 'quiniela_viewed', {
+      surface: 'web',
+      week_key: 'apertura_2026_j7',
+    });
+    expect(JSON.stringify(track.mock.calls)).not.toMatch(/private|user-123|2-1/);
+  });
+
   it('resolves visible-event property factories when intersection occurs', () => {
     vi.stubEnv('VITE_UMAMI_WEBSITE_ID', WEBSITE_ID);
     const track = vi.fn();

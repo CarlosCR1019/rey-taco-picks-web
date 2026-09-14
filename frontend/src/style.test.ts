@@ -62,4 +62,16 @@ describe('responsive navigation contract', () => {
     expect(links).toMatch(/min-height:\s*44px/);
     expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.spei-actions\s*\{[^}]*grid-template-columns:\s*1fr/);
   });
+
+  it('keeps quiniela controls touchable and stacks predictions on phones', () => {
+    const primary = styleSheet.match(/\.quiniela-primary\s*\{([^}]*)\}/)?.[1] ?? '';
+
+    expect(primary).toMatch(/min-height:\s*44px/);
+    expect(styleSheet).toMatch(/\.quiniela-prediction-grid\s*\{[^}]*grid-template-columns:/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.quiniela-prediction-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
+  });
+
+  it('uses a visible keyboard focus treatment on quiniela controls', () => {
+    expect(styleSheet).toMatch(/\.quiniela-route\s+:focus-visible\s*\{[^}]*outline:/);
+  });
 });

@@ -12,8 +12,7 @@ export type ConversionEvent =
   | 'miniapp_opened'
   | 'quiniela_viewed'
   | 'quiniela_started'
-  | 'quiniela_submitted'
-  | 'spei_whatsapp_clicked';
+  | 'quiniela_submitted';
 
 export type AnalyticsProperties = Partial<Readonly<{
   surface: 'web' | 'telegram_miniapp';

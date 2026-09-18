@@ -48,19 +48,14 @@ describe('approved application shell', () => {
     expect(document.querySelector('.vip-section')?.textContent).toContain('$129');
   });
 
-  it('keeps Stripe primary and exposes both SPEI plans on the commercial WhatsApp', () => {
+  it('keeps Stripe primary and confirms automated processing with no manual transfers', () => {
     renderShell();
 
     expect(document.querySelector('#vip-primary-button')?.textContent).toContain('$349 MXN/mes');
-    const links = [...document.querySelectorAll<HTMLAnchorElement>('[data-spei-plan]')];
-    expect(links.map(link => link.dataset.speiPlan)).toEqual(['weekly', 'monthly']);
-    expect(links.map(link => link.href)).toEqual([
-      expect.stringContaining('https://wa.me/523339643226'),
-      expect.stringContaining('https://wa.me/523339643226'),
-    ]);
-    expect(links.every(link => link.target === '_blank' && link.rel.includes('noopener'))).toBe(true);
+    expect(document.querySelectorAll('[data-spei-plan]')).toHaveLength(0);
+    expect(document.querySelector('.stripe-trust-note')?.textContent).toContain('Pagos 100% seguros con Stripe');
+    expect(document.body.innerHTML).not.toContain('SPEI');
     expect(document.body.innerHTML).not.toContain('525639331102');
-    expect(document.querySelector('.spei-note')?.textContent).toContain('confirmar el depósito');
   });
 
   it('renders the Editorial Royal pricing hierarchy and both access destinations', () => {

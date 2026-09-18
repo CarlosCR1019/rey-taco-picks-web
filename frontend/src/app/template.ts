@@ -1,5 +1,3 @@
-import { speiWhatsAppUrl } from './spei';
-
 export function applicationTemplate(): string {
   return `
     <a class="skip-link" href="#contenido">Saltar al contenido</a>
@@ -169,13 +167,9 @@ export function applicationTemplate(): string {
         <button class="text-button" id="signout-button" type="button">Cerrar sesión</button>
       </div>
       <p id="auth-message" class="form-message" aria-live="polite"></p>
-      <div class="spei-note">
-        <strong>¿Pagarás por SPEI?</strong>
-        <span>Elige tu plan y escríbenos por WhatsApp. Activamos el acceso después de confirmar el depósito.</span>
-        <div class="spei-actions">
-          <a data-spei-plan="weekly" href="${speiWhatsAppUrl('weekly')}" target="_blank" rel="noopener noreferrer">7 días · $129</a>
-          <a data-spei-plan="monthly" href="${speiWhatsAppUrl('monthly')}" target="_blank" rel="noopener noreferrer">30 días · $349</a>
-        </div>
+      <div class="stripe-trust-note">
+        <strong>Pagos 100% seguros con Stripe</strong>
+        <span>Activación instantánea tras confirmar tu suscripción o pase semanal. Acceso directo e inmediato a la cartera VIP.</span>
       </div>
     </dialog>
 

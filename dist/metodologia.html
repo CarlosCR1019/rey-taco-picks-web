@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#7f0f22" />
+  <link rel="canonical" href="https://reytacopicks.com/metodologia.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/editorial.css" />
+  <title>Metodología de Análisis y Criterios Editoriales | Rey Taco Picks</title>
+  <meta name="description" content="Conoce con total transparencia de dónde provienen nuestros datos deportivos, cómo se evalúan las cuotas, cómo se audita el historial y nuestros límites analíticos." />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "AboutPage",
+    "name": "Metodología y Criterios Editoriales de Rey Taco Picks",
+    "description": "Documentación pública y transparente sobre la captura de cuotas, selección de pronósticos y auditoría de resultados.",
+    "url": "https://reytacopicks.com/metodologia.html",
+    "dateModified": "2026-09-14",
+    "publisher": {
+      "@type": "Organization",
+      "name": "Rey Taco Picks",
+      "url": "https://reytacopicks.com",
+      "logo": "https://reytacopicks.com/logo.jpg"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">
+      <img src="/logo.jpg" alt="Logo Rey Taco Picks" />
+      <span>Rey Taco Picks</span>
+    </a>
+    <nav aria-label="Navegación secundaria">
+      <a href="/">Inicio</a>
+      <a href="/aprende/">Aprende</a>
+      <a href="/metodologia.html" class="active">Metodología</a>
+      <a href="/privacidad.html">Privacidad</a>
+    </nav>
+  </header>
+
+  <main>
+    <nav class="breadcrumbs" aria-label="Ruta de exploración">
+      <a href="/">Inicio</a> &gt; <span>Metodología</span>
+    </nav>
+
+    <h1>Metodología de Análisis y Criterios Editoriales</h1>
+
+    <div class="article-meta">
+      <span>📅 Última revisión: 13 de septiembre de 2026</span>
+      <span>⏱️ Lectura: 6 minutos</span>
+      <span>🔍 Enfoque: Transparencia algorítmica y juego responsable</span>
+    </div>
+    <p class="byline">Documento mantenido por el Equipo Editorial de Rey Taco Picks.</p>
+
+    <aside class="formula-box">
+      <strong>Declaración de principios</strong>
+      En Rey Taco Picks creemos que el análisis deportivo debe ser transparente, verificable y educativo. No prometemos ganancias garantizadas, no vendemos certezas inexistentes y registramos públicamente cada resultado obtenido, incluyendo pérdidas y cancelaciones.
+    </aside>
+
+    <h2>1. Origen y captura de los datos deportivos</h2>
+    <p>Para formular selecciones y comparar cuotas, el sistema consulta la cartelera pública de Playdoit, servida mediante su plataforma tecnológica. Mencionar esa fuente describe la procedencia de los datos observados; no constituye una certificación independiente de sus permisos, disponibilidad ni condiciones comerciales.</p>
+    <ul>
+      <li><strong>Timestamp de observación auditado:</strong> Cada cuota registrada conserva en <code>source_observed_at</code> la marca de tiempo exacta de la consulta y la almacena en UTC. La hora local puede calcularse para mostrarla, pero no se guarda como una segunda marca de tiempo.</li>
+      <li><strong>Identificadores de evento y selección:</strong> No agrupamos partidos de forma ambigua. Cada registro conserva el identificador del evento (<code>source_event_id</code>) y la clave exacta de la selección (<code>source_selection_key</code>) recibidos del catálogo observado.</li>
+      <li><strong>Monitoreo de desajustes:</strong> Las cuotas en las casas de apuestas son dinámicas y cambian con el flujo de dinero del mercado. Toda cuota publicada refleja el valor observado en el instante de la consulta y puede diferir al momento en que el usuario ingresa a la casa de apuestas.</li>
+    </ul>
+
+    <h2>2. Criterios de evaluación y selección de picks</h2>
+    <p>La selección sigue un flujo trazable de validaciones y clasificación editorial. La IA no puede agregar una jugada que no exista en el catálogo observado:</p>
+    <ol>
+      <li><strong>Identidad y vigencia:</strong> Se exige evento futuro, fuente, identificador, mercado, selección, horario y momento de observación coherentes.</li>
+      <li><strong>Filtros deterministas:</strong> Se excluyen precios fuera del rango permitido, eventos incompatibles, mercados sin ruta de verificación y props que requieran una alineación aún no confirmada.</li>
+      <li><strong>Clasificación independiente:</strong> Gemini y Groq reciben el mismo catálogo acotado —evento, liga, mercado, línea, selección y cuota— y solo pueden devolver identificadores presentes en él.</li>
+      <li><strong>Agregación y auditoría:</strong> Una coincidencia válida entre Gemini y Groq recibe una bonificación editorial. Si responde un solo proveedor, una opción puede continuar únicamente cuando su puntuación editorial por posición alcanza al menos 85. Se eliminan identificadores desconocidos y selecciones incompatibles del mismo evento; si ambos proveedores fallan, la clasificación se detiene. La puntuación editorial ordena opciones y no representa una probabilidad de victoria ni una garantía.</li>
+    </ol>
+
+    <h2>3. Qué significa el respaldo de datos (y por qué no equivale a certeza)</h2>
+    <p>Un error frecuente en el mundo de las apuestas es asumir que un modelo estadístico o un análisis respaldado por datos "asegura" un resultado deportivo. Esto es matemática y conceptualmente falso:</p>
+    <ul>
+      <li><strong>El deporte es inherentemente caótico:</strong> Una tarjeta roja en el minuto 5, un penal dudoso, una lesión en el calentamiento previo o el clima pueden transformar por completo el desarrollo de un partido. Ningún algoritmo ni base de datos puede predecir estos eventos fortuitos.</li>
+      <li><strong>Valor Esperado frente a Resultado Individual:</strong> El Valor Esperado Positivo (+EV) es un concepto probabilístico a largo plazo. Significa que, si un evento idéntico se jugara 1,000 veces, la estrategia tendería a ser rentable; sin embargo, en una sola repetición concreta (el partido de hoy), cualquier equipo puede ganar o perder.</li>
+    </ul>
+
+    <h2>4. Política de registro y conciliación de resultados</h2>
+    <p>Un historial útil necesita conservar tanto aciertos como pérdidas, anulaciones y casos pendientes de revisión. Rey Taco Picks mantiene la identidad y la cuota original del pronóstico, y registra por separado su resolución:</p>
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Estado</th>
+            <th>Criterio de conciliación</th>
+            <th>Impacto en las métricas públicas</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Ganado (Win)</strong></td>
+            <td>La selección deportiva cumplió el resultado formal al finalizar el tiempo reglamentario oficial.</td>
+            <td>Suma unidades calculadas como: $(\text{cuota} - 1) \times \text{stake}$.</td>
+          </tr>
+          <tr>
+            <td><strong>Perdido (Loss)</strong></td>
+            <td>La selección no se cumplió conforme al mercado establecido.</td>
+            <td>Resta exactamente 1.0 unidad de la banca.</td>
+          </tr>
+          <tr>
+            <td><strong>Nulo / Cancelado</strong></td>
+            <td>La fuente o las reglas aplicables determinan que la selección se anula o devuelve la unidad.</td>
+            <td>Retorno de unidad (0.0 unidades). Se conserva el registro visible en el historial.</td>
+          </tr>
+          <tr>
+            <td><strong>Correcciones</strong></td>
+            <td>Una discrepancia o falta de evidencia suficiente queda pendiente de revisión; una corrección requiere conservar su fuente y auditoría.</td>
+            <td>El recálculo de ROI y unidades se actualiza en tiempo real en la base de datos.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Correcciones trazables:</strong> Las cuentas administrativas autenticadas pueden realizar correcciones administrativas o eliminar un registro cuando detectan un error. Una vez versionada la auditoría, la base de datos rechaza cambios en los campos de auditoría de la fuente —origen, evento, mercado, selección y marcas de tiempo—; esta protección no convierte toda la fila en un registro inmutable. El estado y las métricas públicas reflejan la información vigente después de la revisión.</p>
+
+    <h2>5. Juego responsable y advertencia de riesgo</h2>
+    <div class="responsible-gaming-box">
+      <h4>Aviso de Riesgo y Marco Legal (México)</h4>
+      <p>Las apuestas deportivas deben considerarse estrictamente como una forma de entretenimiento recreativo para adultos (+18 años) y nunca como una fuente de ingresos, inversión o solución a problemas financieros. Nunca apuestes dinero destinado a tus necesidades básicas, renta, alimentos o servicios.</p>
+      <p style="margin-top: 10px;">Si sientes que el juego está afectando tu bienestar personal, familiar o financiero, solicita orientación gratuita en la <a href="https://www.gob.mx/conasama/es/articulos/linea-de-la-vida-800-911-2000?idiom=es" rel="noopener noreferrer"><strong>Línea de la Vida de CONASAMA: 800 911 2000</strong></a>, disponible las 24 horas en México.</p>
+    </div>
+
+    <section class="sources" aria-labelledby="fuentes-metodologia">
+      <h2 id="fuentes-metodologia">Fuentes públicas de referencia</h2>
+      <ul>
+        <li><a href="https://www.gob.mx/conasama/es/articulos/linea-de-la-vida-800-911-2000?idiom=es" rel="noopener noreferrer">CONASAMA: Línea de la Vida y canales de orientación</a>.</li>
+        <li><a href="https://www.gamblingcommission.gov.uk/guidance/regulatory-returns-guidance/rts-3-rules-game-descriptions-and-the-likelihood-of-winning" rel="noopener noreferrer">Gambling Commission: información sobre probabilidades y margen</a>.</li>
+        <li><a href="https://www.nist.gov/itl/ai-risk-management-framework" rel="noopener noreferrer">NIST: marco de gestión de riesgos de inteligencia artificial</a>.</li>
+      </ul>
+    </section>
+
+    <h2>6. Contacto y retroalimentación editorial</h2>
+    <p>Revisamos nuestras fuentes y parámetros para corregir inconsistencias documentadas. Si detectas alguna diferencia en cuotas pasadas o deseas proponer una aclaración metodológica, escríbenos a <a href="mailto:soporte@reytacopicks.com">soporte@reytacopicks.com</a>.</p>
+  </main>
+
+  <footer>
+    <div class="footer-links">
+      <a href="/">Inicio</a>
+      <a href="/aprende/">Guías Educativas</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/privacidad.html">Aviso de Privacidad</a>
+      <a href="/terminos.html">Términos y Condiciones</a>
+    </div>
+    <p>© 2026 Rey Taco Picks. Contenido informativo y recreativo para mayores de 18 años en México.</p>
+  </footer>
+</body>
+</html>

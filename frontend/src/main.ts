@@ -505,16 +505,6 @@ byId('vip-primary-button')?.addEventListener('click', () => {
 document.querySelectorAll<HTMLButtonElement>('[data-plan]').forEach(button => {
   button.addEventListener('click', () => startVipCheckout(button.dataset.plan === 'weekly' ? 'weekly' : 'monthly'));
 });
-document.querySelectorAll<HTMLAnchorElement>('[data-spei-plan]').forEach(link => {
-  link.addEventListener('click', () => {
-    const plan = link.dataset.speiPlan;
-    if (plan !== 'weekly' && plan !== 'monthly') return;
-    trackConversion('spei_whatsapp_clicked', {
-      ...currentAnalyticsProperties(),
-      plan,
-    });
-  });
-});
 
 byId('filter-row')?.addEventListener('click', event => {
   const target = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-filter]');

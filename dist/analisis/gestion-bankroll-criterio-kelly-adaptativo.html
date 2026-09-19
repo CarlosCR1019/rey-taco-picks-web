@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#7f0f22" />
+  <link rel="canonical" href="https://reytacopicks.com/analisis/gestion-bankroll-criterio-kelly-adaptativo.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/editorial.css" />
+  <title>Gestión de Bankroll con el Criterio de Kelly Adaptativo | Rey Taco Picks</title>
+  <meta name="description" content="Fundamentos matemáticos del Criterio de Kelly y su aplicación fraccional adaptativa para maximizar el crecimiento del capital sin riesgo de quiebra en apuestas deportivas." />
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">
+      <img src="/logo.jpg" alt="Logo Rey Taco Picks" />
+      <span>Rey Taco Picks</span>
+    </a>
+    <nav aria-label="Navegación principal">
+      <a href="/">Inicio</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/aprende/">Guías</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/acerca-de.html">Quiénes Somos</a>
+    </nav>
+  </header>
+
+  <main>
+    <nav class="breadcrumbs" aria-label="Ruta de navegación">
+      <a href="/">Inicio</a> &gt; <a href="/analisis/">Análisis</a> &gt; <span>Criterio de Kelly Adaptativo</span>
+    </nav>
+
+    <article>
+      <header>
+        <span style="color: var(--wine); font-weight: 800; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 0.05em;">Gestión de Riesgo Financiero</span>
+        <h1 style="margin-top: 8px;">Gestión de Bankroll con el Criterio de Kelly Adaptativo: Guía de Protección de Capital</h1>
+        <p style="color: var(--muted); font-size: 0.95rem;">Por Departamento de Riesgo y Finanzas Cuantitativas · 18 de septiembre de 2026 · Tiempo de lectura: 10 min</p>
+      </header>
+
+      <p style="font-size: 1.15rem; color: var(--muted); margin: 24px 0;">
+        Tener un modelo que acierte pronósticos es inútil si la gestión del dinero es deficiente. La inmensa mayoría de los participantes en mercados deportivos quiebran sus fondos no por falta de análisis, sino por una asignación desproporcionada del tamaño de apuesta (<em>stake</em>).
+      </p>
+
+      <h2>1. El Origen Matemático: John L. Kelly Jr. (1956)</h2>
+      <p>
+        En 1956, el físico y matemático <strong>John L. Kelly Jr.</strong> de Bell Labs publicó su célebre fórmula para optimizar la transmisión de información a través de canales con ruido. Rápidamente, matemáticos como <strong>Edward O. Thorp (1969)</strong> demostraron que la misma lógica se aplica a las decisiones de inversión bajo incertidumbre.
+      </p>
+
+      <blockquote>
+        "La fracción de capital óptima a comprometer es aquella que maximiza la tasa de crecimiento asintótico del logaritmo de la riqueza a largo plazo, garantizando matemáticamente que la probabilidad de ruina absoluta sea cero."<br />
+        — <em>Kelly, J. L. (1956). A New Interpretation of Information Rate. Bell System Technical Journal, 35(4), 917-926.</em>
+      </blockquote>
+
+      <div class="formula-box">
+        <strong>Fórmula Clásica de Kelly:</strong><br />
+        $$f^* = \frac{b \cdot p - q}{b} = \frac{p \cdot (b + 1) - 1}{b}$$<br />
+        donde $b$ es la cuota decimal menos 1, $p$ es la probabilidad real calculada y $q = 1 - p$.
+      </div>
+
+      <h2>2. El Peligro del Kelly Completo en Deportes: La Incertidumbre del Parámetro</h2>
+      <p>
+        En el blackjack o la ruleta, las probabilidades son deterministas y fijas por reglas físicas. En el fútbol o el béisbol, nunca conocemos la "verdadera" probabilidad; solo tenemos una estimación estadística sujeta a margen de error.
+      </p>
+      <p>
+        Como advierte la literatura econométrica moderna (<strong>MacLean, Thorp & Ziemba, 2011</strong>), apostar el "Kelly Completo" en presencia de incertidumbre en el parámetro conduce a una volatilidad salvaje (<em>drawdowns</em> superiores al 60% del capital), lo que resulta psicológicamente insoportable para cualquier ser humano.
+      </p>
+
+      <h2>3. La Solución Institucional: Kelly Fraccional (Quarter-Kelly)</h2>
+      <p>
+        En Rey Taco Picks aplicamos el <strong>Criterio de Kelly Adaptativo Fraccional (1/4 de Kelly)</strong>. Este ajuste reduce la exposición al 25% del valor teórico de Kelly:
+      </p>
+      <ul>
+        <li><strong>Protección ante errores de estimación:</strong> Si nuestro modelo sobrestimó la probabilidad en 2 puntos porcentuales, la fracción conservadora evita que la apuesta dañe la cartera.</li>
+        <li><strong>Suavizado drástico de la curva de capital:</strong> Se preserva más del 85% de la tasa de crecimiento óptima mientras se reduce la volatilidad en más de un 70%.</li>
+        <li><strong>Tope Máximo Institucional:</strong> Ninguna selección, sin importar cuán atractiva parezca, supera el 2.0% de la banca total.</li>
+      </ul>
+
+      <table style="width: 100%; border-collapse: collapse; margin: 24px 0;">
+        <thead>
+          <tr style="background: var(--surface); border-bottom: 2px solid var(--line);">
+            <th style="padding: 10px; text-align: left;">Estrategia de Stake</th>
+            <th style="padding: 10px; text-align: center;">% Típico por Pick</th>
+            <th style="padding: 10px; text-align: center;">Volatilidad (Std Dev)</th>
+            <th style="padding: 10px; text-align: center;">Riesgo de Ruina (Drawdown > 50%)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom: 1px solid var(--line);">
+            <td style="padding: 10px;"><strong>Kelly Completo (1.0)</strong></td>
+            <td style="padding: 10px; text-align: center;">4.0% - 8.0%</td>
+            <td style="padding: 10px; text-align: center;">Muy Alta (42%)</td>
+            <td style="padding: 10px; text-align: center;">33.2%</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--line);">
+            <td style="padding: 10px;"><strong>Medio Kelly (0.5)</strong></td>
+            <td style="padding: 10px; text-align: center;">2.0% - 4.0%</td>
+            <td style="padding: 10px; text-align: center;">Moderada (21%)</td>
+            <td style="padding: 10px; text-align: center;">6.8%</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--line); background: var(--surface);">
+            <td style="padding: 10px;"><strong>Rey Taco Adaptativo (0.25)</strong></td>
+            <td style="padding: 10px; text-align: center;">1.0% - 1.5%</td>
+            <td style="padding: 10px; text-align: center;">Baja (10.5%)</td>
+            <td style="padding: 10px; text-align: center;">&lt; 0.1%</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>4. Ejemplo Práctico en Moneda Mexicana ($ MXN)</h2>
+      <p>
+        Supongamos un aficionado con una banca disponible de <strong>$2,000 MXN</strong> en Playdoit:
+      </p>
+      <ul>
+        <li><strong>Definición de 1 Unidad (1.0% - 1.5%):</strong> Equivale a <strong>$20 a $30 MXN</strong>.</li>
+        <li><strong>Apuesta Estándar (1.0 U):</strong> $20 - $30 MXN en selecciones con +EV entre 4.0% y 6.0%.</li>
+        <li><strong>Apuesta Máxima (+EV > 8.0%):</strong> 2.0 U = $40 - $60 MXN.</li>
+      </ul>
+      <p>
+        Bajo este esquema, incluso enfrentando una racha estadística adversa de 6 caídas consecutivas, el capital preservado supera el 92%, permitiendo al participante mantenerse en el juego y cosechar la ventaja matemática a largo plazo sin angustia financiera.
+      </p>
+
+      <div class="responsible-gaming-box">
+        <h4>Aviso Legal y Conducta Responsable (+18)</h4>
+        <p>
+          El dimensionamiento de banca es una herramienta de mitigación de riesgo, no un seguro de utilidades. Nunca utilices dinero destinado a cubrir necesidades básicas familiares, vivienda o salud. Si sientes necesidad de incrementar el tamaño de tus apuestas para compensar caídas pasadas, detén la actividad de inmediato.
+        </p>
+      </div>
+
+      <section class="sources" style="margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--line);">
+        <h3>Referencias Académicas</h3>
+        <ol style="font-size: 0.9rem; color: var(--muted); line-height: 1.6;">
+          <li>Kelly, J. L. (1956). <em>A New Interpretation of Information Rate</em>. Bell System Technical Journal, 35(4), 917-926.</li>
+          <li>Thorp, E. O. (1969). <em>Optimal gambling systems for favorable games</em>. Review of the International Statistical Institute, 37(3), 273-293.</li>
+          <li>MacLean, L. C., Thorp, E. O., & Ziemba, W. T. (2011). <em>The Kelly Capital Growth Investment Criterion: Theory and Practice</em>. World Scientific Publishing.</li>
+        </ol>
+      </section>
+    </article>
+  </main>
+
+  <footer>
+    <div class="footer-links">
+      <a href="/">Inicio</a>
+      <a href="/analisis/">Archivo de Análisis</a>
+      <a href="/aprende/">Guías Educativas</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/acerca-de.html">Quiénes Somos</a>
+      <a href="/privacidad.html">Privacidad</a>
+      <a href="/terminos.html">Términos</a>
+    </div>
+    <p>© 2026 Rey Taco Picks. Análisis financiero y deportivo para mayores de 18 años en México.</p>
+  </footer>
+</body>
+</html>

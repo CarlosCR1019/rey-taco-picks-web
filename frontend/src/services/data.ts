@@ -107,3 +107,13 @@ export async function loadSubscriberPicks(client: SupabaseClient): Promise<PickR
   if (response.error) return [];
   return (response.data ?? []).filter((row: Record<string, unknown>) => row.estado === 'pendiente').map(normalizePick);
 }
+
+export type ActiveOfferCounts = {
+  windowStart: string;
+  publicCount: number;
+  premiumCount: number;
+};
+
+export async function loadActiveOfferCounts(_client: SupabaseClient): Promise<ActiveOfferCounts | null> {
+  return null;
+}

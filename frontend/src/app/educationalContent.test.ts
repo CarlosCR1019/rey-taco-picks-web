@@ -85,16 +85,33 @@ describe('educational and methodology content for AdSense compliance', () => {
       expect(sitemapContent).toContain(`https://reytacopicks.com/aprende/${filename}`);
     });
     expect(sitemapContent).toContain('https://reytacopicks.com/aprende/');
-    expect(sitemapContent).toContain('https://reytacopicks.com/metodologia.html');
-    expect(sitemapContent).not.toContain('https://reytacopicks.com/analisis/');
+    expect(sitemapContent).toContain('https://reytacopicks.com/analisis/');
     expect(sitemapContent).not.toContain('/analisis/plantilla.html');
   });
 
-  it('does not publish placeholder or empty analysis pages as real editorial content', () => {
-    const archivePath = path.join(publicDir, 'analisis', 'index.html');
+  it('publishes authoritative quantitative research articles with scholarly citations rather than empty placeholders', () => {
     const placeholderPath = path.join(publicDir, 'analisis', 'plantilla.html');
-    expect(fs.existsSync(archivePath)).toBe(false);
     expect(fs.existsSync(placeholderPath)).toBe(false);
+
+    const researchArticles = [
+      'analisis-tactico-tiros-de-esquina-liga-mx.html',
+      'modelos-goles-esperados-xg-futbol-mexicano.html',
+      'gestion-bankroll-criterio-kelly-adaptativo.html',
+      'correlacion-estadistica-parlays-valor-esperado.html',
+      'cuotas-sharp-vs-casas-recreativas-mexico.html',
+      'remates-a-puerta-volumen-ofensivo-delanteros.html',
+      'auditoria-criptografica-sha256-pronosticos.html',
+      'falacia-del-apostador-varianza-muestras-cortas.html',
+    ];
+
+    researchArticles.forEach((filename) => {
+      const articlePath = path.join(publicDir, 'analisis', filename);
+      expect(fs.existsSync(articlePath), `Article ${filename} must exist`).toBe(true);
+      const content = fs.readFileSync(articlePath, 'utf-8');
+      expect(content.length).toBeGreaterThan(2500);
+      expect(content).toContain('class="sources"');
+      expect(content).toMatch(/(?:Bibliograf[íi]a|Referencias)/);
+    });
   });
 
   it('keeps advertising scripts disabled during human quality review', () => {

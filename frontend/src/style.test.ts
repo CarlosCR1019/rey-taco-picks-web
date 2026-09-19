@@ -34,4 +34,40 @@ describe('responsive navigation contract', () => {
 
     expect(ticketImage).toMatch(/object-fit:\s*contain/);
   });
+
+  it('keeps both hero actions usable on phones', () => {
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.hero-actions a, \.hero-actions button\s*\{[^}]*flex:\s*1 1 190px/);
+  });
+
+  it('defines Editorial Royal tokens and responsive access-panel rules', () => {
+    expect(styleSheet).toMatch(/--royal-navy\s*:/);
+    expect(styleSheet).toMatch(/--royal-gold\s*:/);
+    expect(styleSheet).toMatch(/--royal-cream\s*:/);
+    expect(styleSheet).toMatch(/\.access-panel\s*\{/);
+    expect(styleSheet).toMatch(/\.pricing-grid\s*\{/);
+    expect(styleSheet).toMatch(/\.pricing-card\s*\{/);
+    expect(styleSheet).toMatch(/\.pricing-card-featured/);
+    expect(styleSheet).toMatch(/\.primary-button:focus-visible/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*760px\)/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*760px\)[\s\S]*\.pricing-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*760px\)[\s\S]*\.pricing-card-featured\s*\{[^}]*order:\s*-1/);
+  });
+
+  it('renders a structured stripe trust note in the auth dialog', () => {
+    const note = styleSheet.match(/\.stripe-trust-note\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(note).toMatch(/display:\s*grid/);
+    expect(note).toMatch(/border-radius:\s*12px/);
+  });
+
+  it('keeps quiniela controls touchable and stacks predictions on phones', () => {
+    const primary = styleSheet.match(/\.quiniela-primary\s*\{([^}]*)\}/)?.[1] ?? '';
+
+    expect(primary).toMatch(/min-height:\s*44px/);
+    expect(styleSheet).toMatch(/\.quiniela-prediction-grid\s*\{[^}]*grid-template-columns:/);
+    expect(styleSheet).toMatch(/@media\s*\(max-width:\s*700px\)[\s\S]*\.quiniela-prediction-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
+  });
+
+  it('uses a visible keyboard focus treatment on quiniela controls', () => {
+    expect(styleSheet).toMatch(/\.quiniela-route\s+:focus-visible\s*\{[^}]*outline:/);
+  });
 });

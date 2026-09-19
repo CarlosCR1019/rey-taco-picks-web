@@ -7,6 +7,7 @@ type BoardOptions = Readonly<{
   dateKey: string;
   activeBlock: number;
   isVip: boolean;
+  offerCounts?: { publicCount: number; premiumCount: number } | null;
 }>;
 
 function card(row: PickRow): string {
@@ -36,6 +37,10 @@ export function renderTimeBoard(rows: PickRow[], options: BoardOptions): string 
       <div class="time-block-grid">${content}</div>
     </section>`;
   }).join('');
-  const cta = options.isVip ? '' : `<aside class="vip-discovery"><div><strong>👑 Más selecciones disponibles en VIP</strong><span>Consulta la cartera completa antes del inicio.</span></div><button id="inline-vip-button" type="button">Quiero acceso VIP</button></aside>`;
+  const offerCounts = options.offerCounts;
+  const headline = offerCounts && typeof offerCounts.publicCount === 'number' && typeof offerCounts.premiumCount === 'number'
+    ? `👑 ${offerCounts.publicCount} gratis y ${offerCounts.premiumCount} en VIP`
+    : `👑 Más selecciones disponibles en VIP`;
+  const cta = options.isVip ? '' : `<aside class="vip-discovery"><div><strong>${headline}</strong><span>Consulta la cartera completa antes del inicio.</span></div><button id="inline-vip-button" type="button">Quiero acceso VIP</button></aside>`;
   return `<div class="time-board">${sections}${cta}</div>`;
 }

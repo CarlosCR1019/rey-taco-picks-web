@@ -47,8 +47,29 @@ upload_*.py
 get_*.py
 render_story_hd.py
 !tests/
-!tests/**/*.py
 *.jpg
 *.png
 !frontend/public/logo.jpg
 !frontend/public/tickets/*.jpg
+
+# -------------------------------------------------------------
+# 🧪 Lab & Sandbox Development (Carlos & Antigravity)
+# Todo lo que creemos aquí queda 100% ignorado por Git hasta pasar pruebas.
+# -------------------------------------------------------------
+lab/
+sandbox/
+dev_*.py
+scratch_*.py
+tmp_*
+
+# 🌮 Rey Taco VPS & Fast Sync Engine (Laboratorio en curso)
+backend/sofascore_lineup_engine.py
+backend/lineup_daemon.py
+backend/fast_playdoit_sync.py
+backend/cartelera_playdoit.json
+cartelera.json
+data/
+*.mp3
+*.mp4
+supabase/.temp/
+

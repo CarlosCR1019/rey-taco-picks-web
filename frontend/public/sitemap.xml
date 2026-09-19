@@ -7,53 +7,116 @@
     <priority>1.0</priority>
   </url>
 
-  <!-- Sección Aprende: Hub Principal -->
+  <!-- Quiénes Somos / Consejo Editorial (E-E-A-T) -->
   <url>
-    <loc>https://reytacopicks.com/aprende/</loc>
-    <changefreq>weekly</changefreq>
+    <loc>https://reytacopicks.com/acerca-de.html</loc>
+    <changefreq>monthly</changefreq>
     <priority>0.9</priority>
-  </url>
-
-  <!-- Guías Educativas Originales -->
-  <url>
-    <loc>https://reytacopicks.com/aprende/momios-americanos-y-decimales.html</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.85</priority>
-  </url>
-  <url>
-    <loc>https://reytacopicks.com/aprende/margen-de-la-casa-overround.html</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.85</priority>
-  </url>
-  <url>
-    <loc>https://reytacopicks.com/aprende/apuesta-simple-frente-a-parlay.html</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.85</priority>
-  </url>
-  <url>
-    <loc>https://reytacopicks.com/aprende/por-que-una-racha-no-garantiza-resultados.html</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.85</priority>
-  </url>
-  <url>
-    <loc>https://reytacopicks.com/aprende/como-interpretar-nuestro-historial.html</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.85</priority>
-  </url>
-  <url>
-    <loc>https://reytacopicks.com/aprende/que-puede-y-que-no-puede-hacer-la-ia.html</loc>
-    <changefreq>monthly</changefreq>
-    <priority>0.85</priority>
   </url>
 
   <!-- Metodología Oficial -->
   <url>
     <loc>https://reytacopicks.com/metodologia.html</loc>
     <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+
+  <!-- Hub de Análisis Cuantitativo -->
+  <url>
+    <loc>https://reytacopicks.com/analisis/</loc>
+    <changefreq>daily</changefreq>
+    <priority>0.9</priority>
+  </url>
+
+  <!-- Artículos de Investigación Cuantitativa -->
+  <url>
+    <loc>https://reytacopicks.com/analisis/analisis-tactico-tiros-de-esquina-liga-mx.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/analisis/modelos-goles-esperados-xg-futbol-mexicano.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/analisis/gestion-bankroll-criterio-kelly-adaptativo.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/analisis/correlacion-estadistica-parlays-valor-esperado.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/analisis/cuotas-sharp-vs-casas-recreativas-mexico.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/analisis/remates-a-puerta-volumen-ofensivo-delanteros.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/analisis/auditoria-criptografica-sha256-pronosticos.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/analisis/falacia-del-apostador-varianza-muestras-cortas.html</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+
+  <!-- Sección Aprende: Hub Principal -->
+  <url>
+    <loc>https://reytacopicks.com/aprende/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+
+  <!-- Guías Educativas -->
+  <url>
+    <loc>https://reytacopicks.com/aprende/momios-americanos-y-decimales.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/margen-de-la-casa-overround.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/apuesta-simple-frente-a-parlay.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/por-que-una-racha-no-garantiza-resultados.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/como-interpretar-nuestro-historial.html</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://reytacopicks.com/aprende/que-puede-y-que-no-puede-hacer-la-ia.html</loc>
+    <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
 
-  <!-- Legales -->
+  <!-- Quiniela Liga MX -->
+  <url>
+    <loc>https://reytacopicks.com/quiniela/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+
+  <!-- Legales y Juego Responsable -->
   <url>
     <loc>https://reytacopicks.com/privacidad.html</loc>
     <changefreq>yearly</changefreq>

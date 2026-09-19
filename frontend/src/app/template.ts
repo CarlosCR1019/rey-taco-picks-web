@@ -1,6 +1,7 @@
 export function applicationTemplate(): string {
   return `
     <a class="skip-link" href="#contenido">Saltar al contenido</a>
+    <div id="telegram-mini-app" class="telegram-app-host hidden"></div>
     <div class="site-shell">
       <header class="site-header">
         <a class="brand" href="#inicio" aria-label="Rey Taco Picks, inicio">
@@ -10,13 +11,14 @@ export function applicationTemplate(): string {
         <nav class="desktop-nav" aria-label="Navegación principal">
           <a href="#picks">Picks del día</a>
           <a href="#resultados">Resultados</a>
-          <a href="#salmo">Salmo del día</a>
-          <a href="/aprende/">Aprende</a>
+          <a href="/analisis/">Análisis</a>
+          <a href="/aprende/">Guías</a>
           <a href="/metodologia.html">Metodología</a>
+          <a href="/acerca-de.html">Quiénes Somos</a>
         </nav>
         <div class="header-actions">
           <button class="text-button" id="login-button" type="button">Iniciar sesión</button>
-          <button class="vip-button" id="vip-button" type="button">VIP $299</button>
+          <button class="vip-button" id="vip-button" data-plan="monthly" type="button">VIP $349/mes</button>
         </div>
       </header>
 
@@ -27,12 +29,13 @@ export function applicationTemplate(): string {
       <main id="contenido">
         <section class="hero" id="inicio">
           <div class="hero-copy">
-            <span class="eyebrow">Picks para México · Hora CDMX</span>
-            <h1>Los picks van <em>primero.</em><br />El historial también.</h1>
-            <p>Análisis directo, cuotas claras y resultados públicos. Sin promesas de dinero fácil ni resultados garantizados.</p>
+            <span class="eyebrow">Para aficionados recreativos en México · Hora CDMX</span>
+            <h1>Picks deportivos claros.<br /><em>Resultados públicos.</em></h1>
+            <p>Recibe selecciones analizadas sin promesas de dinero fácil: puedes perder y ningún resultado está garantizado.</p>
+            <ul class="hero-benefits"><li>Hasta 6 picks por ventana, solo cuando cumplen los filtros</li><li>Alertas por Telegram e historial público</li><li>Cancela tu membresía cuando quieras</li></ul>
             <div class="hero-actions">
-              <a class="primary-button" href="#picks">Ver pick gratis</a>
-              <a class="secondary-button" id="telegram-cta" href="https://t.me/ReyTacoPicksFree" target="_blank" rel="noopener noreferrer">Unirme a Telegram</a>
+              <button class="primary-button" id="vip-primary-button" type="button">Suscribirme a VIP — $349 MXN/mes</button>
+              <a class="secondary-button" href="#picks">Ver picks gratis</a>
             </div>
             <div class="trust-line"><span>+18</span><span>Juego responsable</span><span>Registro completo</span></div>
           </div>
@@ -42,6 +45,9 @@ export function applicationTemplate(): string {
               <div><strong id="metric-record">—</strong><span>Récord</span></div>
               <div><strong id="metric-units">—</strong><span>Unidades</span></div>
               <div><strong id="metric-roi">—</strong><span>ROI</span></div>
+            </div>
+            <div class="streak-badge-container">
+              <span class="streak-pill" id="metric-streak">🔥 Racha: Calculando...</span>
             </div>
             <p>Las métricas se obtienen del historial. También mostramos pérdidas, nulos y pendientes.</p>
           </aside>
@@ -94,23 +100,42 @@ export function applicationTemplate(): string {
             <p>Una cuota no es una promesa: representa una probabilidad implícita. Define una unidad fija, evita aumentar apuestas para recuperar y registra cada selección.</p>
             <ul><li>Usa una banca separada.</li><li>No arriesgues dinero necesario.</li><li>Detente si apostar deja de ser entretenimiento.</li></ul>
           </article>
-          <aside class="calculator-card">
-            <span class="section-kicker">Herramienta gratuita</span>
-            <h2>Calculadora de unidad</h2>
-            <label for="bankroll">Banca disponible (MXN)</label>
-            <input id="bankroll" type="number" min="0" step="100" value="1000" />
-            <label for="risk-percent">Riesgo por pick</label>
-            <select id="risk-percent"><option value="1">1% conservador</option><option value="2">2% moderado</option><option value="3">3% alto</option></select>
-            <output id="stake-result">Unidad sugerida: $10 MXN</output>
+          <aside class="calculator-card" id="calculadora" aria-labelledby="calc-title">
+            <span class="section-kicker">Gestión de capital</span>
+            <h2 id="calc-title">Calculadora de Banca</h2>
+            <p class="calculator-desc">Define el tamaño de apuesta matemáticamente seguro según tu saldo en Playdoit.</p>
+            <label for="bankroll">Banca disponible ($ MXN)</label>
+            <input id="bankroll" type="number" min="0" step="100" value="2000" />
+            <label for="risk-percent">Riesgo por pick (Tamaño de Unidad)</label>
+            <select id="risk-percent">
+              <option value="1">🛡️ 1.0% Conservador</option>
+              <option value="1.5" selected>⚖️ 1.5% Oficial Rey Taco</option>
+              <option value="2">🚀 2.0% Dinámico</option>
+            </select>
+            <div class="calc-results-grid">
+              <div class="calc-box"><span>1 Unidad (1 U)</span><strong id="unit-val-display">$30 MXN</strong></div>
+              <div class="calc-box"><span>Tope por Pick</span><strong id="max-stake-display">$60 MXN</strong></div>
+            </div>
+            <output id="stake-result">Unidad sugerida: $30 MXN</output>
           </aside>
         </section>
 
         <aside class="ad-container hidden" id="ad-slot-feed" data-ad-unit aria-label="Publicidad"></aside>
 
         <section class="vip-section" id="vip" aria-labelledby="vip-title">
-          <div><span class="eyebrow">Membresía mensual</span><h2 id="vip-title">La cartera completa, protegida de verdad</h2><p>Acceso a picks premium, alertas y canal privado. Cancela cuando quieras. No garantizamos ganancias.</p></div>
-          <div class="vip-price"><strong>$299</strong><span>MXN / mes</span><button class="primary-button" id="vip-checkout-button" type="button">Quiero ser VIP</button></div>
+          <div><span class="eyebrow">Acceso VIP</span><h2 id="vip-title">Elige cómo entrar a la cartera completa</h2><p>Acceso a picks premium, alertas y canal privado. Cancela cuando quieras. Ningún resultado está garantizado.</p></div>
+          <div class="pricing-grid">
+            <article class="pricing-card"><span class="pricing-label">Pase flexible</span><h3>7 días VIP</h3><strong>$129 MXN</strong><p>Una semana de acceso a la cartera completa.</p><button class="secondary-button" id="vip-weekly-button" data-plan="weekly" type="button">Entrar por 7 días</button></article>
+            <article class="pricing-card pricing-card-featured"><span class="pricing-label">Más elegido</span><h3>VIP mensual</h3><strong>$349 MXN/mes</strong><p>Acceso continuo y alertas privadas cada ventana.</p><button class="primary-button" id="vip-checkout-button" data-plan="monthly" type="button">Suscribirme al VIP</button></article>
+          </div>
         </section>
+
+        <section id="vip-access-panel" class="access-panel hidden" aria-labelledby="vip-access-title">
+          <div><span class="section-kicker">Acceso confirmado</span><h2 id="vip-access-title">Tu membresía VIP está activa</h2><p>Solicita el acceso al canal privado desde el bot oficial. Nunca mostramos ni almacenamos una invitación permanente.</p></div>
+          <div class="access-destinations"><a id="miniapp-access-link" class="secondary-button" href="/?view=telegram">Abrir Mini App</a><a id="telegram-access-link" class="primary-button hidden">Solicitar acceso por Telegram</a></div>
+        </section>
+
+        <p id="checkout-status" class="checkout-status" aria-live="polite"></p>
 
         <section class="legal-grid" aria-label="Información y juego responsable">
           <article><h2>Método y límites</h2><p>Analizamos datos y cuotas disponibles. Un modelo puede fallar y las líneas cambian. Publicamos el resultado de cada pick para evitar sesgos.</p></article>
@@ -122,7 +147,7 @@ export function applicationTemplate(): string {
       <footer class="site-footer">
         <div class="brand footer-brand"><img src="/logo.jpg" alt="" width="44" height="44" /><span><strong>Rey Taco Picks</strong><small>México</small></span></div>
         <p>Contenido informativo y recreativo. +18. No garantizamos ganancias.</p>
-        <p>© 2026 Rey Taco Picks · <a href="/aprende/">Aprende</a> · <a href="/metodologia.html">Metodología</a> · <a href="/privacidad.html">Privacidad</a> · <a href="/terminos.html">Términos</a> · <a href="mailto:soporte@reytacopicks.com">Soporte</a></p>
+        <p>© 2026 Rey Taco Picks · <a href="/analisis/">Análisis</a> · <a href="/aprende/">Guías</a> · <a href="/metodologia.html">Metodología</a> · <a href="/acerca-de.html">Quiénes Somos</a> · <a href="/privacidad.html">Privacidad</a> · <a href="/terminos.html">Términos</a> · <a href="mailto:soporte@reytacopicks.com">Soporte</a></p>
       </footer>
 
       <nav class="mobile-nav" aria-label="Navegación móvil">
@@ -153,7 +178,10 @@ export function applicationTemplate(): string {
         <button class="text-button" id="signout-button" type="button">Cerrar sesión</button>
       </div>
       <p id="auth-message" class="form-message" aria-live="polite"></p>
-      <div class="spei-note"><strong>¿Prefieres SPEI?</strong><span>Escríbenos por WhatsApp. Todo comprobante se revisa manualmente.</span><a href="https://wa.me/525639331102" target="_blank" rel="noopener noreferrer">Abrir WhatsApp</a></div>
+      <div class="stripe-trust-note">
+        <strong>Pagos 100% seguros con Stripe</strong>
+        <span>Activación instantánea tras confirmar tu suscripción o pase semanal. Acceso directo e inmediato a la cartera VIP.</span>
+      </div>
     </dialog>
 
     <dialog id="victory-dialog" class="victory-dialog" aria-labelledby="victory-dialog-title">

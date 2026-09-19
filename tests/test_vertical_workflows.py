@@ -98,28 +98,58 @@ def test_result_workflow_installs_local_media_tools_before_dependencies() -> Non
     )
 
 
-def test_result_workflow_runs_idempotent_final_vertical_after_verifier() -> None:
+def test_result_workflow_has_one_final_vertical_owner_inside_verifier() -> None:
     job = _load_workflow(RESULTS_WORKFLOW)["jobs"]["verificar"]
     names = [step["name"] for step in job["steps"]]
-    assert names.index("Publish final vertical media") == names.index(
+    assert "Validate final media configuration" not in names
+    assert "Publish final vertical media" not in names
+    verifier = next(item for item in job["steps"] if item["name"] == "Verify Results")
+    assert verifier["run"] == "python backend/verificar_resultados.py"
+
+
+def test_result_workflow_scopes_live_configuration_before_verifying() -> None:
+    job = _load_workflow(RESULTS_WORKFLOW)["jobs"]["verificar"]
+    names = [step["name"] for step in job["steps"]]
+    assert names.index("Validate result verifier configuration") < names.index(
         "Verify Results"
-    ) + 1
-    step = next(
-        item for item in job["steps"] if item["name"] == "Publish final vertical media"
     )
-    assert step["run"] == "python -m backend.vertical_publisher --mode final --live"
-    assert step["env"] == {
+    basic_step = next(
+        item
+        for item in job["steps"]
+        if item["name"] == "Validate result verifier configuration"
+    )
+    assert basic_step["env"] == {
         "SUPABASE_URL": "${{ secrets.SUPABASE_URL }}",
         "SUPABASE_SERVICE_ROLE_KEY": "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}",
-        "META_SYSTEM_USER_ACCESS_TOKEN": (
-            "${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}"
-        ),
+    }
+    assert 'Missing required Actions secret' in basic_step["run"]
+
+    live_step = next(
+        item
+        for item in job["steps"]
+        if item["name"] == "Validate live result publication configuration"
+    )
+    assert names.index("Validate result verifier configuration") < names.index(
+        "Validate live result publication configuration"
+    ) < names.index("Verify Results")
+    assert live_step["if"] == (
+        "${{ github.event_name != 'workflow_dispatch' || inputs.publish == true }}"
+    )
+    assert live_step["env"] == {
+        "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
+        "TELEGRAM_CHAT_ID": "${{ secrets.TELEGRAM_CHAT_ID }}",
+        "TELEGRAM_VIP_CHANNEL_ID": "${{ secrets.TELEGRAM_VIP_CHANNEL_ID }}",
+        "TELEGRAM_FREE_CHANNEL_ID": "${{ secrets.TELEGRAM_FREE_CHANNEL_ID }}",
+        "META_SYSTEM_USER_ACCESS_TOKEN": "${{ secrets.META_SYSTEM_USER_ACCESS_TOKEN }}",
         "FB_PAGE_ID": "${{ secrets.FB_PAGE_ID }}",
         "IG_USER_ID": "${{ secrets.IG_USER_ID }}",
-        "META_GRAPH_VERSION": "v26.0",
-        "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
-        "TELEGRAM_ADMIN_ID": "${{ secrets.TELEGRAM_CHAT_ID }}",
+        "RESULT_REPORT_MODE": (
+            "${{ github.event_name == 'workflow_dispatch' && 'auto' || "
+            "github.event.schedule == '0 1 * * *' && 'evening' || 'final_only' }}"
+        ),
     }
+    assert '"$RESULT_REPORT_MODE" != "evening"' in live_step["run"]
+    assert 'Missing required Actions secret' in live_step["run"]
 
 
 def test_recovery_workflow_has_media_tools_and_ledger_only_vertical_recovery() -> None:

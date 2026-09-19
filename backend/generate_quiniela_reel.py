@@ -23,8 +23,8 @@ OUTPUT_DIR = REPO_ROOT / "data" / "reels"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 LOGO_PATH = REPO_ROOT / "frontend" / "public" / "logo.jpg"
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8684914807:AAHjNX6cz_sn1EUZVl0wt4v5iYWzJ8JU5UE")
-ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_ID", "5912533842")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_ID", "")
 
 
 def render_quiniela_promo_reel(

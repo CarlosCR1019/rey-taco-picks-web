@@ -1,50 +1,42 @@
 export type CheckoutPlan = 'weekly' | 'monthly';
 
-const PLAN_KEY = 'rey_taco_checkout_plan';
-const AT_KEY = 'rey_taco_checkout_plan_at';
-const MAX_AGE_MS = 30 * 60 * 1000;
+const CHECKOUT_INTENT_KEY = 'rey_taco_checkout_plan';
+const CHECKOUT_INTENT_AT_KEY = 'rey_taco_checkout_plan_at';
+const CHECKOUT_INTENT_TTL_MS = 30 * 60 * 1000;
 
-export function saveCheckoutIntent(plan: CheckoutPlan): void {
-  try {
-    sessionStorage.setItem(PLAN_KEY, plan);
-    sessionStorage.setItem(AT_KEY, String(Date.now()));
-  } catch {}
-}
-
-export function readCheckoutIntent(): CheckoutPlan | null {
-  try {
-    const val = sessionStorage.getItem(PLAN_KEY);
-    const at = Number(sessionStorage.getItem(AT_KEY) || 0);
-    if (!val || (val !== 'weekly' && val !== 'monthly')) {
-      return null;
-    }
-    if (at && Date.now() - at > MAX_AGE_MS) {
-      clearCheckoutIntent();
-      return null;
-    }
-    return val;
-  } catch {
-    return null;
-  }
-}
-
-export function clearCheckoutIntent(): void {
-  try {
-    sessionStorage.removeItem(PLAN_KEY);
-    sessionStorage.removeItem(AT_KEY);
-  } catch {}
+function resolveStorage(storage?: Storage): Storage | null {
+  if (storage) return storage;
+  try { return typeof window !== 'undefined' ? window.sessionStorage : null; } catch { return null; }
 }
 
 export function navigateWithCheckoutIntent(
   url: string,
   plan: CheckoutPlan,
-  navigate: (target: string) => void
+  navigate: (url: string) => void,
+  storage?: Storage,
 ): boolean {
-  saveCheckoutIntent(plan);
+  const target = resolveStorage(storage);
+  clearCheckoutIntent(target ?? undefined);
+  try { navigate(url); return true; }
+  catch { saveCheckoutIntent(plan, target ?? undefined); return false; }
+}
+
+export function saveCheckoutIntent(plan: CheckoutPlan, storage?: Storage): void {
+  const target = resolveStorage(storage);
+  try { target?.setItem(CHECKOUT_INTENT_KEY, plan); target?.setItem(CHECKOUT_INTENT_AT_KEY, String(Date.now())); } catch { /* storage is optional */ }
+}
+
+export function readCheckoutIntent(storage?: Storage): CheckoutPlan | null {
+  const target = resolveStorage(storage);
   try {
-    navigate(url);
-    return true;
-  } catch {
-    return false;
-  }
+    const value = target?.getItem(CHECKOUT_INTENT_KEY);
+    const at = Number(target?.getItem(CHECKOUT_INTENT_AT_KEY));
+    if ((value !== 'weekly' && value !== 'monthly') || !Number.isFinite(at) || Date.now() - at > CHECKOUT_INTENT_TTL_MS || Date.now() - at < 0) { clearCheckoutIntent(target ?? undefined); return null; }
+    return value;
+  } catch { return null; }
+}
+
+export function clearCheckoutIntent(storage?: Storage): void {
+  const target = resolveStorage(storage);
+  try { target?.removeItem(CHECKOUT_INTENT_KEY); target?.removeItem(CHECKOUT_INTENT_AT_KEY); } catch { /* storage is optional */ }
 }

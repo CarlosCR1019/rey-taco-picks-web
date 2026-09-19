@@ -11,11 +11,10 @@ export function applicationTemplate(): string {
         <nav class="desktop-nav" aria-label="Navegación principal">
           <a href="#picks">Picks del día</a>
           <a href="#resultados">Resultados</a>
-          <a href="#salmo">Salmo del día</a>
-          <a href="#metodo">Cómo funciona</a>
-          <a href="/aprende/">Aprende</a>
+          <a href="/analisis/">Análisis</a>
+          <a href="/aprende/">Guías</a>
           <a href="/metodologia.html">Metodología</a>
-          <a href="/?view=telegram">Mini App</a>
+          <a href="/acerca-de.html">Quiénes Somos</a>
         </nav>
         <div class="header-actions">
           <button class="text-button" id="login-button" type="button">Iniciar sesión</button>
@@ -46,6 +45,9 @@ export function applicationTemplate(): string {
               <div><strong id="metric-record">—</strong><span>Récord</span></div>
               <div><strong id="metric-units">—</strong><span>Unidades</span></div>
               <div><strong id="metric-roi">—</strong><span>ROI</span></div>
+            </div>
+            <div class="streak-badge-container">
+              <span class="streak-pill" id="metric-streak">🔥 Racha: Calculando...</span>
             </div>
             <p>Las métricas se obtienen del historial. También mostramos pérdidas, nulos y pendientes.</p>
           </aside>
@@ -98,14 +100,23 @@ export function applicationTemplate(): string {
             <p>Una cuota no es una promesa: representa una probabilidad implícita. Define una unidad fija, evita aumentar apuestas para recuperar y registra cada selección.</p>
             <ul><li>Usa una banca separada.</li><li>No arriesgues dinero necesario.</li><li>Detente si apostar deja de ser entretenimiento.</li></ul>
           </article>
-          <aside class="calculator-card">
-            <span class="section-kicker">Herramienta gratuita</span>
-            <h2>Calculadora de unidad</h2>
-            <label for="bankroll">Banca disponible (MXN)</label>
-            <input id="bankroll" type="number" min="0" step="100" value="1000" />
-            <label for="risk-percent">Riesgo por pick</label>
-            <select id="risk-percent"><option value="1">1% conservador</option><option value="2">2% moderado</option><option value="3">3% alto</option></select>
-            <output id="stake-result">Unidad sugerida: $10 MXN</output>
+          <aside class="calculator-card" id="calculadora" aria-labelledby="calc-title">
+            <span class="section-kicker">Gestión de capital</span>
+            <h2 id="calc-title">Calculadora de Banca</h2>
+            <p class="calculator-desc">Define el tamaño de apuesta matemáticamente seguro según tu saldo en Playdoit.</p>
+            <label for="bankroll">Banca disponible ($ MXN)</label>
+            <input id="bankroll" type="number" min="0" step="100" value="2000" />
+            <label for="risk-percent">Riesgo por pick (Tamaño de Unidad)</label>
+            <select id="risk-percent">
+              <option value="1">🛡️ 1.0% Conservador</option>
+              <option value="1.5" selected>⚖️ 1.5% Oficial Rey Taco</option>
+              <option value="2">🚀 2.0% Dinámico</option>
+            </select>
+            <div class="calc-results-grid">
+              <div class="calc-box"><span>1 Unidad (1 U)</span><strong id="unit-val-display">$30 MXN</strong></div>
+              <div class="calc-box"><span>Tope por Pick</span><strong id="max-stake-display">$60 MXN</strong></div>
+            </div>
+            <output id="stake-result">Unidad sugerida: $30 MXN</output>
           </aside>
         </section>
 
@@ -136,7 +147,7 @@ export function applicationTemplate(): string {
       <footer class="site-footer">
         <div class="brand footer-brand"><img src="/logo.jpg" alt="" width="44" height="44" /><span><strong>Rey Taco Picks</strong><small>México</small></span></div>
         <p>Contenido informativo y recreativo. +18. No garantizamos ganancias.</p>
-        <p>© 2026 Rey Taco Picks · <a href="/aprende/">Aprende</a> · <a href="/metodologia.html">Metodología</a> · <a href="/privacidad.html">Privacidad</a> · <a href="/terminos.html">Términos</a> · <a href="mailto:soporte@reytacopicks.com">Soporte</a></p>
+        <p>© 2026 Rey Taco Picks · <a href="/analisis/">Análisis</a> · <a href="/aprende/">Guías</a> · <a href="/metodologia.html">Metodología</a> · <a href="/acerca-de.html">Quiénes Somos</a> · <a href="/privacidad.html">Privacidad</a> · <a href="/terminos.html">Términos</a> · <a href="mailto:soporte@reytacopicks.com">Soporte</a></p>
       </footer>
 
       <nav class="mobile-nav" aria-label="Navegación móvil">

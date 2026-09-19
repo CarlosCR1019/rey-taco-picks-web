@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/editorial.css" />
   <title>Metodología de Análisis y Criterios Editoriales | Rey Taco Picks</title>
   <meta name="description" content="Conoce con total transparencia de dónde provienen nuestros datos deportivos, cómo se evalúan las cuotas, cómo se audita el historial y nuestros límites analíticos." />
-
+  
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -18,7 +18,7 @@
     "name": "Metodología y Criterios Editoriales de Rey Taco Picks",
     "description": "Documentación pública y transparente sobre la captura de cuotas, selección de pronósticos y auditoría de resultados.",
     "url": "https://reytacopicks.com/metodologia.html",
-    "dateModified": "2026-09-14",
+    "dateModified": "2026-09-13",
     "publisher": {
       "@type": "Organization",
       "name": "Rey Taco Picks",
@@ -48,7 +48,7 @@
     </nav>
 
     <h1>Metodología de Análisis y Criterios Editoriales</h1>
-
+    
     <div class="article-meta">
       <span>📅 Última revisión: 13 de septiembre de 2026</span>
       <span>⏱️ Lectura: 6 minutos</span>
@@ -64,8 +64,8 @@
     <h2>1. Origen y captura de los datos deportivos</h2>
     <p>Para formular selecciones y comparar cuotas, el sistema consulta la cartelera pública de Playdoit, servida mediante su plataforma tecnológica. Mencionar esa fuente describe la procedencia de los datos observados; no constituye una certificación independiente de sus permisos, disponibilidad ni condiciones comerciales.</p>
     <ul>
-      <li><strong>Timestamp de observación auditado:</strong> Cada cuota registrada conserva en <code>source_observed_at</code> la marca de tiempo exacta de la consulta y la almacena en UTC. La hora local puede calcularse para mostrarla, pero no se guarda como una segunda marca de tiempo.</li>
-      <li><strong>Identificadores de evento y selección:</strong> No agrupamos partidos de forma ambigua. Cada registro conserva el identificador del evento (<code>source_event_id</code>) y la clave exacta de la selección (<code>source_selection_key</code>) recibidos del catálogo observado.</li>
+      <li><strong>Timestamp de observación auditado:</strong> Cada cuota registrada almacena la marca de tiempo exacta (<code>observed_at</code>) en la que fue consultada en la plataforma de origen, tanto en horario UTC como en hora local de la Ciudad de México (CDMX).</li>
+      <li><strong>Identificadores de evento oficiales:</strong> No agrupamos partidos de forma ambigua. Cada registro cuenta con el identificador único del evento (<code>source_event_id</code>) y de la selección (<code>outcome_key</code>).</li>
       <li><strong>Monitoreo de desajustes:</strong> Las cuotas en las casas de apuestas son dinámicas y cambian con el flujo de dinero del mercado. Toda cuota publicada refleja el valor observado en el instante de la consulta y puede diferir al momento en que el usuario ingresa a la casa de apuestas.</li>
     </ul>
 
@@ -75,7 +75,7 @@
       <li><strong>Identidad y vigencia:</strong> Se exige evento futuro, fuente, identificador, mercado, selección, horario y momento de observación coherentes.</li>
       <li><strong>Filtros deterministas:</strong> Se excluyen precios fuera del rango permitido, eventos incompatibles, mercados sin ruta de verificación y props que requieran una alineación aún no confirmada.</li>
       <li><strong>Clasificación independiente:</strong> Gemini y Groq reciben el mismo catálogo acotado —evento, liga, mercado, línea, selección y cuota— y solo pueden devolver identificadores presentes en él.</li>
-      <li><strong>Agregación y auditoría:</strong> Una coincidencia válida entre Gemini y Groq recibe una bonificación editorial. Si responde un solo proveedor, una opción puede continuar únicamente cuando su puntuación editorial por posición alcanza al menos 85. Se eliminan identificadores desconocidos y selecciones incompatibles del mismo evento; si ambos proveedores fallan, la clasificación se detiene. La puntuación editorial ordena opciones y no representa una probabilidad de victoria ni una garantía.</li>
+      <li><strong>Consenso y auditoría:</strong> Se conservan coincidencias válidas entre proveedores, se eliminan conflictos del mismo evento y se registra una razón editorial limitada. Una clasificación favorable no representa una probabilidad de victoria ni una garantía.</li>
     </ol>
 
     <h2>3. Qué significa el respaldo de datos (y por qué no equivale a certeza)</h2>
@@ -120,7 +120,7 @@
         </tbody>
       </table>
     </div>
-    <p><strong>Correcciones trazables:</strong> Las cuentas administrativas autenticadas pueden realizar correcciones administrativas o eliminar un registro cuando detectan un error. Una vez versionada la auditoría, la base de datos rechaza cambios en los campos de auditoría de la fuente —origen, evento, mercado, selección y marcas de tiempo—; esta protección no convierte toda la fila en un registro inmutable. El estado y las métricas públicas reflejan la información vigente después de la revisión.</p>
+    <p><strong>Cero edición retroactiva:</strong> Ningún pronóstico publicado es eliminado, alterado en cuota ni editado tras el inicio del evento. Lo que se publica antes del pitazo inicial permanece inalterable en el registro público.</p>
 
     <h2>5. Juego responsable y advertencia de riesgo</h2>
     <div class="responsible-gaming-box">

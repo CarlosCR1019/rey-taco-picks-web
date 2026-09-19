@@ -1,4 +1,4 @@
-"""Open a new same-day round only after a six-pick round is fully audited."""
+"""Open a new same-day round after every remaining released pick is audited."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from supabase import create_client
 
 
 FINAL_STATES = frozenset({"ganado", "perdido", "void"})
+MAX_ROUND_ENTRIES = 6
 
 
 def _related_pick(entry: dict) -> dict:
@@ -30,8 +31,11 @@ def validate_settled_round(portfolio_date: str, entries: list[dict]) -> str:
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise ValueError("rollover portfolio date is invalid") from exc
-    if not isinstance(entries, list) or len(entries) != 6:
-        raise ValueError("rollover requires exactly six active entries")
+    if (
+        not isinstance(entries, list)
+        or not 1 <= len(entries) <= MAX_ROUND_ENTRIES
+    ):
+        raise ValueError("rollover requires between one and six active entries")
 
     entry_ids = set()
     pick_ids = set()
@@ -56,7 +60,7 @@ def validate_settled_round(portfolio_date: str, entries: list[dict]) -> str:
         pick_ids.add(pick.get("id"))
         batch_ids.add(str(pick.get("batch_id")))
 
-    if len(entry_ids) != 6 or len(pick_ids) != 6:
+    if len(entry_ids) != len(entries) or len(pick_ids) != len(entries):
         raise ValueError("rollover entries must be unique")
     if len(batch_ids) != 1:
         raise ValueError("rollover entries must belong to one batch")
@@ -106,15 +110,17 @@ def rollover_settled_round(client, portfolio_date: str) -> int:
     if len(detached) != 1:
         raise RuntimeError("settled daily portfolio changed before rollover")
 
+    expected_count = len(entries)
     deleted = (
         client.table("daily_pick_entries")
         .delete()
         .eq("portfolio_date", portfolio_date)
+        .eq("active", True)
         .execute()
         .data
         or []
     )
-    if len(deleted) != 6:
+    if len(deleted) != expected_count:
         raise RuntimeError("settled entry cleanup was incomplete")
     return len(deleted)
 

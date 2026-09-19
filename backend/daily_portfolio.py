@@ -17,6 +17,7 @@ from backend.publishing_policy import expected_public_pick_count
 
 MEXICO_CITY = ZoneInfo("America/Mexico_City")
 MAX_DAILY_PICKS = 6
+MAX_TIME_BLOCK_PICKS = 2
 _AUDIT_FIELDS = (
     "source",
     "source_event_id",
@@ -118,6 +119,16 @@ def physical_event_key(row: Mapping[str, object]) -> str:
     return f"physical:v1:{digest}"
 
 
+def mexico_time_block(row: Mapping[str, object]) -> int:
+    """Return the six-hour CDMX block for one audited event start."""
+
+    if not isinstance(row, Mapping):
+        raise TypeError("pick must be a mapping")
+    return _created_at(row.get("source_starts_at")).astimezone(
+        MEXICO_CITY
+    ).hour // 6
+
+
 def _normalize_matchup(value: str) -> str:
     ascii_value = "".join(
         character
@@ -158,6 +169,8 @@ def merge_daily_portfolio(
 
     used_audits: set[tuple[str, str, str, str]] = set()
     used_events: set[str] = set()
+    block_counts = [0, 0, 0, 0]
+    public_blocks: set[int] = set()
     public_count = 0
     for row in released:
         identity = audit_identity(row)
@@ -166,6 +179,10 @@ def merge_daily_portfolio(
             raise ValueError("released portfolio contains duplicate identities")
         used_audits.add(identity)
         used_events.add(event)
+        block = mexico_time_block(row)
+        if block_counts[block] >= MAX_TIME_BLOCK_PICKS:
+            raise ValueError("released portfolio exceeds time block capacity")
+        block_counts[block] += 1
         visibility = row.get("visibility")
         if visibility not in {"public", "premium"}:
             raise ValueError("released portfolio has invalid visibility")
@@ -173,23 +190,77 @@ def merge_daily_portfolio(
             if row.get("es_parlay") is not False:
                 raise ValueError("released public pick cannot be a parlay")
             public_count += 1
+            public_blocks.add(block)
 
     if released and public_count != expected_public_pick_count(len(released)):
         raise ValueError("released portfolio has invalid public allocation")
 
-    selected: list[dict[str, object]] = []
+    candidate_pool: list[dict[str, object]] = []
     for row in ranked:
-        if len(released) + len(selected) >= MAX_DAILY_PICKS:
-            break
         identity = audit_identity(row)
         event = physical_event_identity(row)
         if identity in used_audits or event in used_events:
             continue
+        block = mexico_time_block(row)
+        if block_counts[block] >= MAX_TIME_BLOCK_PICKS:
+            continue
         used_audits.add(identity)
         used_events.add(event)
+        block_counts[block] += 1
         prepared = dict(row)
         prepared["visibility"] = "premium"
-        selected.append(prepared)
+        candidate_pool.append(prepared)
+
+    available_slots = MAX_DAILY_PICKS - len(released)
+    selected = candidate_pool[:available_slots]
+    needed = (
+        expected_public_pick_count(len(released) + len(selected))
+        - public_count
+    )
+    if len(released) + len(selected) == MAX_DAILY_PICKS and needed > 0:
+        preferred_public: list[dict[str, object]] = []
+        preferred_blocks = set(public_blocks)
+        for prefer_new_block in (True, False):
+            for row in candidate_pool:
+                if row.get("es_parlay") is not False:
+                    continue
+                if row in preferred_public:
+                    continue
+                block = mexico_time_block(row)
+                if prefer_new_block and block in preferred_blocks:
+                    continue
+                preferred_public.append(row)
+                preferred_blocks.add(block)
+                if len(preferred_public) == needed:
+                    break
+            if len(preferred_public) == needed:
+                break
+
+        preferred_identities = {
+            audit_identity(row) for row in preferred_public
+        }
+        selected_identities = {audit_identity(row) for row in selected}
+        for preferred in preferred_public:
+            preferred_identity = audit_identity(preferred)
+            if preferred_identity in selected_identities:
+                continue
+            replacement_index = next(
+                (
+                    index
+                    for index in range(len(selected) - 1, -1, -1)
+                    if audit_identity(selected[index])
+                    not in preferred_identities
+                ),
+                None,
+            )
+            if replacement_index is None:
+                break
+            selected_identities.discard(
+                audit_identity(selected[replacement_index])
+            )
+            selected[replacement_index] = preferred
+            selected_identities.add(preferred_identity)
+        selected.sort(key=candidate_pool.index)
 
     while selected or released:
         total = len(released) + len(selected)
@@ -203,10 +274,24 @@ def merge_daily_portfolio(
         selected.pop()
 
     needed = expected_public_pick_count(len(released) + len(selected)) - public_count
-    for row in selected:
-        if needed and row.get("es_parlay") is False:
+    assigned_public: set[tuple[str, str, str, str]] = set()
+    for prefer_new_block in (True, False):
+        for row in selected:
+            identity = audit_identity(row)
+            block = mexico_time_block(row)
+            if (
+                not needed
+                or row.get("es_parlay") is not False
+                or identity in assigned_public
+                or (prefer_new_block and block in public_blocks)
+            ):
+                continue
             row["visibility"] = "public"
+            assigned_public.add(identity)
+            public_blocks.add(block)
             needed -= 1
+        if not needed:
+            break
     if needed:
         raise ValueError("portfolio cannot satisfy the public allocation")
 

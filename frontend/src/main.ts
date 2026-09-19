@@ -200,9 +200,43 @@ function renderHistory(): void {
   const record = byId('metric-record');
   const units = byId('metric-units');
   const roi = byId('metric-roi');
+  const streakEl = byId('metric-streak');
+
   if (record) record.textContent = `${metrics.wins}-${metrics.losses}`;
   if (units) units.textContent = `${metrics.units >= 0 ? '+' : ''}${metrics.units} u`;
   if (roi) roi.textContent = `${metrics.roi >= 0 ? '+' : ''}${metrics.roi}%`;
+
+  if (streakEl) {
+    let currentStreak = 0;
+    let streakType: 'win' | 'loss' | 'none' = 'none';
+    for (const row of state.history) {
+      if (row.estado === 'ganado') {
+        if (streakType === 'none' || streakType === 'win') {
+          streakType = 'win';
+          currentStreak++;
+        } else {
+          break;
+        }
+      } else if (row.estado === 'perdido') {
+        if (streakType === 'none' || streakType === 'loss') {
+          streakType = 'loss';
+          currentStreak++;
+        } else {
+          break;
+        }
+      }
+    }
+    if (streakType === 'win' && currentStreak > 0) {
+      streakEl.textContent = `🔥 Racha: ${currentStreak} Acierto${currentStreak > 1 ? 's' : ''} Consecutivo${currentStreak > 1 ? 's' : ''}`;
+      streakEl.className = 'streak-pill streak-win';
+    } else if (streakType === 'loss' && currentStreak > 0) {
+      streakEl.textContent = `🛡️ Varianza: ${currentStreak} Caída${currentStreak > 1 ? 's' : ''} (Disciplina +EV)`;
+      streakEl.className = 'streak-pill streak-loss';
+    } else {
+      streakEl.textContent = `💎 Auditoría SHA-256 Verificada`;
+      streakEl.className = 'streak-pill';
+    }
+  }
 }
 
 function renderTickets(): void {
@@ -560,12 +594,25 @@ victoryDialog?.addEventListener('close', clearVictoryDialogImage);
 
 function updateStake(): void {
   const bankroll = Math.max(0, Number(byId<HTMLInputElement>('bankroll')?.value || 0));
-  const percent = Number(byId<HTMLSelectElement>('risk-percent')?.value || 1);
+  const percent = Number(byId<HTMLSelectElement>('risk-percent')?.value || 1.5);
+  const unitVal = Math.round(bankroll * percent / 100);
+  const maxStake = Math.round(unitVal * 2);
+
+  const unitValEl = byId('unit-val-display');
+  const maxStakeEl = byId('max-stake-display');
   const result = byId<HTMLOutputElement>('stake-result');
-  if (result) result.textContent = `Unidad sugerida: $${Math.round(bankroll * percent / 100).toLocaleString('es-MX')} MXN`;
+
+  if (unitValEl) unitValEl.textContent = `$${unitVal.toLocaleString('es-MX')} MXN`;
+  if (maxStakeEl) maxStakeEl.textContent = `$${maxStake.toLocaleString('es-MX')} MXN`;
+  if (result) {
+    result.textContent = bankroll > 0
+      ? `Unidad sugerida: $${unitVal.toLocaleString('es-MX')} MXN`
+      : `Introduce tu banca disponible en Playdoit para calcular el tamaño de apuesta.`;
+  }
 }
 byId('bankroll')?.addEventListener('input', updateStake);
 byId('risk-percent')?.addEventListener('change', updateStake);
+updateStake();
 byId('telegram-cta')?.addEventListener('click', () => trackConversion('telegram_clicked', currentAnalyticsProperties()));
 
 const cookie = byId('cookie-notice');

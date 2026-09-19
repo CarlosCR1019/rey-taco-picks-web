@@ -9,7 +9,7 @@
   <link rel="icon" href="/favicon.svg" />
   <link rel="stylesheet" href="/editorial.css" />
   <title>Apuesta Simple vs Parlay: Matemáticas, Multiplicación del Margen y Riesgo | Rey Taco Picks</title>
-  <meta name="description" content="Compara apuestas simples y parlays mediante un ejemplo ilustrativo de cuotas, probabilidad conjunta, retorno esperado y riesgo." />
+  <meta name="description" content="Entiende por qué las casas de apuestas promocionan tanto los parlays: el margen de la casa se acumula exponencialmente. Aprende a gestionar el riesgo." />
 
   <script type="application/ld+json">
   {
@@ -52,7 +52,7 @@
     </nav>
 
     <h1>Apuesta simple frente a parlay: diferencias y riesgos</h1>
-
+    
     <div class="article-meta">
       <span>📚 Guía 03 de Estrategia y Riesgo</span>
       <span>⏱️ Lectura: 8 minutos</span>
@@ -61,7 +61,7 @@
     <p class="byline">Por el Equipo Editorial de Rey Taco Picks · Actualizado el <time datetime="2026-09-13">13 de septiembre de 2026</time>.</p>
 
     <p>
-      Los parlays suelen destacar retornos potenciales altos porque multiplican las cuotas de varias selecciones. El mismo mecanismo exige acertar todas las condiciones del boleto. Esta guía usa un <strong>ejemplo ilustrativo</strong> con cuotas y probabilidades iguales para mostrar cómo cambia el retorno esperado; no describe todas las ofertas ni supone que las selecciones reales sean independientes.
+      Si entras a cualquier aplicación de apuestas deportivas, notarás que los anuncios principales siempre te invitan a hacer lo mismo: <em>"¡Arma tu parlay de 5 partidos y gana $10,000 con solo $50 pesos!"</em>. ¿Por qué las casas de apuestas promocionan los parlays de manera tan agresiva? La respuesta reside en una propiedad matemática inapelable: <strong>en un parlay, el margen de la casa de apuestas se multiplica exponencialmente con cada selección que agregas</strong>.
     </p>
 
     <h2>1. Qué es una apuesta simple</h2>
@@ -69,22 +69,22 @@
       Una <strong>apuesta simple</strong> (straight bet) involucra un único pronóstico en un solo evento deportivo.
     </p>
     <ul>
-      <li><strong>Alcance:</strong> El boleto depende de una sola selección y su retorno se calcula con una sola cuota.</li>
-      <li><strong>Riesgo:</strong> La selección puede perder y el precio ofrecido puede incluir margen del operador; una apuesta simple tampoco es una inversión segura.</li>
+      <li><strong>Ventajas:</strong> Solo dependes de un resultado. El margen de la casa se paga una sola vez (típicamente entre 4% y 6%). La varianza es controlable y es la base de cualquier estrategia de gestión de banca seria.</li>
+      <li><strong>Desventajas:</strong> Los pagos son más moderados (normalmente cuotas entre <code>1.50</code> y <code>2.20</code>).</li>
     </ul>
 
     <h2>2. Qué es un parlay (apuesta combinada)</h2>
     <p>
-      Un <strong>parlay</strong> combina dos o más selecciones en un solo boleto. Para cobrar, <strong>todas las condiciones deben cumplirse</strong>. Las selecciones pueden ser independientes o estar relacionadas; esa dependencia importa al estimar la probabilidad conjunta.
+      Un <strong>parlay</strong> combina dos o más selecciones independientes en un solo boleto. Para cobrar, <strong>todas y cada una de las selecciones deben cumplirse</strong>. Si tienes 4 aciertos y falla la última jugada, pierdes la totalidad de la apuesta.
     </p>
     <ul>
       <li><strong>La atracción psicológica:</strong> Las cuotas de cada partido se multiplican entre sí, ofreciendo retornos potenciales muy llamativos con poco dinero.</li>
-      <li><strong>El precio conjunto:</strong> Las cuotas se multiplican, por lo que cualquier diferencia entre el precio ofrecido y una estimación justa también se combina.</li>
+      <li><strong>La trampa matemática:</strong> Al multiplicarse las cuotas, también se multiplica la ventaja matemática que la casa tiene sobre ti.</li>
     </ul>
 
     <h2>3. La multiplicación del margen de la casa</h2>
     <p>
-      En este ejemplo ilustrativo se combinan 4 selecciones independientes. A cada una se le asigna, solo para el cálculo, una probabilidad de 50% y una cuota ofrecida de <code>1.90</code> en lugar de la cuota justa <code>2.00</code>.
+      Imagina que combinas 4 selecciones independientes en un parlay, donde cada partido tiene una cuota de <code>1.90</code> (probabilidad real estimada del 50%, pero la casa paga a 1.90 con un 5.26% de margen por partido).
     </p>
     <div class="formula-box">
       <strong>Probabilidad de ganar las 4 selecciones independientes:</strong>
@@ -99,7 +99,7 @@
       </p>
     </div>
     <p>
-      Bajo esos supuestos, el retorno bruto esperado es <code>13.03 × 6.25% = 81.44%</code> de lo apostado: una pérdida esperada ilustrativa de <strong>18.56%</strong>. Cambiar cualquier probabilidad, cuota o dependencia cambia el resultado.
+      La diferencia entre cobrar <strong>16 veces tu dinero</strong> (el precio justo) y cobrar <strong>13 veces tu dinero</strong> (el precio con margen acumulado) representa una ventaja para la casa superior al <strong>18.5%</strong>.
     </p>
 
     <h2>4. Tabla de degradación de probabilidades por número de selecciones</h2>
@@ -110,8 +110,8 @@
             <th>Tipo de Jugada</th>
             <th>Nº de Selecciones</th>
             <th>Cuota Combinada (@1.90)</th>
-            <th>Probabilidad conjunta asumida (50% c/u)</th>
-            <th>Pérdida esperada del ejemplo</th>
+            <th>Probabilidad Real (asumiendo 50% c/u)</th>
+            <th>Margen Teórico Acumulado de la Casa</th>
           </tr>
         </thead>
         <tbody>
@@ -120,7 +120,7 @@
             <td>1</td>
             <td>1.90</td>
             <td>50.00%</td>
-            <td>5.00%</td>
+            <td>~5.26%</td>
           </tr>
           <tr>
             <td>Parlay de 2</td>
@@ -155,7 +155,7 @@
             <td>8</td>
             <td>169.83</td>
             <td>0.39%</td>
-            <td>~33.66%</td>
+            <td>~33.80%</td>
           </tr>
         </tbody>
       </table>
@@ -163,24 +163,23 @@
 
     <h2>5. El riesgo de ruina y la volatilidad extrema</h2>
     <p>
-      Si cada selección fuera independiente y tuviera 50% de probabilidad real, un parlay de 5 tendría una probabilidad conjunta de <strong>3.1%</strong> (aproximadamente 1 acierto por cada 32 intentos a largo plazo). En la práctica, la probabilidad cambia según cada selección y sus posibles dependencias.
+      En un parlay de 5 selecciones, tu probabilidad de ganar es apenas del <strong>3.1%</strong> (aproximadamente 1 victoria por cada 32 intentos). 
     </p>
     <p>
       Esto significa que pueden aparecer rachas largas de parlays perdidos aun cuando cada selección individual parezca razonable. Apostar una fracción considerable de la banca en combinadas <strong>eleva sustancialmente el riesgo de agotarla</strong>; el nivel exacto depende del tamaño de apuesta, la frecuencia y las probabilidades reales.
     </p>
 
     <h2>6. Cómo utilizar los parlays de forma responsable</h2>
-    <p>Si decides combinar selecciones como entretenimiento, considera estas pautas generales:</p>
+    <p>En Rey Taco Picks publicamos parlays de consenso (típicamente de 2 o máximo 3 selecciones muy analizadas), pero recomendamos a nuestros lectores seguir estas tres pautas de oro:</p>
     <ol>
       <li><strong>Prioriza apuestas simples:</strong> Separar cada selección facilita medir resultados y limita la dependencia de acertar varios eventos a la vez.</li>
-      <li><strong>Limita el gasto de antemano:</strong> Usa solo una cantidad dentro de un presupuesto recreativo que puedas perder por completo; no existe un porcentaje fijo adecuado para todas las personas.</li>
+      <li><strong>Trata al parlay como boleto de lotería recreativa:</strong> Si juegas un parlay de cuota alta, asigna un <em>stake</em> mínimo (por ejemplo, el 0.25% o 0.5% de tu banca, en lugar de tu unidad estándar).</li>
       <li><strong>No agregues selecciones solo para inflar la cuota:</strong> Cada nueva condición puede hacer perder el boleto completo aunque las demás se cumplan.</li>
     </ol>
 
     <section class="sources" aria-labelledby="fuentes-parlay">
       <h2 id="fuentes-parlay">Fuentes y lectura adicional</h2>
       <ul>
-        <li><a href="https://www.gamblingcommission.gov.uk/guidance/regulatory-returns-guidance/rts-3-rules-game-descriptions-and-the-likelihood-of-winning" rel="noopener noreferrer">Gambling Commission: probabilidades, ventaja de la casa y margen en las cuotas</a>.</li>
         <li><a href="https://www.responsiblegambling.org/for-the-public/problem-gambling-prevention/plan-before-you-play/" rel="noopener noreferrer">Responsible Gambling Council: planificar límites antes de jugar</a>.</li>
       </ul>
     </section>

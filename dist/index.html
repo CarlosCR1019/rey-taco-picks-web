@@ -6,34 +6,272 @@
     <link rel="apple-touch-icon" href="/logo.jpg" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Picks y análisis deportivos para México con cuotas claras, historial completo y herramientas de juego responsable." />
+    <meta name="description" content="Portal de periodismo de datos, econometría deportiva y análisis cuantitativo en México. Modelos de xG, cuotas verificadas, historial inmutable SHA-256 y gestión de capital. Solo +18." />
     <meta name="theme-color" content="#7f0f22" />
     <link rel="canonical" href="https://reytacopicks.com" />
 
     <!-- Open Graph / Facebook / WhatsApp -->
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://reytacopicks.com" />
-    <meta property="og:title" content="Rey Taco Picks - Picks e historial para México" />
-    <meta property="og:description" content="Consulta el pick gratuito, el historial completo y herramientas de gestión de banca. Solo +18." />
+    <meta property="og:title" content="Rey Taco Picks - Periodismo de Datos y Análisis Deportivo" />
+    <meta property="og:description" content="Modelos estadísticos de xG, tiros de esquina, cuotas verificadas y gestión de banca para México. Solo +18." />
     <meta property="og:image" content="https://reytacopicks.com/logo.jpg" />
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:url" content="https://reytacopicks.com" />
-    <meta name="twitter:title" content="Rey Taco Picks - Picks e historial para México" />
-    <meta name="twitter:description" content="Picks, resultados públicos y juego responsable. Solo +18." />
+    <meta name="twitter:title" content="Rey Taco Picks - Periodismo de Datos y Análisis Deportivo" />
+    <meta name="twitter:description" content="Modelos estadísticos de xG, tiros de esquina, cuotas verificadas y gestión de banca para México. Solo +18." />
     <meta name="twitter:image" content="https://reytacopicks.com/logo.jpg" />
 
-    <title>Rey Taco Picks | Picks deportivos para México</title>
+    <title>Rey Taco Picks | Periodismo de Datos y Análisis Deportivo en México</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script type="application/ld+json">
-      {"@context":"https://schema.org","@type":"WebSite","name":"Rey Taco Picks","url":"https://reytacopicks.com/","description":"Análisis y picks deportivos para mayores de 18 años en México.","inLanguage":"es-MX"}
+      {"@context":"https://schema.org","@type":"WebSite","name":"Rey Taco Picks","url":"https://reytacopicks.com/","description":"Portal de periodismo de datos y análisis cuantitativo de eventos deportivos para mayores de 18 años en México.","inLanguage":"es-MX"}
     </script>
-    <script type="module" crossorigin src="/assets/main-B7nUUQwg.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/main-DL3zDZZv.css">
+    <!-- Google AdSense Verification -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2697347675028991" crossorigin="anonymous"></script>
+    <!-- Plausible Analytics (Open Source, Cookie-less, <1KB) -->
+    <script defer data-domain="reytacopicks.com" src="https://plausible.io/js/script.js"></script>
+    <script type="module" crossorigin src="/assets/main-BNTcoj37.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/main-B_KZADmz.css">
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <a class="skip-link" href="#contenido">Saltar al contenido</a>
+      <div id="telegram-mini-app" class="telegram-app-host hidden"></div>
+      <div class="site-shell">
+        <header class="site-header">
+          <a class="brand" href="#inicio" aria-label="Rey Taco Picks, inicio">
+            <img src="/logo.jpg" alt="Rey Taco Picks Logo" width="54" height="54" />
+            <span><strong>Rey Taco Picks</strong><small>Predicciones deportivas</small></span>
+          </a>
+          <nav class="desktop-nav" aria-label="Navegación principal">
+            <a href="#picks">Picks del día</a>
+            <a href="#resultados">Resultados</a>
+            <a href="/analisis/">Análisis</a>
+            <a href="/aprende/">Guías</a>
+            <a href="/metodologia.html">Metodología</a>
+            <a href="/acerca-de.html">Quiénes Somos</a>
+          </nav>
+          <div class="header-actions">
+            <button class="text-button" id="login-button" type="button">Iniciar sesión</button>
+            <button class="vip-button" id="vip-button" data-plan="monthly" type="button">VIP $349/mes</button>
+          </div>
+        </header>
+
+        <section class="salmo-wrap" id="salmo" aria-label="Salmo del día">
+          <div id="daily-verse-container"></div>
+        </section>
+
+        <main id="contenido">
+          <section class="hero" id="inicio">
+            <div class="hero-copy">
+              <span class="eyebrow">Para aficionados recreativos en México · Hora CDMX</span>
+              <h1>Picks deportivos claros.<br /><em>Resultados públicos.</em></h1>
+              <p>Recibe selecciones analizadas sin promesas de dinero fácil: puedes perder y ningún resultado está garantizado.</p>
+              <ul class="hero-benefits">
+                <li>Hasta 6 picks por ventana, solo cuando cumplen los filtros</li>
+                <li>Alertas por Telegram e historial público inmutable</li>
+                <li>Cancela tu membresía cuando quieras</li>
+              </ul>
+              <div class="hero-actions">
+                <button class="primary-button" id="vip-primary-button" type="button">Suscribirme a VIP — $349 MXN/mes</button>
+                <a class="secondary-button" href="#picks">Ver picks gratis</a>
+              </div>
+              <div class="trust-line"><span>+18</span><span>Juego responsable</span><span>Registro completo</span></div>
+            </div>
+            <aside class="proof-card" aria-labelledby="proof-title">
+              <div class="proof-title-row">
+                <h2 id="proof-title">Resultados reales</h2>
+                <span class="verified-badge">✓ Calculados</span>
+              </div>
+              <div class="metric-grid">
+                <div><strong id="metric-record">—</strong><span>Récord</span></div>
+                <div><strong id="metric-units">—</strong><span>Unidades</span></div>
+                <div><strong id="metric-roi">—</strong><span>ROI</span></div>
+              </div>
+              <div class="streak-badge-container">
+                <span class="streak-pill" id="metric-streak">🔥 Auditoría SHA-256 Verificada</span>
+              </div>
+              <p>Las métricas se obtienen del historial. También mostramos pérdidas, nulos y pendientes.</p>
+            </aside>
+          </section>
+
+          <section class="content-section" id="picks" aria-labelledby="picks-title">
+            <div class="section-heading">
+              <div><span class="section-kicker">Selección pública</span><h2 id="picks-title">La mesa está servida</h2></div>
+              <span id="picks-updated" class="updated-label">Consultando datos…</span>
+            </div>
+            <div class="filter-row" id="filter-row" aria-label="Filtrar picks">
+              <button class="filter-chip active" type="button" data-filter="all">🎯 Todos</button>
+              <button class="filter-chip" type="button" data-filter="ligamx">⚽ Liga MX</button>
+              <button class="filter-chip" type="button" data-filter="futbol">🌎 Fútbol</button>
+              <button class="filter-chip" type="button" data-filter="mlb">⚾ MLB</button>
+            </div>
+            <div id="picks-container" class="pick-grid" aria-live="polite">
+              <div class="state-card">Cargando la selección gratuita…</div>
+            </div>
+          </section>
+
+          <section class="content-section history-section" id="resultados" aria-labelledby="history-title">
+            <div class="section-heading">
+              <div><span class="section-kicker">Transparencia · Resultados verificados</span><h2 id="history-title">Los picks que recibió VIP</h2></div>
+              <div class="history-filters" id="history-filters">
+                <button class="mini-filter active" type="button" data-status="all">Todos</button>
+                <button class="mini-filter" type="button" data-status="ganado">Ganados</button>
+                <button class="mini-filter" type="button" data-status="perdido">Perdidos</button>
+              </div>
+            </div>
+            <div class="history-table-wrap">
+              <table>
+                <thead><tr><th>Fecha</th><th>Partido</th><th>Pick</th><th>Cuota</th><th>Estado</th></tr></thead>
+                <tbody id="history-container"><tr><td colspan="5">Cargando historial…</td></tr></tbody>
+              </table>
+            </div>
+            <section class="victory-wall-section" aria-labelledby="victory-title">
+              <div class="victory-heading">
+                <div><span class="section-kicker">Evidencia original</span><h3 id="victory-title">Muro de victorias</h3></div>
+                <span>Fotografías recibidas por el bot, sin recrear el boleto.</span>
+              </div>
+              <div id="victory-wall" aria-live="polite"><div class="victory-empty">Cargando evidencias…</div></div>
+            </section>
+          </section>
+
+          <section class="education-grid" id="metodo" aria-label="Contenido educativo">
+            <article class="featured-article">
+              <span class="section-kicker">Aprende antes de apostar</span>
+              <h2>Cómo leer una cuota sin perseguir pérdidas</h2>
+              <p>Una cuota no es una promesa: representa una probabilidad implícita. Define una unidad fija, evita aumentar apuestas para recuperar y registra cada selección.</p>
+              <ul>
+                <li>Usa una banca separada.</li>
+                <li>No arriesgues dinero necesario.</li>
+                <li>Detente si apostar deja de ser entretenimiento.</li>
+              </ul>
+              <p><a href="/aprende/" style="color: var(--wine, #f5cf58); font-weight: 700;">Explorar nuestras 6 guías educativas completas →</a></p>
+            </article>
+            <aside class="calculator-card" id="calculadora" aria-labelledby="calc-title">
+              <span class="section-kicker">Gestión de capital</span>
+              <h2 id="calc-title">Calculadora de Banca</h2>
+              <p class="calculator-desc">Define el tamaño de apuesta matemáticamente seguro según tu saldo en Playdoit.</p>
+              <label for="bankroll">Banca disponible ($ MXN)</label>
+              <input id="bankroll" type="number" min="0" step="100" value="2000" />
+              <label for="risk-percent">Riesgo por pick (Tamaño de Unidad)</label>
+              <select id="risk-percent">
+                <option value="1">🛡️ 1.0% Conservador</option>
+                <option value="1.5" selected>⚖️ 1.5% Oficial Rey Taco</option>
+                <option value="2">🚀 2.0% Dinámico</option>
+              </select>
+              <div class="calc-results-grid">
+                <div class="calc-box"><span>1 Unidad (1 U)</span><strong id="unit-val-display">$30 MXN</strong></div>
+                <div class="calc-box"><span>Tope por Pick</span><strong id="max-stake-display">$60 MXN</strong></div>
+              </div>
+              <output id="stake-result">Unidad sugerida: $30 MXN</output>
+            </aside>
+          </section>
+
+          <section class="content-section" style="margin-top: 40px;" aria-labelledby="analisis-hub-title">
+            <div class="section-heading">
+              <div>
+                <span class="section-kicker">Investigación Cuantitativa</span>
+                <h2 id="analisis-hub-title">Artículos de Estadística Deportiva y Metodología</h2>
+              </div>
+              <a href="/analisis/" class="secondary-button" style="text-decoration: none;">Ver todos los artículos</a>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 16px;">
+              <article style="background: #101b31; border: 1px solid #233250; border-radius: 12px; padding: 18px;">
+                <span style="color: #f5cf58; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;">Liga MX</span>
+                <h3 style="font-size: 1.05rem; margin: 6px 0 8px;"><a href="/analisis/analisis-tactico-tiros-de-esquina-liga-mx.html" style="color: #f8fafc; text-decoration: none;">Análisis Táctico de Tiros de Esquina en la Liga MX</a></h3>
+                <p style="color: #aebbd0; font-size: 0.85rem; margin: 0;">Estudio empírico de la distribución de saques de esquina y factores de desborde lateral.</p>
+              </article>
+              <article style="background: #101b31; border: 1px solid #233250; border-radius: 12px; padding: 18px;">
+                <span style="color: #f5cf58; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;">Econometría</span>
+                <h3 style="font-size: 1.05rem; margin: 6px 0 8px;"><a href="/analisis/modelos-goles-esperados-xg-futbol-mexicano.html" style="color: #f8fafc; text-decoration: none;">Modelos de Goles Esperados (xG) en el Fútbol Mexicano</a></h3>
+                <p style="color: #aebbd0; font-size: 0.85rem; margin: 0;">Calibración estadística con Brier Score y regresión logística aplicada a estadios en altitud.</p>
+              </article>
+              <article style="background: #101b31; border: 1px solid #233250; border-radius: 12px; padding: 18px;">
+                <span style="color: #f5cf58; font-size: 0.75rem; font-weight: 700; text-transform: uppercase;">Riesgo Financiero</span>
+                <h3 style="font-size: 1.05rem; margin: 6px 0 8px;"><a href="/analisis/gestion-bankroll-criterio-kelly-adaptativo.html" style="color: #f8fafc; text-decoration: none;">Gestión de Bankroll con el Criterio de Kelly Adaptativo</a></h3>
+                <p style="color: #aebbd0; font-size: 0.85rem; margin: 0;">Fórmula fraccional para eliminar el riesgo de ruina matemática y estabilizar el crecimiento.</p>
+              </article>
+            </div>
+          </section>
+
+          <aside class="ad-container hidden" id="ad-slot-feed" data-ad-unit aria-label="Publicidad"></aside>
+
+          <section class="vip-section" id="vip" aria-labelledby="vip-title">
+            <div><span class="eyebrow">Acceso VIP</span><h2 id="vip-title">Elige cómo entrar a la cartera completa</h2><p>Acceso a picks premium, alertas y canal privado. Cancela cuando quieras. Ningún resultado está garantizado.</p></div>
+            <div class="pricing-grid">
+              <article class="pricing-card"><span class="pricing-label">Pase flexible</span><h3>7 días VIP</h3><strong>$129 MXN</strong><p>Una semana de acceso a la cartera completa.</p><button class="secondary-button" id="vip-weekly-button" data-plan="weekly" type="button">Entrar por 7 días</button></article>
+              <article class="pricing-card pricing-card-featured"><span class="pricing-label">Más elegido</span><h3>VIP mensual</h3><strong>$349 MXN/mes</strong><p>Acceso continuo y alertas privadas cada ventana.</p><button class="primary-button" id="vip-checkout-button" data-plan="monthly" type="button">Suscribirme al VIP</button></article>
+            </div>
+          </section>
+
+          <section id="vip-access-panel" class="access-panel hidden" aria-labelledby="vip-access-title">
+            <div><span class="section-kicker">Acceso confirmado</span><h2 id="vip-access-title">Tu membresía VIP está activa</h2><p>Solicita el acceso al canal privado desde el bot oficial. Nunca mostramos ni almacenamos una invitación permanente.</p></div>
+            <div class="access-destinations"><a id="miniapp-access-link" class="secondary-button" href="/?view=telegram">Abrir Mini App</a><a id="telegram-access-link" class="primary-button hidden">Solicitar acceso por Telegram</a></div>
+          </section>
+
+          <p id="checkout-status" class="checkout-status" aria-live="polite"></p>
+
+          <section class="legal-grid" aria-label="Información y juego responsable">
+            <article><h2>Método y límites</h2><p>Analizamos datos y cuotas disponibles. Un modelo puede fallar y las líneas cambian. Publicamos el resultado de cada pick para evitar sesgos.</p></article>
+            <article><h2>Juego responsable</h2><p>Solo para mayores de 18 años. Establece límites y nunca apuestes para cubrir deudas. Si pierdes el control, busca ayuda profesional.</p></article>
+            <article><h2>Privacidad</h2><p>Usamos tu correo para la cuenta y membresía. No vendemos datos personales. Puedes solicitar acceso o eliminación escribiendo a soporte.</p></article>
+          </section>
+        </main>
+
+        <footer class="site-footer">
+          <div class="brand footer-brand"><img src="/logo.jpg" alt="Rey Taco Logo" width="44" height="44" /><span><strong>Rey Taco Picks</strong><small>México</small></span></div>
+          <p>Portal de periodismo de datos y análisis estadístico deportivo. +18. No garantizamos ganancias.</p>
+          <p>© 2026 Rey Taco Picks · <a href="/analisis/">Análisis</a> · <a href="/aprende/">Guías</a> · <a href="/metodologia.html">Metodología</a> · <a href="/acerca-de.html">Quiénes Somos</a> · <a href="/privacidad.html">Privacidad</a> · <a href="/terminos.html">Términos</a> · <a href="mailto:soporte@reytacopicks.com">Soporte</a></p>
+        </footer>
+
+        <nav class="mobile-nav" aria-label="Navegación móvil">
+          <a href="#picks"><span>🎯</span>Picks</a>
+          <a href="#resultados"><span>✓</span>Resultados</a>
+          <a href="/analisis/"><span>📊</span>Análisis</a>
+          <a href="#vip"><span>♛</span>VIP</a>
+        </nav>
+      </div>
+
+      <dialog id="auth-dialog" class="auth-dialog">
+        <form method="dialog" class="dialog-close"><button aria-label="Cerrar" value="cancel">×</button></form>
+        <div class="dialog-brand"><span>♛</span><div><strong>Cuenta Rey Taco</strong><small>Acceso seguro con Supabase</small></div></div>
+        <div class="auth-tabs"><button type="button" class="active" data-auth-mode="login">Entrar</button><button type="button" data-auth-mode="register">Crear cuenta</button></div>
+        <form id="auth-form">
+          <label for="auth-email">Correo electrónico</label><input id="auth-email" type="email" autocomplete="email" required />
+          <label for="auth-password">Contraseña</label><input id="auth-password" type="password" autocomplete="current-password" minlength="6" required />
+          <button class="primary-button" id="auth-submit" type="submit">Iniciar sesión</button>
+        </form>
+        <div class="account-tools hidden" id="account-tools">
+          <strong>Tu cuenta</strong>
+          <span>Vincula Telegram para que el bot reconozca tu membresía.</span>
+          <button class="secondary-button" id="telegram-link-button" type="button">Vincular Telegram</button>
+          <form id="promo-form">
+            <label for="promo-code">Código promocional</label>
+            <div><input id="promo-code" type="text" autocomplete="off" maxlength="64" placeholder="Tu código" /><button type="submit">Canjear</button></div>
+          </form>
+          <button class="text-button" id="signout-button" type="button">Cerrar sesión</button>
+        </div>
+        <p id="auth-message" class="form-message" aria-live="polite"></p>
+        <div class="stripe-trust-note">
+          <strong>Pagos 100% seguros con Stripe</strong>
+          <span>Activación instantánea tras confirmar tu suscripción o pase semanal. Acceso directo e inmediato a la cartera VIP.</span>
+        </div>
+      </dialog>
+
+      <dialog id="victory-dialog" class="victory-dialog">
+        <form method="dialog" class="dialog-close"><button aria-label="Cerrar" value="cancel">×</button></form>
+        <div class="victory-dialog-content">
+          <img id="victory-dialog-image" src="" alt="Ticket oficial de Playdoit" />
+          <div class="victory-dialog-meta">
+            <h3 id="victory-dialog-title">Boleto oficial</h3>
+            <p id="victory-dialog-caption">Evidencia fotográfica recibida por el bot sin recreación.</p>
+          </div>
+        </div>
+      </dialog>
+    </div>
   </body>
 </html>

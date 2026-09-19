@@ -52,7 +52,7 @@
     </nav>
 
     <h1>Cómo interpretar nuestro historial y sus limitaciones</h1>
-
+    
     <div class="article-meta">
       <span>📚 Guía 05 de Transparencia y Auditoría</span>
       <span>⏱️ Lectura: 6 minutos</span>
@@ -61,16 +61,16 @@
     <p class="byline">Por el Equipo Editorial de Rey Taco Picks · Actualizado el <time datetime="2026-09-13">13 de septiembre de 2026</time>.</p>
 
     <p>
-      Un porcentaje de aciertos aislado puede ocultar pérdidas, cancelaciones, cuotas o periodos desfavorables. En <strong>Rey Taco Picks</strong> el historial conserva victorias, pérdidas y cancelaciones para que puedan revisarse junto con el periodo y las cuotas registradas. Aun así, cualquier lectura debe reconocer sus <strong>limitaciones estadísticas</strong>.
+      En internet abundan canales de pronósticos deportivos que presumen "95% de efectividad" o que mágicamente borran sus apuestas perdidas cuando termina la jornada. En <strong>Rey Taco Picks</strong> operamos bajo el principio opuesto: nuestro historial de picks es público, auditable y registra cada victoria, pérdida y cancelación exactamente con el mismo protagonismo visual. Sin embargo, para evaluar este historial con madurez, es imprescindible entender sus <strong>limitaciones estadísticas intrínsecas</strong>.
     </p>
 
     <h2>1. La limitación del tamaño de muestra</h2>
     <p>
-      No existe un umbral universal de picks que convierta un historial en prueba de rentabilidad. La incertidumbre depende de la tasa observada, las cuotas, la posible dependencia entre selecciones, los mercados incluidos y si el proceso cambió durante el periodo.
+      En el análisis cuantitativo de apuestas, un historial de 50 o 100 apuestas es estadísticamente pequeño. La varianza a corto plazo puede hacer que un excelente modelo parezca mediocre o que un modelo deficiente parezca brillante durante unas semanas.
     </p>
     <ul>
-      <li><strong>Muestras cortas:</strong> Suelen producir estimaciones más inestables; una racha puede cambiar mucho el porcentaje observado.</li>
-      <li><strong>Muestras más amplias:</strong> Pueden reducir la incertidumbre cuando las observaciones son comparables, pero no eliminan sesgos, cambios de estrategia ni errores de registro.</li>
+      <li><strong>Muestra menor a 200 picks:</strong> Se considera una muestra preliminar sujeta a alta volatilidad. Ninguna conclusión definitiva sobre la rentabilidad a largo plazo puede extraerse con menos de varios cientos de eventos.</li>
+      <li><strong>Muestra mayor a 500 picks:</strong> Comienza a reflejar con mayor nitidez si existe una ventaja real (+EV) frente a los márgenes de las casas de apuestas.</li>
     </ul>
 
     <h2>2. Cuota de publicación vs Cuota de cierre (Closing Line Value - CLV)</h2>
@@ -80,15 +80,15 @@
     <div class="formula-box">
       <strong>El Fenómeno del Movimiento de Línea (CLV):</strong>
       <p style="margin: 0; font-size: 0.95rem;">
-        Si una selección se registra con momio <code>2.00</code> y cierra en <code>1.75</code>, la cuota disponible disminuyó entre ambos instantes. Ese movimiento puede tener múltiples causas y no demuestra por sí solo que el pronóstico fuera correcto.
+        Si publicamos una selección con momio <code>2.00</code> a las 09:00 AM y el mercado coincide con nuestro análisis, ingresará dinero a esa opción y la casa ajustará la cuota a la baja (por ejemplo a <code>1.75</code>) antes de que inicie el partido.
       </p>
     </div>
     <p>
       Esto genera dos situaciones que el lector debe comprender:
     </p>
     <ol>
-      <li><strong>Cuota distinta al consultar:</strong> La oferta posterior puede ser menor, igual o mayor. Si es menor, el retorno potencial también será menor que el calculado con la cuota registrada.</li>
-      <li><strong>Comparación con el cierre (CLV):</strong> Es una señal descriptiva de cómo cambió el precio entre dos momentos. Para interpretarla hacen falta la misma fuente, marcas de tiempo comparables y una muestra suficiente; no prueba por sí sola valor esperado ni ganancias futuras.</li>
+      <li><strong>Si llegas tarde al pick:</strong> Es muy probable que la cuota disponible en tu casa de apuestas sea menor a la registrada en nuestro historial, lo que reduce tu rendimiento neto real respecto a las métricas del portal.</li>
+      <li><strong>Superar la línea de cierre (Beat the CLV):</strong> En la comunidad cuantitativa, conseguir consistentemente cuotas mejores que las cuotas de cierre es el indicador más confiable de valor esperado a largo plazo.</li>
     </ol>
 
     <h2>3. Sesgo de supervivencia y cero edición retroactiva</h2>
@@ -100,7 +100,7 @@
     </p>
     <ul>
       <li><strong>Las pérdidas no se borran:</strong> Cada fallo resta exactamente 1.0 unidad en el balance visible y reduce el ROI en tiempo real.</li>
-      <li><strong>Las cancelaciones se declaran nulas:</strong> Cuando la fuente y las reglas aplicables anulan una selección, el retorno se computa en 0.0 u y el registro permanece visible.</li>
+      <li><strong>Las cancelaciones se declaran nulas:</strong> Si un partido de béisbol se cancela por lluvia o un encuentro se pospone más de 24 horas, el retorno se computa en 0.0 u sin inflar artificialmente el balance.</li>
       <li><strong>Los pendientes son públicos:</strong> Todo pick se registra en la base de datos <em>antes</em> del inicio del partido, evitando la práctica deshonesta de "publicar el pick solo después de que ya ganó".</li>
     </ul>
 
@@ -136,7 +136,7 @@
 
     <h2>5. Por qué el pasado nunca asegura el futuro</h2>
     <p>
-      <strong>Los resultados pasados no garantizan rendimientos futuros.</strong> Un periodo favorable puede ir seguido de otro adverso por cambios de reglas, modificaciones tácticas, distinta composición de mercados, errores del modelo o variación aleatoria.
+      Es un principio inamovible de la estadística: <strong>los resultados pasados no son garantía de rendimientos futuros</strong>. Un modelo que tuvo un mes extraordinario en agosto puede enfrentar un mes adverso en septiembre debido a cambios de reglas, modificaciones tácticas de los entrenadores o simple varianza natural.
     </p>
 
     <section class="sources" aria-labelledby="fuentes-historial">

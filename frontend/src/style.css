@@ -402,3 +402,86 @@ tbody tr:last-child td { border-bottom: 0; }
   .quiniela-admin-form { grid-template-columns: 1fr; }
   .quiniela-admin-form h3 { grid-column: auto; }
 }
+
+/* Racha & Streak Badge */
+.streak-badge-container {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 6px;
+}
+.streak-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(245, 207, 88, 0.12);
+  border: 1px solid rgba(245, 207, 88, 0.4);
+  color: #f5cf58;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.streak-pill.streak-win {
+  background: rgba(50, 213, 131, 0.15);
+  border-color: rgba(50, 213, 131, 0.5);
+  color: #32d583;
+}
+.streak-pill.streak-loss {
+  background: rgba(255, 107, 107, 0.15);
+  border-color: rgba(255, 107, 107, 0.5);
+  color: #ff6b6b;
+}
+
+/* Calculadora de Banca */
+.calculator-card {
+  background: #111d31;
+  border: 1px solid #293b55;
+  border-radius: 16px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+}
+.calculator-desc {
+  color: #aebbd0;
+  font-size: 0.88rem;
+  margin: 4px 0 16px;
+  line-height: 1.4;
+}
+.calc-results-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 14px 0 10px;
+}
+.calc-box {
+  background: #0a1526;
+  border: 1px solid #243650;
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.calc-box span {
+  font-size: 0.72rem;
+  color: #8a9bb5;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.calc-box strong {
+  font-size: 1.2rem;
+  color: #f5cf58;
+}
+#stake-result {
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: rgba(50, 213, 131, 0.1);
+  border: 1px solid rgba(50, 213, 131, 0.3);
+  border-radius: 8px;
+  color: #32d583;
+  font-weight: 600;
+  font-size: 0.9rem;
+  display: block;
+}

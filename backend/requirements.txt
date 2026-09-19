@@ -7,4 +7,3 @@ Pillow
 requests
 pytesseract
 tzdata
-boto3

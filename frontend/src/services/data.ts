@@ -16,64 +16,6 @@ export type PickRow = {
   visibility: 'public' | 'premium';
 };
 
-export type ActiveOfferCounts = Readonly<{
-  windowStart: string;
-  publicCount: number;
-  premiumCount: number;
-}>;
-
-function boundedPickCount(value: unknown): number | null {
-  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 6
-    ? Number(value)
-    : null;
-}
-
-function isValidIsoTimestamp(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
-  if (!match) return false;
-
-  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , , offsetHourText, offsetMinuteText] = match;
-  const [year, month, day, hour, minute, second] = [
-    yearText, monthText, dayText, hourText, minuteText, secondText,
-  ].map(Number);
-  const offsetHour = offsetHourText === undefined ? 0 : Number(offsetHourText);
-  const offsetMinute = offsetMinuteText === undefined ? 0 : Number(offsetMinuteText);
-  if (year === 0 || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) {
-    return false;
-  }
-
-  const calendarDate = new Date(0);
-  calendarDate.setUTCFullYear(year, month - 1, day);
-  calendarDate.setUTCHours(hour, minute, second, 0);
-  if (
-    calendarDate.getUTCFullYear() !== year
-    || calendarDate.getUTCMonth() !== month - 1
-    || calendarDate.getUTCDate() !== day
-  ) return false;
-
-  return !Number.isNaN(new Date(value).getTime());
-}
-
-export async function loadActiveOfferCounts(
-  client: SupabaseClient,
-): Promise<ActiveOfferCounts | null> {
-  const response = await client.rpc('get_active_offer_counts');
-  if (response.error || !Array.isArray(response.data) || response.data.length !== 1) return null;
-
-  const rawRow: unknown = response.data[0];
-  if (rawRow === null || typeof rawRow !== 'object' || Array.isArray(rawRow)) return null;
-  const row = rawRow as Record<string, unknown>;
-  const expectedKeys = ['premium_count', 'public_count', 'window_start'];
-  if (Object.keys(row).sort().join(',') !== expectedKeys.join(',')) return null;
-  const publicCount = boundedPickCount(row.public_count);
-  const premiumCount = boundedPickCount(row.premium_count);
-  if (publicCount === null || premiumCount === null || publicCount + premiumCount > 6) return null;
-  if (!isValidIsoTimestamp(row.window_start)) return null;
-
-  return { windowStart: row.window_start, publicCount, premiumCount };
-}
-
 export function escapeHtml(value: unknown): string {
   const node = document.createElement('div');
   node.textContent = String(value ?? '');
@@ -164,4 +106,14 @@ export async function loadSubscriberPicks(client: SupabaseClient): Promise<PickR
   const response = await client.rpc('get_visible_picks');
   if (response.error) return [];
   return (response.data ?? []).filter((row: Record<string, unknown>) => row.estado === 'pendiente').map(normalizePick);
+}
+
+export type ActiveOfferCounts = {
+  windowStart: string;
+  publicCount: number;
+  premiumCount: number;
+};
+
+export async function loadActiveOfferCounts(_client: SupabaseClient): Promise<ActiveOfferCounts | null> {
+  return null;
 }

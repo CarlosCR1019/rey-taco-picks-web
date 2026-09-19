@@ -4,7 +4,6 @@ import {
   choosePublicPicks,
   escapeHtml,
   LEGACY_PUBLIC_PICK_FIELDS,
-  loadActiveOfferCounts,
   loadDailyPublicPicks,
   loadHistory,
   loadPublicPicks,
@@ -128,82 +127,5 @@ describe('public pick data', () => {
   it('never requests private reasoning from a public relation', () => {
     expect(PUBLIC_PICK_FIELDS.split(',')).not.toContain('razonamiento');
     expect(LEGACY_PUBLIC_PICK_FIELDS.split(',')).not.toContain('razonamiento');
-  });
-});
-
-describe('active offer counts', () => {
-  it('loads one bounded aggregate row with the exact public response shape', async () => {
-    const rpc = vi.fn().mockResolvedValue({
-      data: [{
-        window_start: '2026-09-10T00:00:00.000Z',
-        public_count: 2,
-        premium_count: 4,
-      }],
-      error: null,
-    });
-    const client = { rpc } as unknown as SupabaseClient;
-
-    expect(await loadActiveOfferCounts(client)).toEqual({
-      windowStart: '2026-09-10T00:00:00.000Z',
-      publicCount: 2,
-      premiumCount: 4,
-    });
-    expect(rpc).toHaveBeenCalledOnce();
-    expect(rpc).toHaveBeenCalledWith('get_active_offer_counts');
-  });
-
-  it('rejects an aggregate row with an unknown field', async () => {
-    const client = { rpc: vi.fn().mockResolvedValue({
-      data: [{
-        window_start: '2026-09-10T00:00:00.000Z',
-        public_count: 2,
-        premium_count: 4,
-        unknown_private_field: 'must not escape',
-      }],
-      error: null,
-    }) } as unknown as SupabaseClient;
-
-    expect(await loadActiveOfferCounts(client)).toBeNull();
-  });
-
-  it('accepts an ISO timestamp with an explicit UTC offset', async () => {
-    const client = { rpc: vi.fn().mockResolvedValue({
-      data: [{ window_start: '2026-09-10T00:00:00.000-06:00', public_count: 2, premium_count: 4 }],
-      error: null,
-    }) } as unknown as SupabaseClient;
-
-    expect(await loadActiveOfferCounts(client)).toEqual({
-      windowStart: '2026-09-10T00:00:00.000-06:00',
-      publicCount: 2,
-      premiumCount: 4,
-    });
-  });
-
-  it.each([
-    ['RPC errors', { data: null, error: { message: 'denied' } }],
-    ['zero rows', { data: [], error: null }],
-    ['a null row', { data: [null], error: null }],
-    ['multiple rows', { data: [
-      { window_start: '2026-09-10T00:00:00.000Z', public_count: 2, premium_count: 4 },
-      { window_start: '2026-09-10T06:00:00.000Z', public_count: 1, premium_count: 3 },
-    ], error: null }],
-    ['a missing window start', { data: [{ public_count: 2, premium_count: 4 }], error: null }],
-    ['a missing public count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', premium_count: 4 }], error: null }],
-    ['a missing premium count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 2 }], error: null }],
-    ['an invalid date', { data: [{ window_start: 'not-a-date', public_count: 2, premium_count: 4 }], error: null }],
-    ['a numeric timestamp', { data: [{ window_start: 0, public_count: 2, premium_count: 4 }], error: null }],
-    ['an object timestamp', { data: [{ window_start: { toString: () => '2026-09-10T00:00:00.000Z' }, public_count: 2, premium_count: 4 }], error: null }],
-    ['an impossible calendar date', { data: [{ window_start: '2026-02-30T00:00:00.000Z', public_count: 2, premium_count: 4 }], error: null }],
-    ['a negative public count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: -1, premium_count: 4 }], error: null }],
-    ['a negative premium count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 2, premium_count: -1 }], error: null }],
-    ['a fractional public count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 1.5, premium_count: 4 }], error: null }],
-    ['a fractional premium count', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 2, premium_count: 3.5 }], error: null }],
-    ['a public count above six', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 7, premium_count: 0 }], error: null }],
-    ['a premium count above six', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 0, premium_count: 7 }], error: null }],
-    ['a combined count above six', { data: [{ window_start: '2026-09-10T00:00:00.000Z', public_count: 3, premium_count: 4 }], error: null }],
-  ])('returns null for %s', async (_case, response) => {
-    const client = { rpc: vi.fn().mockResolvedValue(response) } as unknown as SupabaseClient;
-
-    expect(await loadActiveOfferCounts(client)).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PickRow } from '../services/data';
-import { activeOfferLabel, renderTimeBoard } from './timeBoard';
+import { renderTimeBoard } from './timeBoard';
 
 const rows: PickRow[] = [
   {
@@ -36,32 +36,6 @@ const rows: PickRow[] = [
 ];
 
 describe('time board rendering', () => {
-  it('formats truthful active offer counts', () => {
-    expect(activeOfferLabel({ publicCount: 1, premiumCount: 1 })).toBe('1 gratis y 1 en VIP');
-    expect(activeOfferLabel({ publicCount: 2, premiumCount: 4 })).toBe('2 gratis y 4 en VIP');
-    expect(activeOfferLabel({ publicCount: 0, premiumCount: 3 })).toBe('3 en VIP');
-    expect(activeOfferLabel({ publicCount: 0, premiumCount: 0 })).toBeNull();
-  });
-
-  it('uses aggregate counts as the VIP teaser headline', () => {
-    const html = renderTimeBoard(rows, {
-      dateKey: '2026-08-25', activeBlock: 2, isVip: false,
-      offerCounts: { publicCount: 2, premiumCount: 4 },
-    });
-    document.body.innerHTML = html;
-
-    expect(document.querySelector('.vip-discovery strong')?.textContent).toContain('2 gratis y 4 en VIP');
-  });
-
-  it('uses the exact generic headline when aggregate counts are absent', () => {
-    const html = renderTimeBoard(rows, {
-      dateKey: '2026-08-25', activeBlock: 2, isVip: false, offerCounts: null,
-    });
-    document.body.innerHTML = html;
-
-    expect(document.querySelector('.vip-discovery strong')?.textContent).toContain('Más selecciones disponibles en VIP');
-  });
-
   it('keeps all four periods visible and marks the active one', () => {
     const html = renderTimeBoard(rows, {
       dateKey: '2026-08-25', activeBlock: 2, isVip: false,
@@ -97,26 +71,4 @@ describe('time board rendering', () => {
     expect(html).not.toContain('Partido privado');
     expect(html).not.toContain('Secreto VIP');
   });
-
-  it('never turns aggregate premium counts into premium pick details', () => {
-    const html = renderTimeBoard([{
-      ...rows[1],
-      id: 5,
-      partido: 'Equipo premium confidencial',
-      pick: 'Mercado premium confidencial',
-      cuota: '9.99',
-      razonamiento: 'Razonamiento premium confidencial',
-      visibility: 'premium',
-    }], {
-      dateKey: '2026-08-25', activeBlock: 2, isVip: false,
-      offerCounts: { publicCount: 0, premiumCount: 3 },
-    });
-
-    expect(html).toContain('3 en VIP');
-    expect(html).not.toContain('Equipo premium confidencial');
-    expect(html).not.toContain('Mercado premium confidencial');
-    expect(html).not.toContain('9.99');
-    expect(html).not.toContain('Razonamiento premium confidencial');
-  });
-
 });

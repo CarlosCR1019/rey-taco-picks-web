@@ -82,12 +82,7 @@ def _decimal_odds(pick):
     return parsed if math.isfinite(parsed) and 1.01 <= parsed <= 1000 else None
 
 
-def obtener_resultados_api(
-    event_dates=None,
-    pending_picks=None,
-    *,
-    include_api_football=True,
-):
+def obtener_resultados_api(event_dates=None, pending_picks=None):
     """Consulta múltiples fuentes (ESPN API pública y The Odds API) para obtener resultados de partidos finalizados."""
     todos_juegos = []
     
@@ -143,7 +138,7 @@ def obtener_resultados_api(
             except Exception:
                 continue
 
-    if include_api_football and API_FOOTBALL_KEY and supabase and pending_picks:
+    if API_FOOTBALL_KEY and supabase and pending_picks:
         try:
             detailed_results = ApiFootballResultsClient(
                 API_FOOTBALL_KEY,
@@ -387,95 +382,27 @@ def load_active_pending_picks(client):
     return response.data
 
 
-def result_verifier_dry_run() -> bool:
-    return (os.getenv("RESULT_VERIFIER_DRY_RUN") or "").strip().casefold() == "true"
-
-
-def _load_result_report_batches():
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not supabase:
-        raise RuntimeError("result report repository unavailable")
-    try:
-        repository = SupabaseResultReportRepository(
-            url=SUPABASE_URL,
-            service_role_key=SUPABASE_SERVICE_ROLE_KEY,
-        )
-        batches = repository.batches()
-    except Exception:
-        raise RuntimeError("result report batches unavailable") from None
-    return repository, batches
-
-
-def _result_report_mode() -> str:
-    mode = os.getenv("RESULT_REPORT_MODE", "auto").strip().casefold()
-    if mode not in {"auto", "evening", "final_only"}:
-        raise RuntimeError("invalid result report mode")
-    return mode
-
-
-def _validate_live_publication_configuration(mode: str) -> None:
-    """Validate every adapter needed by this live mode without sending data."""
-    if mode not in {"auto", "evening", "final_only"}:
-        raise RuntimeError("invalid result report mode")
-    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    TelegramHttpTransport(token)
-    telegram_chats = {
-        "admin": (os.getenv("TELEGRAM_ADMIN_ID") or os.getenv("TELEGRAM_CHAT_ID") or "").strip(),
-        "vip": (os.getenv("TELEGRAM_VIP_CHANNEL_ID") or os.getenv("TELEGRAM_CHANNEL_ID") or "").strip(),
-        "free": (os.getenv("TELEGRAM_FREE_CHANNEL_ID") or "").strip(),
-    }
-    if any(not chat_id for chat_id in telegram_chats.values()):
-        raise RuntimeError("result report Telegram configuration unavailable")
-    if mode == "evening":
-        return
-    settings = MetaSettings.from_mapping(os.environ)
-    if not settings.token or not settings.facebook_page_id or not settings.instagram_user_id:
-        raise RuntimeError("result report Meta configuration unavailable")
-    MetaHttpTransport()
-    SupabaseResultArtifactStore(
-        client=supabase,
-        supabase_url=SUPABASE_URL,
-        bucket=(os.getenv("SUPABASE_STORAGE_BUCKET") or "social-media").strip(),
-    )
-
-
-def verificar_picks() -> int:
+def verificar_picks():
     """Verifica los picks pendientes contra resultados reales."""
     print("\n" + "="*60)
     print("🔍  VERIFICADOR DE RESULTADOS - Rey Taco Picks")
     print("="*60)
     
-    dry_run = result_verifier_dry_run()
     if not supabase:
         print("❌ No hay conexión a Supabase.")
-        return 1
-
-    if not dry_run:
-        try:
-            mode = _result_report_mode()
-            _validate_live_publication_configuration(mode)
-        except (RuntimeError, ValueError):
-            print("❌ No se pudo validar la configuración de publicación.")
-            return 1
-        try:
-            _load_result_report_batches()
-        except RuntimeError:
-            print("❌ No se pudo autorizar el repositorio de reportes.")
-            return 1
+        return
     
     # Obtener picks pendientes
     try:
         picks_pendientes = load_active_pending_picks(supabase)
     except Exception as e:
         print(f"❌ Error leyendo picks: {e}")
-        return 1
+        return
     
     if not picks_pendientes:
         print("ℹ️ No hay picks pendientes por verificar.")
-        if dry_run:
-            print("ℹ️ Dry-run: reportes omitidos.")
-            return 0
         publish_available_result_reports()
-        return 0
+        return
     
     print(f"📋 {len(picks_pendientes)} picks pendientes encontrados.\n")
     
@@ -485,11 +412,7 @@ def verificar_picks() -> int:
         for pick in picks_pendientes
         if pick.get('fecha_evento') or pick.get('fecha_generacion')
     }, reverse=True)[:7]
-    todos_resultados = obtener_resultados_api(
-        pick_dates,
-        picks_pendientes,
-        include_api_football=not dry_run,
-    )
+    todos_resultados = obtener_resultados_api(pick_dates, picks_pendientes)
     print(f"\n📊 Total de resultados obtenidos: {len(todos_resultados)}")
     
     # Comparar cada pick contra resultados
@@ -501,12 +424,6 @@ def verificar_picks() -> int:
         partido = pick.get('partido', '')
         decision = grade_pending_pick_from_results(pick, todos_resultados)
         if not decision:
-            continue
-        if dry_run:
-            print(
-                f"   🧪 Dry-run: {partido} → {pick.get('pick')} "
-                f"→ {decision['estado'].upper()} (sin actualizar)"
-            )
             continue
         try:
             result = supabase.table("picks").update(decision).eq(
@@ -529,32 +446,28 @@ def verificar_picks() -> int:
     
     print(f"\n{'='*60}")
     print(f"📊 RESUMEN: {actualizados} verificados | ✅ {ganados} ganados | ❌ {perdidos} perdidos")
-
-    if dry_run:
-        print("ℹ️ Dry-run: API-Football, actualizaciones y reportes omitidos.")
-        return 0
-
+    
     publish_available_result_reports()
     
     print("="*60)
-    return 0
 
 def publish_available_result_reports():
     """Publish one evidence-backed partial or final report without duplicates."""
-    if result_verifier_dry_run():
-        print("   ℹ️ Dry-run: reportes omitidos.")
+    mode = os.getenv("RESULT_REPORT_MODE", "auto").strip().casefold()
+    if mode not in {"auto", "evening", "final_only"}:
+        print("   ⚠️ RESULT_REPORT_MODE inválido; reportes omitidos.")
         return {}
-    mode = _result_report_mode()
-    _validate_live_publication_configuration(mode)
-    repository, batches = _load_result_report_batches()
-
-    reports = tuple(
-        report
-        for rows in batches
-        if (report := _report_for_mode(rows, mode=mode)) is not None
-    )
-    if not reports:
-        print("   ℹ️ No hay lotes de reportes listos.")
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not supabase:
+        print("   ℹ️ Reportes omitidos: Supabase no está configurado.")
+        return {}
+    try:
+        repository = SupabaseResultReportRepository(
+            url=SUPABASE_URL,
+            service_role_key=SUPABASE_SERVICE_ROLE_KEY,
+        )
+        batches = repository.batches()
+    except Exception:
+        print("   ⚠️ No se pudieron cargar los lotes para reportes.")
         return {}
 
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
@@ -578,7 +491,10 @@ def publish_available_result_reports():
 
     published: dict[str, dict[str, str]] = {}
     vertical_published: list[dict[str, str]] = []
-    for report in reports:
+    for rows in batches:
+        report = _report_for_mode(rows, mode=mode)
+        if report is None:
+            continue
         outcomes = publish_result_report(
             report,
             repository=repository,
@@ -591,12 +507,6 @@ def publish_available_result_reports():
         published[f"{report.batch_id}:{report.kind}"] = outcomes
         summary = ", ".join(f"{name}={status}" for name, status in outcomes.items())
         print(f"   📣 Reporte {report.kind}: {summary}")
-        try:
-            require_healthy_result_reports(
-                {f"{report.batch_id}:{report.kind}": outcomes}
-            )
-        except RuntimeError:
-            continue
         if report.kind == "final":
             try:
                 vertical = publish_final_stories_from_runtime(report)
@@ -606,10 +516,11 @@ def publish_available_result_reports():
             vertical_summary = ", ".join(
                 f"{name}={status}" for name, status in vertical.items()
             )
-            print(f"   📱 Medios finales: {vertical_summary or 'sin evidencia'}")
+            print(f"   📱 Historias finales: {vertical_summary or 'sin evidencia'}")
     require_healthy_result_reports(published)
-    for outcomes in vertical_published:
-        require_healthy_vertical_outcomes(outcomes, settings=meta_settings)
+    if meta_settings is not None:
+        for outcomes in vertical_published:
+            require_healthy_vertical_outcomes(outcomes, settings=meta_settings)
     return published
 
 
@@ -628,4 +539,4 @@ def _report_for_mode(rows, *, mode):
     return None
 
 if __name__ == "__main__":
-    raise SystemExit(verificar_picks())
+    verificar_picks()

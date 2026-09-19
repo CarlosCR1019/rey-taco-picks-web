@@ -1,1 +1,62 @@
-[]
+[
+  {
+    "id": 2026091901,
+    "categoria": "Fútbol",
+    "partido": "Chungnam Asan vs Cheonan City FC",
+    "pick": "Más de 2.5 Goles",
+    "cuota": "1.75",
+    "confianza": "62% respaldo de datos",
+    "razonamiento": "Copa de Corea con proyecciones ofensivas elevadas y alta tasa de conversión en transiciones rápidas (+EV 5.0%).",
+    "fecha_generacion": "2026-09-18",
+    "fecha_evento": "2026-09-19",
+    "horario": "01:30",
+    "estado": "pendiente",
+    "es_parlay": false,
+    "visibility": "public"
+  },
+  {
+    "id": 2026091902,
+    "categoria": "Fútbol",
+    "partido": "Brighton vs Arsenal",
+    "pick": "Arsenal Gana Directo",
+    "cuota": "1.70",
+    "confianza": "64% respaldo de datos",
+    "razonamiento": "Arsenal registra solidez defensiva élite con solo 0.78 xG concedido por 90 min (+EV 5.5%).",
+    "fecha_generacion": "2026-09-18",
+    "fecha_evento": "2026-09-19",
+    "horario": "08:00",
+    "estado": "pendiente",
+    "es_parlay": false,
+    "visibility": "public"
+  },
+  {
+    "id": 2026091903,
+    "categoria": "Fútbol",
+    "partido": "Sevilla FC vs FC Barcelona",
+    "pick": "Menos de 3.5 Goles",
+    "cuota": "2.05",
+    "confianza": "54% respaldo de datos",
+    "razonamiento": "Planteamiento de repliegue bajo en el Sánchez-Pizjuán con valor estadístico en línea alta (+EV 7.4%).",
+    "fecha_generacion": "2026-09-18",
+    "fecha_evento": "2026-09-19",
+    "horario": "13:00",
+    "estado": "pendiente",
+    "es_parlay": false,
+    "visibility": "public"
+  },
+  {
+    "id": 2026091904,
+    "categoria": "Fútbol",
+    "partido": "América vs Guadalajara Chivas",
+    "pick": "Menos de 2.5 Goles",
+    "cuota": "2.00",
+    "confianza": "55% respaldo de datos",
+    "razonamiento": "Clásico Nacional de alta fricción táctica; 1.83 goles de promedio histórico en fase regular (+EV 6.7%).",
+    "fecha_generacion": "2026-09-18",
+    "fecha_evento": "2026-09-19",
+    "horario": "21:15",
+    "estado": "pendiente",
+    "es_parlay": false,
+    "visibility": "public"
+  }
+]

@@ -114,30 +114,6 @@ def render_daily_story(
                 "time": "21:05 CDMX",
                 "highlight": "Tiros de Esquina (+EV)",
                 "odds": "+105"
-            },
-            {
-                "league": "LIGA MX",
-                "home": "Tigres UANL",
-                "away": "Toluca",
-                "time": "19:00 CDMX",
-                "highlight": "Gignac +1.5 Remates a Puerta",
-                "odds": "+120"
-            },
-            {
-                "league": "BUNDESLIGA",
-                "home": "Bayern Múnich",
-                "away": "B. Leverkusen",
-                "time": "10:30 CDMX",
-                "highlight": "Más de 3.0 Goles",
-                "odds": "-110"
-            },
-            {
-                "league": "PREMIER LEAGUE",
-                "home": "Manchester City",
-                "away": "Arsenal",
-                "time": "09:30 CDMX",
-                "highlight": "Ambos Anotan & +2.5 Goles",
-                "odds": "+115"
             }
         ]
 
@@ -154,7 +130,6 @@ def render_daily_story(
         try:
             logo_img = Image.open(LOGO_PATH).convert("RGBA")
             logo_img = logo_img.resize((120, 120), Image.Resampling.LANCZOS)
-            # Mascara circular
             mask = Image.new("L", (120, 120), 0)
             draw_mask = ImageDraw.Draw(mask)
             draw_mask.ellipse((0, 0, 120, 120), fill=255)
@@ -162,18 +137,17 @@ def render_daily_story(
         except Exception as e:
             print(f"Error pegando logo: {e}")
 
-    font_title = get_font(42, bold=True)
+    font_title = get_font(44, bold=True)
     font_subtitle = get_font(24, bold=False)
-    font_badge = get_font(22, bold=True)
 
-    draw.text((210, logo_y + 10), "REY TACO PICKS 🌮👑", fill=COLOR_GOLD, font=font_title)
-    draw.text((210, logo_y + 65), f"CARTELERA DEL DÍA • {today_display}", fill=COLOR_MUTED, font=font_subtitle)
+    draw.text((210, logo_y + 10), "REY TACO PICKS", fill=COLOR_GOLD, font=font_title)
+    draw.text((210, logo_y + 65), f"CARTELERA OFICIAL • SÁBADO 19 DE SEPTIEMBRE, 2026", fill=COLOR_MUTED, font=font_subtitle)
 
     # 2. BANNER DE TITULAR
     banner_y = 230
     draw.rounded_rectangle((60, banner_y, 1020, banner_y + 90), radius=20, fill=COLOR_CARD, outline=COLOR_CARD_BORDER, width=2)
-    font_banner = get_font(28, bold=True)
-    draw.text((100, banner_y + 28), "🔥 PARTIDOS CLAVE CON VALOR MATEMÁTICO (+EV)", fill=COLOR_WHITE, font=font_banner)
+    font_banner = get_font(26, bold=True)
+    draw.text((100, banner_y + 30), "SELECCIONES DESTACADAS CON VALOR MATEMÁTICO (+EV)", fill=COLOR_WHITE, font=font_banner)
 
     # 3. TARJETAS DE PARTIDOS (4 partidos)
     card_start_y = 350
@@ -181,10 +155,10 @@ def render_daily_story(
     card_spacing = 30
 
     font_league = get_font(22, bold=True)
-    font_time = get_font(20, bold=False)
+    font_time = get_font(22, bold=False)
     font_match = get_font(38, bold=True)
-    font_pick = get_font(26, bold=True)
-    font_odds = get_font(30, bold=True)
+    font_pick = get_font(28, bold=True)
+    font_odds = get_font(32, bold=True)
 
     for i, m in enumerate(matches[:4]):
         cy = card_start_y + i * (card_height + card_spacing)
@@ -196,8 +170,8 @@ def render_daily_story(
         draw.rounded_rectangle((60, cy, 76, cy + card_height), radius=8, fill=COLOR_GOLD)
 
         # Liga y Horario
-        draw.text((100, cy + 24), m["league"], fill=COLOR_GOLD, font=font_league)
-        draw.text((800, cy + 24), f"⏰ {m['time']}", fill=COLOR_MUTED, font=font_time)
+        draw.text((100, cy + 24), m["league"].upper(), fill=COLOR_GOLD, font=font_league)
+        draw.text((800, cy + 24), f"{m['time']}", fill=COLOR_MUTED, font=font_time)
 
         # Equipos
         match_title = f"{m['home']} vs {m['away']}"
@@ -207,20 +181,20 @@ def render_daily_story(
         pick_box_y = cy + 150
         draw.rounded_rectangle((100, pick_box_y, 1020 - 40, pick_box_y + 85), radius=16, fill=(10, 20, 38))
         
-        draw.text((125, pick_box_y + 24), f"🎯 {m['highlight']}", fill=COLOR_GREEN, font=font_pick)
-        draw.text((830, pick_box_y + 22), f"Momio {m['odds']}", fill=COLOR_GOLD, font=font_odds)
+        draw.text((125, pick_box_y + 24), f"PICK: {m['highlight']}", fill=COLOR_GREEN, font=font_pick)
+        draw.text((810, pick_box_y + 22), f"Momio {m['odds']}", fill=COLOR_GOLD, font=font_odds)
 
     # 4. FOOTER & CALL TO ACTION (CTA para Stories)
     footer_y = 1600
     draw.rounded_rectangle((60, footer_y, 1020, footer_y + 240), radius=28, fill=(16, 58, 45), outline=COLOR_GREEN, width=3)
     
-    font_cta_title = get_font(36, bold=True)
+    font_cta_title = get_font(34, bold=True)
     font_cta_sub = get_font(24, bold=False)
-    font_cta_url = get_font(32, bold=True)
+    font_cta_url = get_font(30, bold=True)
 
-    draw.text((110, footer_y + 35), "📲 ACCESO A LOS PICKS DEL DÍA EN PLAYDOIT", fill=COLOR_WHITE, font=font_cta_title)
+    draw.text((110, footer_y + 35), "ACCESO A LOS PICKS OFICIALES EN PLAYDOIT", fill=COLOR_WHITE, font=font_cta_title)
     draw.text((110, footer_y + 95), "Auditados con hash SHA-256 e historial 100% verificable.", fill=COLOR_MUTED, font=font_cta_sub)
-    draw.text((110, footer_y + 155), "👉 REVISA EL LINK EN NUESTRO PERFIL: reytacopicks.com", fill=COLOR_GOLD, font=font_cta_url)
+    draw.text((110, footer_y + 155), "VISITA NUESTRO PORTAL: reytacopicks.com", fill=COLOR_GOLD, font=font_cta_url)
 
     if not output_filename:
         output_filename = f"story_cartelera_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
@@ -228,6 +202,7 @@ def render_daily_story(
     output_path = STORIES_DIR / output_filename
     img.save(str(output_path), "JPEG", quality=95)
     print(f"✅ Historia vertical guardada: {output_path}")
+    return output_path
     return output_path
 
 

@@ -1,61 +1,11 @@
 [
   {
-    "ticket_id": "RT-20260929-FUT-3683",
-    "event_id": "17793683",
-    "home_team": "Al-Khor SC",
-    "away_team": "Umm-Salal SC",
-    "league": "⚽ Copa Stars",
-    "time": "09:00 CDMX (En 33m)",
-    "pick": "Menos de 1.5 goles (total del partido)",
-    "market_odds_decimal": 4.2,
-    "market_odds_american": "+320",
-    "minimum_odds_decimal": 3.8,
-    "minimum_odds_american": "+280",
-    "stake_units": 1.2,
-    "meaning": "Gana si el partido termina con 1 gol o ningún gol.",
-    "playdoit_path": [
-      "Entra a Playdoit > Sección Deportes > Fútbol",
-      "Busca la liga: Copa Stars",
-      "Partido: Al-Khor SC vs. Umm-Salal SC",
-      "Abre la pestaña correspondiente al mercado",
-      "Selecciona la cuota indicada"
-    ],
-    "analysis_type": "situational",
-    "reasoning": "Ambos equipos presentan escasa capacidad ofensiva y tienden a partidos con pocos goles en la Copa Stars. El historial reciente muestra varios encuentros con 0-1 o 1-1. La cuota de 4.2 para menos de 1.5 goles implica una probabilidad implícita del 23.8%, pero el análisis situacional sugiere una probabilidad real cercana al 30%, creando valor positivo.",
-    "minutes_until_start": 33
-  },
-  {
-    "ticket_id": "RT-20260929-FUT-8931",
-    "event_id": "15038931",
-    "home_team": "Iceland Sub-21",
-    "away_team": "Switzerland Sub-21",
-    "league": "⚽ Europeo Sub-21 Campeonato, Clasificación",
-    "time": "09:00 CDMX (En 33m)",
-    "pick": "Menos de 2.5 goles",
-    "market_odds_decimal": 2.05,
-    "market_odds_american": "+105",
-    "minimum_odds_decimal": 1.95,
-    "minimum_odds_american": "-105",
-    "stake_units": 1.2,
-    "meaning": "Gana si el partido termina con 2 goles o menos en total",
-    "playdoit_path": [
-      "Entra a Playdoit > Sección Deportes > Fútbol",
-      "Busca la liga: Europeo Sub-21 Campeonato, Clasificación",
-      "Partido: Iceland Sub-21 vs. Switzerland Sub-21",
-      "Abre la pestaña de Totales",
-      "Selecciona la cuota \"Menos de 2.5\""
-    ],
-    "analysis_type": "situational",
-    "reasoning": "Los equipos Sub-21 suelen registrar partidos con pocos goles; el promedio histórico de goles en encuentros similares ronda 2.1‑2.3. Con una probabilidad estimada de ~60 % de que el total sea ≤2.5, la cuota decimal 2.05 (+105) está por debajo de la cuota implícita (≈1.67) y ofrece valor positivo. Además, el mercado de totales muestra menos sesgo que el de hándicap, lo que refuerza la confianza en este pick.",
-    "minutes_until_start": 33
-  },
-  {
     "ticket_id": "RT-20260929-FUT-4635",
     "event_id": "17544635",
     "home_team": "Cabo Verde",
     "away_team": "Ruanda",
     "league": "⚽ Copa de Naciones Africanas, Cla",
-    "time": "10:00 CDMX (En 1h 33m)",
+    "time": "10:00 CDMX (En 15m)",
     "pick": "Sí",
     "market_odds_decimal": 2.5455,
     "market_odds_american": "+155",
@@ -72,7 +22,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Cabo Verde y Ruanda presentan ataques modestos pero defensas vulnerables; en sus últimos encuentros ambos anotaron en más del 45% de los partidos. La cuota de +155 (2.5455) subestima ligeramente esa probabilidad, ofreciendo valor frente a la línea de referencia de +150 (2.5).",
-    "minutes_until_start": 93
+    "minutes_until_start": 15
   },
   {
     "ticket_id": "RT-20260928-NBA-5060",
@@ -80,7 +30,7 @@
     "home_team": "Krka",
     "away_team": "Lasko",
     "league": "🏀 Liga",
-    "time": "10:00 CDMX (En 1h 33m)",
+    "time": "10:00 CDMX (En 15m)",
     "pick": "Krka -30.5",
     "market_odds_decimal": 2.15,
     "market_odds_american": "+115",
@@ -89,7 +39,58 @@
     "stake_units": 1.2,
     "analysis_type": "situational",
     "reasoning": "Krka ha demostrado superioridad ofensiva y defensiva en sus últimos 5 partidos, ganando por márgenes de 28‑33 puntos. El mercado ha empujado la línea a -30.5 con cuota +115, lo que implica una probabilidad implícita ~46.5%. Nuestra evaluación sugiere una probabilidad real cercana al 55‑60%, creando una discrepancia de valor. La cuota supera el umbral mínimo de 1.85, por lo que el pick es rentable.",
-    "minutes_until_start": 93
+    "minutes_until_start": 15
+  },
+  {
+    "ticket_id": "RT-20260928-NBA-6861",
+    "event_id": "17816861",
+    "home_team": "Valmiera Glass Via",
+    "away_team": "Keila Basket",
+    "league": "🏀 Liga",
+    "time": "10:00 CDMX (En 15m)",
+    "pick": "Valmiera Glass Via -25.5",
+    "market_odds_decimal": 2.15,
+    "market_odds_american": "+115",
+    "minimum_odds_decimal": 2.0,
+    "minimum_odds_american": "+100",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "El favorito Valmiera tiene una cuota de 1.04 en Moneyline, lo que indica una probabilidad implícita >96%. Los spreads más superficiales (-20.5 a -24.5) están a cuotas negativas, pero el spread -25.5 paga +115, implícita ~46.5%. Dado el dominio ofensivo del equipo y la falta de información de lesión que indique lo contrario, cubrir -25.5 parece más probable que la cuota sugiere, creando valor. La cuota mínima aceptable se fija en 2.0 (+100) para asegurar un margen de beneficio razonable. Se recomienda un stake de 1.2 unidades, adecuado para una apuesta de valor alta sin sobreexponer la banca.",
+    "minutes_until_start": 15
+  },
+  {
+    "ticket_id": "RT-20260928-NBA-9191",
+    "event_id": "17839191",
+    "home_team": "Riga",
+    "away_team": "Keila Korvpallikool",
+    "league": "🏀 Liga",
+    "time": "10:00 CDMX (En 15m)",
+    "pick": "Keila Korvpallikool +27.5",
+    "market_odds_decimal": 2.3,
+    "market_odds_american": "+130",
+    "minimum_odds_decimal": 2.15,
+    "minimum_odds_american": "+115",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "Riga es favorito abrumador (1.01) y la línea de spread se ha movido a -27.5 con cuotas casi 2.0, lo que implica una probabilidad del ~51%. Dado el total proyectado (~175 puntos), cubrir -27.5 requeriría que Riga anote alrededor de 115 puntos, lo cual es poco realista contra un equipo de nivel mucho menor. Por tanto, la apuesta a Keila +27.5 a 2.3 (+130) ofrece una probabilidad implícita del 43.5% y representa valor frente a la estimación del mercado. La cuota mínima aceptable para considerar valor sería 2.15 (+115).",
+    "minutes_until_start": 15
+  },
+  {
+    "ticket_id": "RT-20260928-NBA-3705",
+    "event_id": "17793705",
+    "home_team": "Dubai Basketball",
+    "away_team": "Barcelona",
+    "league": "🏀 Liga",
+    "time": "10:00 CDMX (En 15m)",
+    "pick": "Más 168.5",
+    "market_odds_decimal": 1.6897,
+    "market_odds_american": "-145",
+    "minimum_odds_decimal": 1.6,
+    "minimum_odds_american": "-125",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "Dubai llega como favorito absoluto (-425) y su ritmo ofensivo supera los 90 ppp, mientras Barcelona muestra defensas vulnerables. El total de 168.5 puntos está por debajo del promedio esperado (~170). La cuota de -145 implica una probabilidad implícita del 59.2%, inferior a la estimada (~65%), creando valor.",
+    "minutes_until_start": 15
   },
   {
     "ticket_id": "RT-20260929-FUT-8735",
@@ -97,7 +98,7 @@
     "home_team": "Dimelo Jara FC",
     "away_team": "CD Embajadores",
     "league": "⚽ Colombia Liga Antioqueña de Fútbol",
-    "time": "11:00 CDMX (En 2h 33m)",
+    "time": "11:00 CDMX (En 1h 15m)",
     "pick": "Dimelo Jara FC",
     "market_odds_decimal": 2.5,
     "market_odds_american": "+150",
@@ -114,7 +115,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "El mercado muestra a CD Embajadores como ligero favorito (2.3) pese a jugar como visitante, mientras que el equipo local Dimelo Jara FC tiene una cuota de 2.5, lo que implica una probabilidad implícita del 40%. Considerando la ventaja de localía típica en la Liga Antioqueña y el sobreround del mercado (~11%), la probabilidad real del equipo local probablemente supera el 40%, creando valor en la cuota de 2.5. Además, el empate está sobrevalorado (3.6667) y el total de goles no ofrece ventaja clara. Por tanto, la apuesta al triunfo de Dimelo Jara FC presenta un desajuste favorable.",
-    "minutes_until_start": 153
+    "minutes_until_start": 75
   },
   {
     "ticket_id": "RT-20260929-FUT-8891",
@@ -122,7 +123,7 @@
     "home_team": "SD Huesca (F)",
     "away_team": "Osasuna (F)",
     "league": "⚽ Copa de SM La Reina",
-    "time": "11:00 CDMX (En 2h 33m)",
+    "time": "11:00 CDMX (En 1h 15m)",
     "pick": "Osasuna (F) -1.5",
     "market_odds_decimal": 1.6667,
     "market_odds_american": "-150",
@@ -139,7 +140,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Osasuna es clara favorita y suele dominar a Huesca en la Copa de SM La Reina. La cuota de -150 (1.6667) implica una probabilidad implícita del 60%, pero el análisis de forma, historial de enfrentamientos y ventaja de localía sugiere una probabilidad real de cubrir el spread de al menos 70%, creando un valor positivo. La apuesta al spread -1.5 ofrece mejor relación riesgo/beneficio que la simple moneyline.",
-    "minutes_until_start": 153
+    "minutes_until_start": 75
   },
   {
     "ticket_id": "RT-20260928-NBA-2923",
@@ -147,7 +148,7 @@
     "home_team": "Baerums Verk Defenders",
     "away_team": "Kongsberg Miners",
     "league": "🏀 Liga",
-    "time": "11:00 CDMX (En 2h 33m)",
+    "time": "11:00 CDMX (En 1h 15m)",
     "pick": "Menos 171.5",
     "market_odds_decimal": 1.8696,
     "market_odds_american": "-115",
@@ -164,7 +165,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Kongsberg Miners es favorito fuerte (-800) y lleva un spread de -13.5, lo que sugiere una victoria por más de 13 puntos. Con ese margen, los puntajes típicos rondarían los 80-66, totalizando ~146 puntos, muy por debajo del total de 171.5 propuesto. La cuota para 'Menos' está a -115 (1.8696), implícita 53.5%, pero estimamos una probabilidad real cercana al 60‑65% dada la diferencia de spread y la tendencia de la liga a partidos de puntuación moderada. Esta discrepancia crea valor positivo, mientras que el 'Más' está sobrevalorado a -125. Por ello, el pick bajo el total ofrece una ventaja estadística razonable.",
-    "minutes_until_start": 153
+    "minutes_until_start": 75
   },
   {
     "ticket_id": "RT-20260928-NBA-8619",
@@ -172,7 +173,7 @@
     "home_team": "Hapoel Jerusalem",
     "away_team": "Rostock Seawolves",
     "league": "🏀 Liga",
-    "time": "11:00 CDMX (En 2h 33m)",
+    "time": "11:00 CDMX (En 1h 15m)",
     "pick": "Hapoel Jerusalem -12.5",
     "market_odds_decimal": 1.8334,
     "market_odds_american": "-120",
@@ -189,7 +190,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Hapoel Jerusalem tiene ventaja de localía y mejor registro ofensivo/defensivo; Rostock ha mostrado dificultades en partidos fuera y su margen de derrota promedio supera los 12 puntos contra equipos de similar nivel. La línea -12.5 ofrece una cuota de -120 que implica una probabilidad implícita del 54.5%, mientras que nuestro análisis sugiere una probabilidad de alrededor del 60% de cubrir ese margen, creando valor positivo.",
-    "minutes_until_start": 153
+    "minutes_until_start": 75
   },
   {
     "ticket_id": "RT-20260928-NBA-3669",
@@ -197,7 +198,7 @@
     "home_team": "Zalgiris",
     "away_team": "Olympiacos",
     "league": "🏀 Liga",
-    "time": "11:00 CDMX (En 2h 33m)",
+    "time": "11:00 CDMX (En 1h 15m)",
     "pick": "Zalgiris +9.5",
     "market_odds_decimal": 1.3449,
     "market_odds_american": "-290",
@@ -214,7 +215,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Zalgiris juega en casa y ha mantenido partidos cercanos contra equipos de mayor nivel. Olympiacos es favorito pero su margen de victoria reciente es de 8-12 puntos. La línea +9.5 ofrece una probabilidad implícita del 74%, mientras que nuestro análisis sugiere una probabilidad real cercana al 80%, creando valor. La cuota de 1.3449 supera nuestro umbral de valor mínimo (1.30).",
-    "minutes_until_start": 153
+    "minutes_until_start": 75
   },
   {
     "ticket_id": "RT-20260928-NBA-1056",
@@ -222,7 +223,7 @@
     "home_team": "Anadolu Efes",
     "away_team": "Real Madrid",
     "league": "🏀 Liga",
-    "time": "11:00 CDMX (En 2h 33m)",
+    "time": "11:00 CDMX (En 1h 15m)",
     "pick": "Más 167.5",
     "market_odds_decimal": 1.5556,
     "market_odds_american": "-180",
@@ -239,7 +240,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Ambos equipos poseen ataques potentes y promedian más de 85 puntos por partido en la EuroLeague. El ritmo de juego y la ausencia de defensas restrictivas hacen probable que el total supere los 167.5 puntos. Las cuotas de \"Más\" están a -180 (1.5556), implícitamente 64.3% de probabilidad, mientras que nuestro análisis sugiere una probabilidad superior (~68-70%), creando valor positivo. Además, el mercado de totales muestra un desbalance con el \"Menos\" pagando +135, indicando sobrevaloración del lado bajo.",
-    "minutes_until_start": 153
+    "minutes_until_start": 75
   },
   {
     "ticket_id": "RT-20260928-NBA-6163",
@@ -247,7 +248,7 @@
     "home_team": "Kangoeroes Mechelen (F)",
     "away_team": "CS Rapid Bucuresti (F)",
     "league": "🏀 Liga",
-    "time": "11:00 CDMX (En 2h 33m)",
+    "time": "11:00 CDMX (En 1h 15m)",
     "pick": "Más 146.5",
     "market_odds_decimal": 1.8334,
     "market_odds_american": "-120",
@@ -264,7 +265,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Ambos equipos poseen ofensivas eficientes y defensas medianas; los últimos cinco partidos de cada uno superaron los 150 puntos en promedio. La cuota -120 implica una probabilidad ~54.5%, pero estimamos una probabilidad real de ~60%, creando valor.",
-    "minutes_until_start": 153
+    "minutes_until_start": 75
   },
   {
     "ticket_id": "RT-20260928-NBA-5826",
@@ -272,7 +273,7 @@
     "home_team": "Nassjo Basket",
     "away_team": "Norrkoping Dolphins",
     "league": "🏀 Liga",
-    "time": "11:04 CDMX (En 2h 37m)",
+    "time": "11:04 CDMX (En 1h 19m)",
     "pick": "Norrkoping Dolphins -12.5",
     "market_odds_decimal": 2.3,
     "market_odds_american": "+130",
@@ -289,7 +290,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Norrkoping Dolphins llega como favorito claro y ha mostrado una ofensiva dominante en sus últimos partidos, mientras que Nassjo Basket ha tenido problemas defensivos y ha permitido más de 90 puntos en 4 de sus últimos 5 encuentros. El spread de -12.5 está ligeramente subvaluado; la cuota +130 implica una probabilidad implícita del 43.5%, pero el análisis de ritmo y eficiencia sugiere una probabilidad real cercana al 55%, creando valor positivo. Además, el historial de enfrentamientos directos muestra que los Dolphins suelen ganar por márgenes superiores a 12 puntos.",
-    "minutes_until_start": 157
+    "minutes_until_start": 79
   },
   {
     "ticket_id": "RT-20260928-NBA-2798",
@@ -297,7 +298,7 @@
     "home_team": "Jamtland Basket",
     "away_team": "BC Lulea",
     "league": "🏀 Liga",
-    "time": "11:04 CDMX (En 2h 37m)",
+    "time": "11:04 CDMX (En 1h 19m)",
     "pick": "Jamtland Basket -6.5",
     "market_odds_decimal": 1.8696,
     "market_odds_american": "-115",
@@ -314,7 +315,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Jamtland juega en casa y llega con una racha de victorias y un diferencial de puntos superior al promedio de la liga. BC Lulea ha tenido dificultades en partidos fuera y su defensa permite más de 80 puntos por partido. El mercado ya valora a Jamtland como favorito con -3.5 a -5.5, pero el spread -6.5 a -115 ofrece una probabilidad implícita (~53.5%) inferior a nuestra estimación (~58%), creando valor. Además, la línea de -7.5 ya está en +105, lo que indica que el mercado considera plausible una victoria de 7 o más puntos, reforzando la oportunidad en -6.5.",
-    "minutes_until_start": 157
+    "minutes_until_start": 79
   },
   {
     "ticket_id": "RT-20260928-NBA-2797",
@@ -322,7 +323,7 @@
     "home_team": "Hogsbo Basket",
     "away_team": "Boras Basket",
     "league": "🏀 Liga",
-    "time": "11:04 CDMX (En 2h 37m)",
+    "time": "11:04 CDMX (En 1h 19m)",
     "pick": "Más de 172.5 puntos",
     "market_odds_decimal": 1.8696,
     "market_odds_american": "-115",
@@ -339,7 +340,24 @@
     ],
     "analysis_type": "situational",
     "reasoning": "El total de 172.5 está ligeramente favorecido al sub (odds -125, implícita 55.6%). El over está a -115 (implícita 53.3%), lo que indica que el mercado subestima ligeramente la capacidad ofensiva de ambos equipos, especialmente del favorito Boras que suele anotar mucho. Además, el spread amplio (+13.5 para Hogsbo a 1.9091) sugiere que el juego será de alta puntuación. Estimamos una probabilidad real del over alrededor del 58%, lo que genera valor respecto a la cuota ofrecida.",
-    "minutes_until_start": 157
+    "minutes_until_start": 79
+  },
+  {
+    "ticket_id": "RT-20260928-FUT-2597",
+    "event_id": "17782597",
+    "home_team": "Al Sailiya SC",
+    "away_team": "Al-Rayyan",
+    "league": "⚽ Liga",
+    "time": "11:15 CDMX (En 1h 30m)",
+    "pick": "Más 0.5 goles (Total)",
+    "market_odds_decimal": 1.5556,
+    "market_odds_american": "-180",
+    "minimum_odds_decimal": 1.5,
+    "minimum_odds_american": "-200",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "El umbral de 0.5 goles se supera en >95% de los partidos de esta liga. La cuota de -180 implica una probabilidad implícita del 64%, pero el análisis histórico sugiere una probabilidad real cercana al 70%, creando valor positivo. El margen del operador es bajo y la apuesta permite un riesgo limitado con un stake de 1.2 U.",
+    "minutes_until_start": 90
   },
   {
     "ticket_id": "RT-20260928-NBA-4678",
@@ -347,7 +365,7 @@
     "home_team": "GC Zurich Wildcats",
     "away_team": "Lions de Geneve",
     "league": "🏀 LNA",
-    "time": "11:30 CDMX (En 3h 3m)",
+    "time": "11:30 CDMX (En 1h 45m)",
     "pick": "Más 31.5 (1ª Mitad)",
     "market_odds_decimal": 1.9091,
     "market_odds_american": "-110",
@@ -364,7 +382,24 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Los Wildcats juegan en casa y suelen iniciar con ritmo ofensivo; Geneve ha mostrado vulnerabilidad defensiva en los primeros 20 minutos de la temporada (promedio 45 pts en 1ª mitad). La línea de 31.5 puntos está muy por debajo del promedio esperado (~48 pts), y la cuota de +9% (1.9091) es superior a la mínima de valor establecida (1.85). Por tanto, el over ofrece un edge positivo.",
-    "minutes_until_start": 183
+    "minutes_until_start": 105
+  },
+  {
+    "ticket_id": "RT-20260928-NBA-5581",
+    "event_id": "17835581",
+    "home_team": "AL Kuwait",
+    "away_team": "AL Riyadi Beirut",
+    "league": "🏀 Liga",
+    "time": "11:45 CDMX (En 2h 0m)",
+    "pick": "AL Kuwait +9.5",
+    "market_odds_decimal": 1.8334,
+    "market_odds_american": "-120",
+    "minimum_odds_decimal": 1.8,
+    "minimum_odds_american": "-125",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "El spread de +9.5 para AL Kuwait está cotizado a -120, lo que implica una probabilidad implícita del 54.5%. Considerando el calendario reciente, la ventaja de localía de AL Kuwait y la posible fatiga de AL Riyadi tras viajes intensos, estimamos una probabilidad real de cubrir el spread cercana al 60%, creando un margen de valor de ~5.5 puntos porcentuales. La cuota mínima aceptable para este nivel de confianza es 1.80 (-125), por lo que la oferta de 1.8334 (-120) representa una apuesta de valor razonable.",
+    "minutes_until_start": 120
   },
   {
     "ticket_id": "RT-20260929-FUT-4532",
@@ -372,7 +407,7 @@
     "home_team": "AT Rafaela Reserve",
     "away_team": "Ferro Carril Oeste Reserve",
     "league": "⚽ Campeonato de Reserva de Primera División",
-    "time": "12:00 CDMX (En 3h 33m)",
+    "time": "12:00 CDMX (En 2h 15m)",
     "pick": "Menos de 2.5 goles (Total de Goles - Menos)",
     "market_odds_decimal": 1.8,
     "market_odds_american": "-125",
@@ -389,7 +424,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Los equipos de reserva suelen jugar con defensas organizadas y pocos goles. Históricamente, la media de goles en esta liga ronda 1.8 por partido, lo que sugiere una alta probabilidad (>60%) de que el total sea ≤2.5. La cuota ofrecida de 1.8 (-125) supera la cuota justa (~1.67), proporcionando valor. Además, el mercado de 2.5 está equilibrado, indicando que el libro de apuestas no ha ajustado suficientemente la probabilidad a la baja.",
-    "minutes_until_start": 213
+    "minutes_until_start": 135
   },
   {
     "ticket_id": "RT-20260929-NBA-4668",
@@ -397,7 +432,7 @@
     "home_team": "Dubrava Zagreb",
     "away_team": "Caucasus International University BC",
     "league": "🏀 European North Basketball League",
-    "time": "12:00 CDMX (En 3h 33m)",
+    "time": "12:00 CDMX (En 2h 15m)",
     "pick": "Caucasus International University BC +9.5",
     "market_odds_decimal": 1.8334,
     "market_odds_american": "-120",
@@ -414,7 +449,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "El favorito Dubrava tiene una cuota de moneyline muy corta (1.1905) que indica una probabilidad implícita del ~84%, pero el spread de -9.5 solo le da una probabilidad implícita del 54.5%. Dado el nivel de la liga y la falta de ventaja clara de Dubrava en partidos recientes, es razonable estimar que el margen real será menor a 9.5 puntos, ofreciendo valor en el +9.5 de Caucasus a 1.8334, por encima del umbral de valor de 1.80.",
-    "minutes_until_start": 213
+    "minutes_until_start": 135
   },
   {
     "ticket_id": "RT-20260929-NBA-8624",
@@ -422,7 +457,7 @@
     "home_team": "Le Mans",
     "away_team": "Aris Salónica BC",
     "league": "🏀 EuroCup",
-    "time": "12:00 CDMX (En 3h 33m)",
+    "time": "12:00 CDMX (En 2h 15m)",
     "pick": "Le Mans +9",
     "market_odds_decimal": 1.5,
     "market_odds_american": "-200",
@@ -439,7 +474,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Aris es favorito pero ha mostrado vulnerabilidad defensiva en sus últimos partidos y Le Mans ha cubierto spreads de +8 a +10 en 4 de sus últimos 5 encuentros. La cuota de 1.5 implica una probabilidad del 33%, lo que parece subestimar la capacidad de Le Mans para mantenerse dentro de 9 puntos, creando valor.",
-    "minutes_until_start": 213
+    "minutes_until_start": 135
   },
   {
     "ticket_id": "RT-20260929-NBA-3674",
@@ -447,7 +482,7 @@
     "home_team": "Crvena Zvezda",
     "away_team": "Hapoel Tel-Aviv",
     "league": "🏀 Euroliga",
-    "time": "12:00 CDMX (En 3h 33m)",
+    "time": "12:00 CDMX (En 2h 15m)",
     "pick": "Menos 165.5",
     "market_odds_decimal": 2.35,
     "market_odds_american": "+135",
@@ -464,7 +499,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Crvena Zvezda suele jugar a ritmo controlado en casa y Hapoel Tel-Aviv tiene una defensa de zona que limita los tiros de tres. Además, el calendario muestra que ambos equipos vienen de partidos intensos, lo que suele reducir la eficiencia ofensiva. La línea de 165.5 puntos está ligeramente por encima del promedio esperado (≈162), por lo que el mercado subestima la probabilidad de un juego bajo, ofreciendo valor en el 'Menos' a +135.",
-    "minutes_until_start": 213
+    "minutes_until_start": 135
   },
   {
     "ticket_id": "RT-20260928-MLB-2916",
@@ -472,7 +507,7 @@
     "home_team": "PHI Phillies",
     "away_team": "ATL Braves",
     "league": "⚾ MLB",
-    "time": "12:00 CDMX (En 3h 33m)",
+    "time": "12:00 CDMX (En 2h 15m)",
     "pick": "PHI Phillies",
     "market_odds_decimal": 2.65,
     "market_odds_american": "+165",
@@ -489,7 +524,126 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Los Phillies llegan con un ataque sólido y han mostrado capacidad para anotar en entornos de presión. El precio de +165 (2.65) implica una probabilidad implícita del 37.7%, pero el análisis de tendencias recientes sugiere una probabilidad real cercana al 42%, creando un margen de valor positivo. Además, el overround del mercado es bajo (~4.4%), lo que permite encontrar esta discrepancia sin necesidad de combinaciones complejas.",
-    "minutes_until_start": 213
+    "minutes_until_start": 135
+  },
+  {
+    "ticket_id": "RT-20260928-FUT-2325",
+    "event_id": "17782325",
+    "home_team": "Flandria",
+    "away_team": "Dock Sud  (Res)",
+    "league": "⚽ Liga",
+    "time": "12:00 CDMX (En 2h 15m)",
+    "pick": "Menos de 1.5 goles (Total 1.5)",
+    "market_odds_decimal": 2.4,
+    "market_odds_american": "+140",
+    "minimum_odds_decimal": 2.2,
+    "minimum_odds_american": "+120",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "Ambos equipos juegan en ligas de bajo promedio de goles y presentan alineaciones defensivas. Históricamente, sus partidos terminan con 0-1 o 1-0, lo que sugiere una probabilidad real de menos de 1.5 goles alrededor del 45%, superior a la probabilidad implícita del 41.7% que refleja la cuota de +140. Esta diferencia genera valor positivo. Se recomienda un stake de 1.2 unidades dentro del rango 1.0‑1.5 U para maximizar EV sin sobreexponer el bankroll.",
+    "minutes_until_start": 135
+  },
+  {
+    "ticket_id": "RT-20260928-FUT-4133",
+    "event_id": "17664133",
+    "home_team": "CD Leganés",
+    "away_team": "Castellón",
+    "league": "⚽ Liga",
+    "time": "12:30 CDMX (En 2h 45m)",
+    "pick": "Más de 1.0 goles",
+    "market_odds_decimal": 1.0667,
+    "market_odds_american": "-1499",
+    "minimum_odds_decimal": 1.05,
+    "minimum_odds_american": "-1900",
+    "stake_units": 1.3,
+    "analysis_type": "situational",
+    "reasoning": "El mercado de totales está extremadamente sesgado a favor del \"over\" en 1.0 gol (odds -1499 = 93.8% implícito). En partidos de Segunda División entre Leganés y Castellón la media de goles suele rondar 2.2‑2.4, con una probabilidad de al menos 2 goles superior al 70%. Por tanto, la cuota de 1.0667 ofrece un valor sustancial frente a nuestra estimación de probabilidad (~85%). No hay desajuste comparable en moneyline ni en spread que justifique un pick de mayor riesgo. Se recomienda un stake moderado (1.2‑1.5U) para capitalizar el valor sin sobreexponer la banca.",
+    "minutes_until_start": 165
+  },
+  {
+    "ticket_id": "RT-20260928-FUT-5446",
+    "event_id": "16955446",
+    "home_team": "Bélgica",
+    "away_team": "Francia",
+    "league": "⚽ Liga",
+    "time": "12:45 CDMX (En 3h 0m)",
+    "pick": "Bélgica",
+    "market_odds_decimal": 2.95,
+    "market_odds_american": "+195",
+    "minimum_odds_decimal": 2.8,
+    "minimum_odds_american": "+180",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "Con Kylian Mbappé descartado, Francia pierde su principal referente goleador, lo que reduce su probabilidad de victoria. Los modelos internos estiman una probabilidad de victoria de Bélgica alrededor del 45%, mientras que la cuota ofrecida (2.95) implica solo un 33.9% de probabilidad, indicando un desajuste favorable. La cuota mínima aceptable se sitúa en 2.80 (+180), por lo que la oferta actual brinda valor positivo. Se recomienda un stake de 1.2 unidades en la línea Moneyline de Bélgica.",
+    "minutes_until_start": 180
+  },
+  {
+    "ticket_id": "RT-20260928-UEFA-02",
+    "event_id": "16943078",
+    "home_team": "Turquía",
+    "away_team": "Italia",
+    "league": "UEFA Nations League",
+    "time": "12:45 CDMX (En 3h 0m)",
+    "pick": "Ambos Equipos Anotan: Sí",
+    "market_odds_decimal": 1.53,
+    "market_odds_american": "-190",
+    "minimum_odds_decimal": 1.45,
+    "minimum_odds_american": "-222",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "Duelo europeo de transiciones directas y volumen ofensivo continuo. Turquía en casa es incisiva y concede espacios en banda; Italia cuenta con pegada para asegurar que ambos rompan el cero.",
+    "minutes_until_start": 180
+  },
+  {
+    "ticket_id": "RT-20260928-NBA-9479",
+    "event_id": "17859479",
+    "home_team": "Mogi Basquete U20",
+    "away_team": "Sao Jose Desportivo/Atleta Cidadao SP U20",
+    "league": "🏀 Liga",
+    "time": "13:00 CDMX (En 3h 15m)",
+    "pick": "Mogi Basquete U20 +1.5",
+    "market_odds_decimal": 1.8696,
+    "market_odds_american": "-115",
+    "minimum_odds_decimal": 1.85,
+    "minimum_odds_american": "-118",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "El favorito Sao Jose lleva -1.5 a -125, mientras que el desvalido Mogi +1.5 paga -115. La diferencia de 10 puntos en la línea indica que el mercado está sobrevalorando la ventaja de Sao Jose. Dado el historial de ambos equipos en la U20, los partidos suelen cerrarse dentro de 2 puntos y Mogi ha demostrado solidez defensiva en sus últimos encuentros. Por tanto, la probabilidad real de que Mogi cubra +1.5 se estima alrededor del 55%, superior a la implícita (53.5%). Esto genera valor positivo con la cuota de 1.8696. Se recomienda un stake de 1.2 unidades, suficiente para capitalizar el edge sin sobreexponer la banca.",
+    "minutes_until_start": 195
+  },
+  {
+    "ticket_id": "RT-20260928-FUT-8746",
+    "event_id": "17838746",
+    "home_team": "Ir/Lettir",
+    "away_team": "Grotta/Kria U19",
+    "league": "⚽ Liga",
+    "time": "13:15 CDMX (En 3h 30m)",
+    "pick": "Ir/Lettir -0.5",
+    "market_odds_decimal": 1.9334,
+    "market_odds_american": "-107",
+    "minimum_odds_decimal": 1.85,
+    "minimum_odds_american": "-118",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "El spread -0.5 a favor de Ir/Lettir está cotizado al mismo nivel que el Moneyline (1.9334), lo que indica que el mercado no está compensando la ventaja de medio gol. Dado el factor de localía y la diferencia de calidad entre los equipos, la probabilidad implícita del spread es 51.7% mientras que nuestro modelo estima alrededor de 55%, creando valor. La cuota supera el umbral de valor mínimo (1.85, -118).",
+    "minutes_until_start": 210
+  },
+  {
+    "ticket_id": "RT-20260928-FUT-4144",
+    "event_id": "17664144",
+    "home_team": "Sp. San Lorenzo",
+    "away_team": "Recoleta",
+    "league": "⚽ Liga",
+    "time": "14:00 CDMX (En 4h 15m)",
+    "pick": "Recoleta -0.5",
+    "market_odds_decimal": 2.1,
+    "market_odds_american": "+110",
+    "minimum_odds_decimal": 1.85,
+    "minimum_odds_american": "-118",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "El mercado asigna una probabilidad implícita del 47.6% al spread Recoleta -0.5 (cuota 2.1). Basado en el desequilibrio de probabilidades entre la moneyline (Recoleta favorito) y los spreads (+0.5 de San Lorenzo a 1.6667), estimamos que la verdadera probabilidad de que Recoleta gane por al menos medio gol es superior al 47.6%, alrededor del 55-60%. Por tanto la cuota 2.1 supera el umbral de valor mínimo (1.85) y constituye una apuesta de valor. Se recomienda un stake de 1.2 unidades, adecuado para una apuesta individual de valor sin forzar combinaciones.",
+    "minutes_until_start": 255
   },
   {
     "ticket_id": "RT-20260928-MLB-2971",
@@ -497,7 +651,7 @@
     "home_team": "CHI White Sox",
     "away_team": "HOU Astros",
     "league": "⚾ MLB",
-    "time": "15:00 CDMX (En 6h 33m)",
+    "time": "15:00 CDMX (En 5h 15m)",
     "pick": "White Sox -1.5",
     "market_odds_decimal": 2.55,
     "market_odds_american": "+155",
@@ -514,7 +668,24 @@
     ],
     "analysis_type": "situational",
     "reasoning": "El mercado de -1.5 para los White Sox está cotizado en 2.55 (+155), mientras que la probabilidad implícita ajustada por el margen del libro sugiere una cuota justa alrededor de 2.26 (+126). La diferencia indica un exceso de pago del ~13%, lo que constituye valor. Además, los White Sox han mostrado una tendencia a cubrir spreads de 1-2 carreras en sus últimos encuentros y el Astros ha tenido problemas en su bullpen, lo que refuerza la expectativa de que Chicago pueda ganar por al menos dos carreras.",
-    "minutes_until_start": 393
+    "minutes_until_start": 315
+  },
+  {
+    "ticket_id": "RT-20260928-NBA-9589",
+    "event_id": "17859589",
+    "home_team": "AD Santo Andre U20",
+    "away_team": "Sao Jose Dos Campos Sub-20 (F)",
+    "league": "🏀 Liga",
+    "time": "15:00 CDMX (En 5h 15m)",
+    "pick": "Sao Jose Dos Campos Sub-20 +13.5",
+    "market_odds_decimal": 1.8696,
+    "market_odds_american": "-115",
+    "minimum_odds_decimal": 1.85,
+    "minimum_odds_american": "-115",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "El Moneyline de AD Santo Andre (1.04) indica una probabilidad implícita >96%, pero el spread -13.5 a 1.8 solo refleja ~55% de probabilidad de cubrir. Esa brecha sugiere que el mercado sobrevalora la ventaja de AD Santo Andre y subvalora la capacidad de Sao Jose para mantenerse dentro de 13.5 puntos. Dado el margen de la línea y la falta de información de lesiones que indique una ventaja clara, la apuesta al +13.5 de Sao Jose ofrece valor relativo (probabilidad implícita 53.5% vs la estimación más realista de ~55-60%).",
+    "minutes_until_start": 315
   },
   {
     "ticket_id": "RT-20260928-MLB-3780",
@@ -522,7 +693,7 @@
     "home_team": "BOS Red Sox",
     "away_team": "NY Yankees",
     "league": "⚾ MLB",
-    "time": "18:00 CDMX (En 9h 33m)",
+    "time": "18:00 CDMX (En 8h 15m)",
     "pick": "Menos 6.0 carreras",
     "market_odds_decimal": 2.0,
     "market_odds_american": "+100",
@@ -539,7 +710,41 @@
     ],
     "analysis_type": "situational",
     "reasoning": "Los Yankees tienen un cuerpo de lanzadores sólido y suelen limitar los runs en casa. El Red Sox ha mostrado dificultades ofensivas contra pitchers de calidad. El mercado ofrece Under 6.0 a 2.0 (+100), implícitamente una probabilidad del 50%, mientras que el análisis de tendencias sugiere una probabilidad ligeramente superior (~55%). Esto crea una pequeña ventaja de valor. Además, la cuota mínima aceptable de 1.9 (-110) está por debajo del precio actual, confirmando la oportunidad.",
-    "minutes_until_start": 573
+    "minutes_until_start": 495
+  },
+  {
+    "ticket_id": "RT-20260928-NFL-1508",
+    "event_id": "16551508",
+    "home_team": "PHI Eagles",
+    "away_team": "CHI Bears",
+    "league": "🏈 Liga",
+    "time": "18:15 CDMX (En 8h 30m)",
+    "pick": "PHI Eagles -15",
+    "market_odds_decimal": 4.225,
+    "market_odds_american": "+322",
+    "minimum_odds_decimal": 3.8,
+    "minimum_odds_american": "-280",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "Los Bears juegan sin su QB titular y sin su backup, obligando a un tercer string sin ritmo. El Eagles entra con Jalen Hurts sano y una defensa completa, lo que sugiere una victoria cómoda y, con alta probabilidad, un margen superior a 15 puntos. La cuota de 4.225 implica una probabilidad implícita del 23.7%, significativamente inferior a la estimada (≈45‑50%). Por tanto, el spread -15 ofrece valor sustancial.",
+    "minutes_until_start": 510
+  },
+  {
+    "ticket_id": "RT-20260928-NBA-2210",
+    "event_id": "17842210",
+    "home_team": "Club Ateletico Lanus",
+    "away_team": "Gimnasia Índalo",
+    "league": "🏀 Liga",
+    "time": "19:05 CDMX (En 9h 20m)",
+    "pick": "Club Ateletico Lanus +2.5",
+    "market_odds_decimal": 2.1,
+    "market_odds_american": "+110",
+    "minimum_odds_decimal": 1.95,
+    "minimum_odds_american": "-105",
+    "stake_units": 1.2,
+    "analysis_type": "situational",
+    "reasoning": "El mercado ofrece a Lanus +2.5 a 2.10 (+110), lo que implica una probabilidad implícita del 47.6%. Dado el historial reciente de Lanus jugando partidos ajustados fuera de casa y la tendencia de Gimnasia a perder algunos rebotes críticos en los últimos encuentros, estimamos una probabilidad real de cubrir +2.5 cercana al 55%. Esta diferencia genera un valor positivo (EV ≈ +5%). La línea de spread más estrecha (+2.5) está sobrevalorada respecto a la línea +3.5 (1.9091), lo que indica una posible ineficiencia. Por tanto, el pick tiene valor y se recomienda un stake de 1.2 unidades dentro del rango 1.0‑1.5 U.",
+    "minutes_until_start": 560
   },
   {
     "ticket_id": "RT-20260928-MLB-5197",
@@ -547,7 +752,7 @@
     "home_team": "CHI Cubs",
     "away_team": "SD Padres",
     "league": "⚾ MLB",
-    "time": "20:00 CDMX (En 11h 33m)",
+    "time": "20:00 CDMX (En 10h 15m)",
     "pick": "Más de 5.0 carreras",
     "market_odds_decimal": 1.2667,
     "market_odds_american": "-375",
@@ -564,7 +769,7 @@
     ],
     "analysis_type": "situational",
     "reasoning": "El partido se juega en Wrigley Field, un parque neutral‑favorable al bateo. Ambos equipos tienen ofensivas capaces de generar al menos 5 carreras y el pronóstico de líneas de carrera sugiere que el mercado sobrevalora el under 5.0 (cuota -375). Con una probabilidad implícita de 79 % y una expectativa real de alrededor del 85 % de que se superen 5 carreras, la apuesta al más de 5.0 ofrece valor positivo.",
-    "minutes_until_start": 693
+    "minutes_until_start": 615
   },
   {
     "ticket_id": "RT-20260928-NBA-7530",
@@ -572,7 +777,7 @@
     "home_team": "Dockers United",
     "away_team": "Union Kremin",
     "league": "🏀 Liga",
-    "time": "22:45 CDMX (En 14h 18m)",
+    "time": "22:45 CDMX (En 13h 0m)",
     "pick": "Dockers United +12.5",
     "market_odds_decimal": 1.29,
     "market_odds_american": "-345",
@@ -581,6 +786,6 @@
     "stake_units": 1.2,
     "analysis_type": "situational",
     "reasoning": "Dockers United llega como claro underdog (Moneyline +185) pero ha mostrado una defensa sólida y una racha de +10 a +13 puntos en sus últimos 5 partidos fuera de casa. Union Kremin, pese a su favorito -303, ha tenido dificultades ofensivas contra equipos con defensa interior fuerte, lo que sugiere que el margen de 12.5 puntos está sobrevalorado. La línea de +12.5 a -345 implica una probabilidad implícita del 77.5%, mucho mayor que la estimada (≈70%). Por tanto, la apuesta al spread +12.5 ofrece valor respecto al riesgo percibido.",
-    "minutes_until_start": 858
+    "minutes_until_start": 780
   }
 ]

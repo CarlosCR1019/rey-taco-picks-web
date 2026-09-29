@@ -38,7 +38,7 @@
 <body class="p-3 sm:p-5 max-w-2xl mx-auto min-h-screen pb-20 select-none">
 
   <!-- Header -->
-  <header class="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+  <header class="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
     <div class="flex items-center gap-2.5">
       <div class="text-3xl">🌮👑</div>
       <div>
@@ -63,20 +63,32 @@
     </div>
   </header>
 
-  <!-- Banner de Valor y Control Antispam -->
-  <div class="bg-gradient-to-r from-amber-500/10 via-cardBg to-slate-900 border border-amber-500/30 rounded-xl p-3 mb-4 shadow-sm">
+  <!-- SELECTOR DE VISTA: Joyas Top vs Todas las Próximas -->
+  <div class="grid grid-cols-2 gap-1.5 p-1 bg-darkBg border border-slate-800 rounded-xl mb-3 shadow-inner">
+    <button onclick="setViewMode('jewels')" id="mode-jewels-btn" class="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold transition bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-md">
+      <span>💎 Joyas Top</span>
+      <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-black/25 text-black font-black" id="badge-jewels-count">0</span>
+    </button>
+    <button onclick="setViewMode('all')" id="mode-all-btn" class="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition">
+      <span>⏰ Próximas</span>
+      <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-300 font-mono" id="badge-all-count">0</span>
+    </button>
+  </div>
+
+  <!-- Banner Dinámico de Estado -->
+  <div class="bg-gradient-to-r from-amber-500/10 via-cardBg to-slate-900 border border-amber-500/30 rounded-xl p-3 mb-3 shadow-sm">
     <div class="flex items-start gap-2.5">
-      <div class="text-xl">🗺️</div>
+      <div class="text-xl" id="banner-icon">💎</div>
       <div class="flex-1">
         <div class="flex items-center justify-between">
-          <h3 class="text-xs font-bold text-amber-300">Rutas Exactas Playdoit & Opciones en Vivo</h3>
+          <h3 class="text-xs font-bold text-amber-300" id="banner-title">Joyas Top del Día (Filtradas por Hora & Valor)</h3>
           <span id="sync-status" class="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
             <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
             Auto-sync activo (8s)
           </span>
         </div>
-        <p class="text-[11px] text-slate-300 mt-0.5 leading-snug">
-          Cada pick incluye el <b>significado simple</b> y la <b>ruta paso a paso</b> para encontrarlo en Playdoit sin perder tiempo. La app se actualiza sola automáticamente en segundo plano.
+        <p class="text-[11px] text-slate-300 mt-0.5 leading-snug" id="banner-desc">
+          Solo partidos que <b>aún no empiezan</b>, con cuotas en el rango de mayor rentabilidad (1.55 - 2.40) y en ligas principales (MLB, Euroliga, Copa Africana).
         </p>
       </div>
     </div>
@@ -87,14 +99,14 @@
     <button onclick="setSportFilter('all')" data-sport="all" class="sport-btn active shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow-sm transition">
       ⭐ Todos (<span id="count-all">0</span>)
     </button>
-    <button onclick="setSportFilter('futbol')" data-sport="futbol" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
-      ⚽ Fútbol (<span id="count-fut">0</span>)
+    <button onclick="setSportFilter('mlb')" data-sport="mlb" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      ⚾ Béisbol (<span id="count-mlb">0</span>)
     </button>
     <button onclick="setSportFilter('nba')" data-sport="nba" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
       🏀 Baloncesto (<span id="count-nba">0</span>)
     </button>
-    <button onclick="setSportFilter('mlb')" data-sport="mlb" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
-      ⚾ Béisbol (<span id="count-mlb">0</span>)
+    <button onclick="setSportFilter('futbol')" data-sport="futbol" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      ⚽ Fútbol (<span id="count-fut">0</span>)
     </button>
     <button onclick="setSportFilter('nfl')" data-sport="nfl" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
       🏈 NFL (<span id="count-nfl">0</span>)
@@ -121,7 +133,76 @@
 
     let PICKS_DATA = [];
     let currentFilter = "all";
+    let viewMode = "jewels"; // 'jewels' (Top picks) o 'all' (Todas las próximas)
     let discardedPicks = new Set(JSON.parse(localStorage.getItem("reytaco_discarded_ids") || "[]"));
+
+    function scorePick(p) {
+      let score = 50;
+      const league = (p.league || "").toLowerCase();
+      
+      const tier1 = ['mlb', 'nfl', 'euroliga', 'eurocup', 'copa de naciones africanas', 'liga mx', 'premier', 'la liga', 'serie a', 'champions'];
+      const tier2 = ['kbo', 'npb', 'lna', 'bbl', 'juegos asiáticos'];
+      const obscure = ['sub-20', 'u20', 'sub-21', 'u21', 'sub-23', 'u23', 'development', 'northeast', 'district', 'amistoso'];
+
+      if (obscure.some(k => league.includes(k))) {
+        score -= 35;
+      } else if (tier1.some(k => league.includes(k))) {
+        score += 35;
+      } else if (tier2.some(k => league.includes(k))) {
+        score += 15;
+      }
+
+      const odds = Number(p.odds_dec) || 1.8;
+      if (odds >= 1.60 && odds <= 2.30) {
+        score += 25; // Rango más rentable
+      } else if ((odds >= 1.50 && odds < 1.60) || (odds > 2.30 && odds <= 2.65)) {
+        score += 10;
+      } else if (odds < 1.40 || odds > 3.20) {
+        score -= 25;
+      }
+
+      if (p.reasoning && p.reasoning.length > 80) score += 5;
+      return Math.max(10, Math.min(99, score));
+    }
+
+    function isGameUpcoming(p) {
+      if (!p.time) return true;
+      const now = new Date();
+      const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
+      const [currH, currM] = nowCdmxStr.split(':').map(Number);
+      const currentMinutes = currH * 60 + currM;
+
+      const match = p.time.match(/(\d{1,2}):(\d{2})/);
+      if (!match) return true;
+      const gameMinutes = parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+
+      // Si el partido empezó hace más de 10 minutos, se oculta automáticamente
+      return (gameMinutes - currentMinutes) >= -10;
+    }
+
+    function formatTimeRemaining(timeStr) {
+      if (!timeStr) return "Hoy";
+      const now = new Date();
+      const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
+      const [currH, currM] = nowCdmxStr.split(':').map(Number);
+      const currentMinutes = currH * 60 + currM;
+
+      const match = timeStr.match(/(\d{1,2}):(\d{2})/);
+      if (!match) return timeStr;
+
+      const h = parseInt(match[1], 10);
+      const m = parseInt(match[2], 10);
+      const gameMinutes = h * 60 + m;
+      const diff = gameMinutes - currentMinutes;
+
+      const cleanH = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ' CDMX';
+
+      if (diff < 0) return `${cleanH} (En juego)`;
+      if (diff <= 60) return `⏳ En ${diff}m (${cleanH})`;
+      const hours = Math.floor(diff / 60);
+      const mins = diff % 60;
+      return `⏳ En ${hours}h ${mins}m (${cleanH})`;
+    }
 
     function normalizePick(raw) {
       const tid = raw.ticket_id || raw.id || "RT-" + Math.floor(Math.random() * 10000);
@@ -148,10 +229,8 @@
       const away = raw.away_team || "";
       const match = raw.match || (home && away ? `${home} vs. ${away}` : (home || away || "Evento"));
 
-      // Limpiar prefijo emoji de la liga si existe
       const cleanLeague = leagueStr.replace(/^[⚽🏈🏀⚾]\s*/, "").trim() || "Liga";
 
-      // Formatear cuota americana asegurando signo
       let ameOdds = String(raw.market_odds_american || "");
       if (ameOdds && !ameOdds.startsWith("+") && !ameOdds.startsWith("-")) {
         ameOdds = (Number(ameOdds) > 0 ? "+" : "") + ameOdds;
@@ -176,14 +255,15 @@
         ];
       }
 
-      return {
+      const basePick = {
         id: tid,
         sport: sport,
         sport_icon: sport_icon,
         sport_name: sport_name,
         league: cleanLeague,
         match: match,
-        time: raw.time ? (raw.time.includes("CDMX") ? raw.time : raw.time + " CDMX") : "Hoy",
+        time_raw: raw.time || "",
+        time: formatTimeRemaining(raw.time),
         market: raw.market || "Oportunidad de Valor +EV",
         pick: raw.pick || "",
         meaning: raw.meaning || (raw.pick + " en el tiempo regular del partido."),
@@ -195,6 +275,10 @@
         status: discardedPicks.has(tid) ? "discarded" : (raw.status || "pending"),
         reasoning: raw.reasoning || "Ventaja matemática y situacional detectada en Playdoit."
       };
+
+      basePick.score = scorePick(basePick);
+      basePick.is_jewel = basePick.score >= 75;
+      return basePick;
     }
 
     let isFetching = false;
@@ -225,12 +309,12 @@
             }
           }
         } catch (e) {
-          // Continuar con siguiente fallback
+          // Fallback
         }
       }
 
       if (rawList && rawList.length > 0) {
-        const nextPicks = rawList.map(normalizePick);
+        const nextPicks = rawList.map(normalizePick).filter(isGameUpcoming);
         const prevKeys = PICKS_DATA.map(p => p.id + p.status).join(',');
         const nextKeys = nextPicks.map(p => p.id + p.status).join(',');
 
@@ -241,18 +325,15 @@
         }
         localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
         if (statusEl) {
-          statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Auto-sync activo • ${PICKS_DATA.length} picks`;
+          statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Auto-sync • ${PICKS_DATA.length} por jugar`;
         }
       } else if (PICKS_DATA.length === 0) {
         const cached = localStorage.getItem("reytaco_active_picks");
         if (cached) {
           try {
-            PICKS_DATA = JSON.parse(cached).map(normalizePick);
+            PICKS_DATA = JSON.parse(cached).map(normalizePick).filter(isGameUpcoming);
             updateFilterCounts();
             renderPicks();
-            if (statusEl) {
-              statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400 mr-1"></span> Caché • ${PICKS_DATA.length} picks`;
-            }
           } catch (e) {}
         }
       }
@@ -261,17 +342,54 @@
       isFetching = false;
     }
 
-    function updateFilterCounts() {
-      const active = PICKS_DATA.filter(p => !discardedPicks.has(p.id));
-      const fut = active.filter(p => p.sport === "futbol");
-      const nba = active.filter(p => p.sport === "nba");
-      const mlb = active.filter(p => p.sport === "mlb");
-      const nfl = active.filter(p => p.sport === "nfl");
+    function setViewMode(mode) {
+      viewMode = mode;
+      const jBtn = document.getElementById("mode-jewels-btn");
+      const aBtn = document.getElementById("mode-all-btn");
+      const bTitle = document.getElementById("banner-title");
+      const bDesc = document.getElementById("banner-desc");
+      const bIcon = document.getElementById("banner-icon");
 
-      document.getElementById("count-all").textContent = active.length;
-      document.getElementById("count-fut").textContent = fut.length;
-      document.getElementById("count-nba").textContent = nba.length;
+      if (mode === "jewels") {
+        jBtn.className = "flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold transition bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-md";
+        aBtn.className = "flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition";
+        bTitle.textContent = "Joyas Top del Día (Filtradas por Hora & Valor)";
+        bDesc.textContent = "Solo partidos que aún no empiezan, con cuotas de alto valor (+EV) y ligas de primer nivel (MLB, Euroliga, Copa Africana).";
+        bIcon.textContent = "💎";
+      } else {
+        aBtn.className = "flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold transition bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-md";
+        jBtn.className = "flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition";
+        bTitle.textContent = "Todas las Próximas Oportunidades";
+        bDesc.textContent = "Lista completa de todos los partidos programados para las próximas horas en Playdoit.";
+        bIcon.textContent = "⏰";
+      }
+
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+      }
+      updateFilterCounts();
+      renderPicks();
+    }
+
+    function updateFilterCounts() {
+      // Filtrar activos y que falten por jugarse
+      const valid = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
+      const jewels = valid.filter(p => p.is_jewel);
+
+      document.getElementById("badge-jewels-count").textContent = jewels.length;
+      document.getElementById("badge-all-count").textContent = valid.length;
+
+      const activeSet = viewMode === "jewels" ? jewels : valid;
+
+      const fut = activeSet.filter(p => p.sport === "futbol");
+      const nba = activeSet.filter(p => p.sport === "nba");
+      const mlb = activeSet.filter(p => p.sport === "mlb");
+      const nfl = activeSet.filter(p => p.sport === "nfl");
+
+      document.getElementById("count-all").textContent = activeSet.length;
       document.getElementById("count-mlb").textContent = mlb.length;
+      document.getElementById("count-nba").textContent = nba.length;
+      document.getElementById("count-fut").textContent = fut.length;
       document.getElementById("count-nfl").textContent = nfl.length;
     }
 
@@ -312,18 +430,28 @@
 
     function renderPicks() {
       const container = document.getElementById("picks-container");
-      const filtered = PICKS_DATA.filter(p => 
-        (currentFilter === "all" || p.sport === currentFilter) && !discardedPicks.has(p.id)
-      );
+      
+      let candidateList = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
+
+      if (viewMode === "jewels") {
+        candidateList = candidateList.filter(p => p.is_jewel);
+        // Ordenar por score de calidad descendente
+        candidateList.sort((a, b) => b.score - a.score);
+      } else {
+        // En modo all, ordenar por horario más próximo primero
+        // candidateList ya viene en orden cronológico
+      }
+
+      const filtered = candidateList.filter(p => currentFilter === "all" || p.sport === currentFilter);
 
       if (filtered.length === 0) {
         container.innerHTML = `
           <div class="text-center py-12 border border-dashed border-slate-800 rounded-2xl p-6 bg-cardBg/40">
             <div class="text-3xl mb-2">🎉</div>
-            <h4 class="text-sm font-semibold text-white">No hay picks pendientes en este deporte</h4>
-            <p class="text-xs text-slate-400 mt-1">El daemon 24/7 en el VPS actualizará la lista en cuanto se detecte nueva ventaja matemática.</p>
-            <button onclick="fetchLivePicks(true)" class="mt-4 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow">
-              🔄 Comprobar ahora
+            <h4 class="text-sm font-semibold text-white">No hay jugadas pendientes en esta sección</h4>
+            <p class="text-xs text-slate-400 mt-1">Los partidos anteriores ya empezaron. Toca 'Próximas' o espera el próximo ciclo del VPS.</p>
+            <button onclick="setViewMode('all')" class="mt-4 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow">
+              ⏰ Ver todas las próximas
             </button>
           </div>
         `;
@@ -331,18 +459,29 @@
       }
 
       container.innerHTML = filtered.map(p => `
-        <div class="bg-cardBg border border-slate-800 rounded-xl p-4 shadow-sm transition hover:border-amber-500/40">
+        <div class="bg-cardBg border border-slate-800 rounded-xl p-4 shadow-sm transition hover:border-amber-500/40 relative">
           
-          <!-- Encabezado con Deporte y Hora -->
+          <!-- Encabezado con Deporte, Liga y Horario Dinámico -->
           <div class="flex items-center justify-between gap-2 mb-2.5">
             <div class="flex items-center gap-1.5">
               <span class="text-base">${p.sport_icon}</span>
-              <span class="text-[11px] font-bold text-amber-400 uppercase tracking-wide truncate max-w-[200px]">${p.league}</span>
-              <span class="text-[10px] text-slate-400 font-mono">• ⏰ ${p.time}</span>
+              <span class="text-[11px] font-bold text-amber-400 uppercase tracking-wide truncate max-w-[190px]">${p.league}</span>
             </div>
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-darkBg text-slate-400 border border-slate-800">
-              ${p.id}
-            </span>
+            <div class="flex items-center gap-1.5">
+              ${p.is_jewel ? `
+                <span class="px-2 py-0.5 rounded text-[9px] font-black bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-sm">
+                  💎 JOYA
+                </span>
+              ` : ''}
+              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-darkBg text-slate-400 border border-slate-800">
+                ${p.id}
+              </span>
+            </div>
+          </div>
+
+          <!-- Tiempo Restante Destacado -->
+          <div class="inline-flex items-center gap-1 text-[11px] font-mono font-semibold text-slate-300 bg-darkBg/90 px-2.5 py-1 rounded-md mb-2 border border-slate-800">
+            ${p.time}
           </div>
 
           <!-- Partido -->

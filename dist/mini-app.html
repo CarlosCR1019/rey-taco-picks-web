@@ -292,6 +292,7 @@
     let PICKS_DATA = [];
     let currentFilter = "all";
     let viewMode = "jewels"; // 'jewels' (Top picks) o 'all' (Todas las próximas)
+    let userBankroll = Number(localStorage.getItem("reytaco_bankroll")) || 5000;
     // Modo VIP activo sin bloqueos para Carlos y administradores
     let userMode = (new URLSearchParams(window.location.search).get("mode") === "free_preview") ? "free_preview" : "vip";
     localStorage.setItem("reytaco_user_mode", "vip");
@@ -527,6 +528,9 @@
 
     // Funciones de Banca y Staking
     function updateBankrollUI() {
+      if (typeof userBankroll !== 'number' || isNaN(userBankroll) || userBankroll <= 0) {
+        userBankroll = 5000;
+      }
       const bEl = document.getElementById("bankroll-display");
       const uEl = document.getElementById("unit-size-display");
       if (bEl) bEl.textContent = `$${userBankroll.toLocaleString('es-MX')} MXN`;
@@ -534,6 +538,7 @@
     }
 
     function openBankrollModal() {
+      if (typeof userBankroll !== 'number' || isNaN(userBankroll) || userBankroll <= 0) userBankroll = 5000;
       document.getElementById("bankroll-input").value = userBankroll;
       document.getElementById("bankroll-modal").classList.remove("hidden");
     }
@@ -629,20 +634,22 @@
     }
 
     function renderGoldenParlay() {
-      const container = document.getElementById("golden-parlay-container");
-      if (!container) return;
+      try {
+        const container = document.getElementById("golden-parlay-container");
+        if (!container) return;
 
-      const parlay = getGoldenParlay();
-      if (!parlay) {
-        container.innerHTML = "";
-        return;
-      }
+        const parlay = getGoldenParlay();
+        if (!parlay) {
+          container.innerHTML = "";
+          return;
+        }
 
-      const unitSize = userBankroll * 0.01;
-      const stakePesos = Math.round(parlay.stakeUnits * unitSize);
-      const profitPesos = Math.round(stakePesos * (parlay.combinedDec - 1));
-      const totalPayout = stakePesos + profitPesos;
-      const copyText = `👑 PARLAY DE ORO REY TACO (${parlay.combinedAme}):\n1. ${parlay.leg1.match}: ${parlay.leg1.pick} @ ${parlay.leg1.odds_ame}\n2. ${parlay.leg2.match}: ${parlay.leg2.pick} @ ${parlay.leg2.odds_ame}\nCuota Combinada: ${parlay.combinedAme} (${parlay.combinedDec})`;
+        const b = (typeof userBankroll === 'number' && !isNaN(userBankroll) && userBankroll > 0) ? userBankroll : 5000;
+        const unitSize = b * 0.01;
+        const stakePesos = Math.round(parlay.stakeUnits * unitSize);
+        const profitPesos = Math.round(stakePesos * (parlay.combinedDec - 1));
+        const totalPayout = stakePesos + profitPesos;
+        const copyText = `👑 PARLAY DE ORO REY TACO (${parlay.combinedAme}):\n1. ${parlay.leg1.match}: ${parlay.leg1.pick} @ ${parlay.leg1.odds_ame}\n2. ${parlay.leg2.match}: ${parlay.leg2.pick} @ ${parlay.leg2.odds_ame}\nCuota Combinada: ${parlay.combinedAme} (${parlay.combinedDec})`;
 
       if (userMode === "free_preview") {
         container.innerHTML = `
@@ -784,6 +791,9 @@
 
         </div>
       `;
+      } catch (e) {
+        console.error("Error in renderGoldenParlay:", e);
+      }
     }
 
     let isFetching = false;
@@ -822,11 +832,11 @@
         const prevKeys = PICKS_DATA.map(p => p.id + p.status).join(',');
         const nextKeys = nextPicks.map(p => p.id + p.status).join(',');
 
-        if (prevKeys !== nextKeys) {
+        if (prevKeys !== nextKeys || PICKS_DATA.length === 0) {
           PICKS_DATA = nextPicks;
-          updateFilterCounts();
-          renderGoldenParlay();
-          renderPicks();
+          try { updateFilterCounts(); } catch (e) { console.error(e); }
+          try { renderGoldenParlay(); } catch (e) { console.error(e); }
+          try { renderPicks(); } catch (e) { console.error(e); }
         }
         localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
         if (statusEl) {
@@ -837,11 +847,11 @@
         if (cached) {
           try {
             PICKS_DATA = JSON.parse(cached).map(normalizePick).filter(isGameUpcoming);
-            updateFilterCounts();
-            renderGoldenParlay();
-            renderPicks();
           } catch (e) {}
         }
+        try { updateFilterCounts(); } catch (e) {}
+        try { renderGoldenParlay(); } catch (e) {}
+        try { renderPicks(); } catch (e) {}
       }
 
       if (refreshBtn) refreshBtn.classList.remove("animate-spin");
@@ -1058,35 +1068,38 @@
     }
 
     function renderPicks() {
-      const container = document.getElementById("picks-container");
-      
-      let candidateList = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
+      try {
+        const container = document.getElementById("picks-container");
+        if (!container) return;
+        
+        let candidateList = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
 
-      if (viewMode === "jewels") {
-        candidateList = candidateList.filter(p => p.is_jewel);
-        candidateList.sort((a, b) => b.score - a.score);
-      }
+        if (viewMode === "jewels") {
+          candidateList = candidateList.filter(p => p.is_jewel);
+          candidateList.sort((a, b) => b.score - a.score);
+        }
 
-      const filtered = candidateList.filter(p => currentFilter === "all" || p.sport === currentFilter);
+        const filtered = candidateList.filter(p => currentFilter === "all" || p.sport === currentFilter);
 
-      if (filtered.length === 0) {
-        container.innerHTML = `
-          <div class="text-center py-12 border border-dashed border-slate-800 rounded-2xl p-6 bg-cardBg/40">
-            <div class="text-3xl mb-2">🎉</div>
-            <h4 class="text-sm font-semibold text-white">No hay jugadas pendientes en esta sección</h4>
-            <p class="text-xs text-slate-400 mt-1">Los partidos anteriores ya empezaron. Toca 'Próximas' o espera el próximo ciclo del VPS.</p>
-            <button onclick="setViewMode('all')" class="mt-4 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow">
-              ⏰ Ver todas las próximas
-            </button>
-          </div>
-        `;
-        return;
-      }
+        if (filtered.length === 0) {
+          container.innerHTML = `
+            <div class="text-center py-12 border border-dashed border-slate-800 rounded-2xl p-6 bg-cardBg/40">
+              <div class="text-3xl mb-2">🎉</div>
+              <h4 class="text-sm font-semibold text-white">No hay jugadas pendientes en esta sección</h4>
+              <p class="text-xs text-slate-400 mt-1">Los partidos anteriores ya empezaron. Toca 'Próximas' o espera el próximo ciclo del VPS.</p>
+              <button onclick="setViewMode('all')" class="mt-4 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow">
+                ⏰ Ver todas las próximas
+              </button>
+            </div>
+          `;
+          return;
+        }
 
-      const unitSize = userBankroll * 0.01;
+        const b = (typeof userBankroll === 'number' && !isNaN(userBankroll) && userBankroll > 0) ? userBankroll : 5000;
+        const unitSize = b * 0.01;
 
-      // Actualizar el menú desplegable nativo
-      const selectEl = document.getElementById("pick-dropdown-selector");
+        // Actualizar el menú desplegable nativo
+        const selectEl = document.getElementById("pick-dropdown-selector");
       if (selectEl) {
         let opts = `<option value="">👇 Toca aquí para desplegar las ${filtered.length} Joyas de Oro cargadas...</option>`;
         filtered.forEach((p, idx) => {
@@ -1265,6 +1278,9 @@
           </div>
         `;
       }).join('');
+      } catch (e) {
+        console.error("Error in renderPicks:", e);
+      }
     }
 
     // Inicializar reloj CDMX
@@ -1277,11 +1293,12 @@
     setInterval(updateClock, 30000);
 
     // Inicializar UI de Banca y Modo de Usuario
-    updateBankrollUI();
-    updateUserModeUI();
+    try { updateClock(); } catch (e) { console.error("Error updateClock:", e); }
+    try { updateBankrollUI(); } catch (e) { console.error("Error updateBankrollUI:", e); }
+    try { updateUserModeUI(); } catch (e) { console.error("Error updateUserModeUI:", e); }
 
     // Cargar picks al iniciar
-    fetchLivePicks();
+    try { fetchLivePicks(true); } catch (e) { console.error("Error fetchLivePicks:", e); }
 
     // AUTO-ACTUALIZACIÓN CONTINUA EN SEGUNDO PLANO (cada 8 segundos)
     setInterval(() => {
@@ -1299,10 +1316,12 @@
       fetchLivePicks(true);
     });
 
-    if (window.Telegram && window.Telegram.WebApp) {
-      window.Telegram.WebApp.onEvent("viewportChanged", () => {
-        fetchLivePicks(false);
-      });
+    if (typeof window.Telegram?.WebApp?.onEvent === 'function') {
+      try {
+        window.Telegram.WebApp.onEvent("viewportChanged", () => {
+          fetchLivePicks(false);
+        });
+      } catch (e) {}
     }
   </script>
 </body>

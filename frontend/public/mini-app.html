@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Rey Taco — Mini App de Picks Privados</title>
+  <title>Rey Taco — Mini App de Picks Privados & Staking</title>
   <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <!-- Tailwind CSS -->
@@ -33,9 +33,16 @@
     .custom-scrollbar::-webkit-scrollbar {
       display: none;
     }
+    @keyframes pulse-subtle {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.85; }
+    }
+    .animate-gold-glow {
+      box-shadow: 0 0 20px -3px rgba(245, 158, 11, 0.25);
+    }
   </style>
 </head>
-<body class="p-3 sm:p-5 max-w-2xl mx-auto min-h-screen pb-20 select-none">
+<body class="p-3 sm:p-5 max-w-2xl mx-auto min-h-screen pb-24 select-none">
 
   <!-- Header -->
   <header class="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
@@ -63,6 +70,32 @@
     </div>
   </header>
 
+  <!-- BARRA DE GESTIÓN DE BANCA Y STAKING DINÁMICO -->
+  <div class="flex items-center justify-between p-2.5 bg-cardBg/90 border border-slate-800 rounded-xl mb-3 shadow-sm">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-base">
+        💰
+      </div>
+      <div>
+        <div class="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Mi Banca Activa</div>
+        <div class="flex items-baseline gap-1.5">
+          <span class="text-sm font-black text-amber-400 font-mono" id="bankroll-display">$5,000 MXN</span>
+          <span class="text-[10px] text-slate-400 font-mono font-medium">(1U = <span id="unit-size-display">$50 MXN</span>)</span>
+        </div>
+      </div>
+    </div>
+    <div class="flex items-center gap-1.5">
+      <button onclick="openBankrollModal()" class="px-2.5 py-1.5 rounded-lg bg-darkBg hover:bg-slate-800 text-amber-300 text-[11px] font-bold border border-slate-700 transition flex items-center gap-1">
+        <span>⚙️</span>
+        <span>Ajustar Banca</span>
+      </button>
+      <button onclick="toggleUserMode()" id="user-mode-btn" class="px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-[11px] font-bold border border-amber-500/30 transition flex items-center gap-1">
+        <span>👑</span>
+        <span>VIP</span>
+      </button>
+    </div>
+  </div>
+
   <!-- SELECTOR DE VISTA: Joyas Top vs Todas las Próximas -->
   <div class="grid grid-cols-2 gap-1.5 p-1 bg-darkBg border border-slate-800 rounded-xl mb-3 shadow-inner">
     <button onclick="setViewMode('jewels')" id="mode-jewels-btn" class="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold transition bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-md">
@@ -88,11 +121,14 @@
           </span>
         </div>
         <p class="text-[11px] text-slate-300 mt-0.5 leading-snug" id="banner-desc">
-          Solo partidos que <b>aún no empiezan</b>, con cuotas en el rango de mayor rentabilidad (1.55 - 2.40) y en ligas principales (MLB, Euroliga, Copa Africana).
+          Partidos que <b>aún no empiezan</b>, con ventaja matemática sobre líneas matutinas (+EV) y ligas de primer nivel.
         </p>
       </div>
     </div>
   </div>
+
+  <!-- TARJETA DESTACADA: PARLAY DE ORO DEL DÍA -->
+  <div id="golden-parlay-container"></div>
 
   <!-- Filtros Rápidos por Deporte -->
   <div class="flex items-center gap-1.5 overflow-x-auto pb-2 mb-3.5 custom-scrollbar" id="sport-filters">
@@ -121,6 +157,94 @@
     </div>
   </div>
 
+  <!-- MODAL: AJUSTE DE BANCA -->
+  <div id="bankroll-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-cardBg border border-slate-700 rounded-2xl p-5 max-w-sm w-full shadow-2xl">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">💰</span>
+          <h3 class="text-sm font-extrabold text-white">Configurar Mi Banca</h3>
+        </div>
+        <button onclick="closeBankrollModal()" class="text-slate-400 hover:text-white text-xl font-bold">&times;</button>
+      </div>
+      <p class="text-xs text-slate-300 mb-4 leading-relaxed">
+        Ajusta tu capital total destinado a apuestas deportivas. El algoritmo calculará automáticamente el tamaño de tu <b>Unidad (1U = 1% de tu bank)</b> y las ganancias netas en pesos de cada pronóstico.
+      </p>
+      <div class="mb-3">
+        <label class="block text-[11px] text-slate-400 font-semibold mb-1">Banca Total (MXN):</label>
+        <div class="relative">
+          <span class="absolute left-3 top-2.5 text-slate-400 font-bold">$</span>
+          <input type="number" id="bankroll-input" class="w-full pl-7 pr-3 py-2 bg-darkBg border border-slate-700 rounded-xl text-amber-400 font-mono font-bold text-sm focus:outline-none focus:border-amber-500" value="5000" min="100" step="100">
+        </div>
+      </div>
+      <div class="grid grid-cols-3 gap-2 mb-4">
+        <button onclick="setQuickBankroll(2000)" class="py-1.5 px-2 rounded-lg bg-darkBg hover:bg-slate-800 text-[11px] font-mono text-slate-300 border border-slate-800 transition">$2,000</button>
+        <button onclick="setQuickBankroll(5000)" class="py-1.5 px-2 rounded-lg bg-darkBg hover:bg-slate-800 text-[11px] font-mono text-amber-400 border border-amber-500/30 transition">$5,000</button>
+        <button onclick="setQuickBankroll(10000)" class="py-1.5 px-2 rounded-lg bg-darkBg hover:bg-slate-800 text-[11px] font-mono text-slate-300 border border-slate-800 transition">$10,000</button>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="closeBankrollModal()" class="flex-1 py-2 rounded-xl text-xs font-semibold bg-darkBg hover:bg-slate-800 text-slate-400 border border-slate-700 transition">
+          Cancelar
+        </button>
+        <button onclick="saveBankroll()" class="flex-1 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-black shadow transition">
+          Guardar Banca
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: MEMBRESÍA VIP / FREEMIUM -->
+  <div id="vip-modal" class="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-gradient-to-br from-cardBg via-darkBg to-slate-900 border-2 border-amber-500/60 rounded-2xl p-5 max-w-sm w-full shadow-2xl relative">
+      <button onclick="closeVipModal()" class="absolute right-3.5 top-3.5 text-slate-400 hover:text-white text-xl font-bold">&times;</button>
+      
+      <div class="text-center mb-3">
+        <div class="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-2xl mx-auto mb-2 shadow-lg">
+          👑
+        </div>
+        <h3 class="text-base font-black text-white">Membresía VIP Rey Taco</h3>
+        <p class="text-xs text-amber-400 font-semibold">Picks Cuantitativos & Parlays Diarios</p>
+      </div>
+
+      <div class="space-y-2.5 mb-4 text-xs text-slate-300 bg-darkBg/70 p-3 rounded-xl border border-slate-800">
+        <div class="flex items-start gap-2">
+          <span class="text-emerald-400 font-bold shrink-0">✅</span>
+          <span><b>Parlay de Oro Diario:</b> El combo cuantitativo de 2 selecciones de alta probabilidad (+EV).</span>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="text-emerald-400 font-bold shrink-0">✅</span>
+          <span><b>Todas las Joyas Top:</b> Acceso completo a MLB, NFL, Baloncesto y Fútbol de élite.</span>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="text-emerald-400 font-bold shrink-0">✅</span>
+          <span><b>Staking Kelly Dinámico:</b> Importe exacto en pesos para proteger tu capital.</span>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="text-emerald-400 font-bold shrink-0">✅</span>
+          <span><b>Alertas Early Bird:</b> Notificaciones directas en Telegram antes del ajuste de líneas.</span>
+        </div>
+      </div>
+
+      <div class="text-center mb-4">
+        <span class="text-[11px] text-slate-400 line-through">$499 MXN</span>
+        <div class="text-xl font-black text-white">
+          $299 MXN <span class="text-xs text-amber-400 font-normal">/ Mes (o 500 Telegram Stars)</span>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <a href="https://t.me/carloscr1019" target="_blank" class="w-full py-2.5 px-3 rounded-xl text-xs font-black bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black shadow-md flex items-center justify-center gap-2 transition">
+          <span>💬</span>
+          <span>Activar VIP con Carlos en Telegram</span>
+        </a>
+        <button onclick="alert('⭐️ Para activar con Telegram Stars (500 Stars), envía un mensaje en el bot con el comando /stars')" class="w-full py-2 px-3 rounded-xl text-xs font-bold bg-darkBg hover:bg-slate-800 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-2 transition">
+          <span>⭐️</span>
+          <span>Pagar con Telegram Stars</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     // Inicializar Telegram WebApp si está disponible
     if (window.Telegram && window.Telegram.WebApp) {
@@ -134,6 +258,8 @@
     let PICKS_DATA = [];
     let currentFilter = "all";
     let viewMode = "jewels"; // 'jewels' (Top picks) o 'all' (Todas las próximas)
+    let userBankroll = Number(localStorage.getItem("reytaco_bankroll")) || 5000;
+    let userMode = localStorage.getItem("reytaco_user_mode") || "vip"; // "vip" o "free_preview"
     let discardedPicks = new Set(JSON.parse(localStorage.getItem("reytaco_discarded_ids") || "[]"));
 
     function scorePick(p) {
@@ -204,6 +330,19 @@
       return `⏳ En ${hours}h ${mins}m (${cleanH})`;
     }
 
+    function getMinutesUntilStart(timeStr) {
+      if (!timeStr) return 999;
+      const now = new Date();
+      const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
+      const [currH, currM] = nowCdmxStr.split(':').map(Number);
+      const currentMinutes = currH * 60 + currM;
+
+      const match = timeStr.match(/(\d{1,2}):(\d{2})/);
+      if (!match) return 999;
+      const gameMinutes = parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+      return gameMinutes - currentMinutes;
+    }
+
     function normalizePick(raw) {
       const tid = raw.ticket_id || raw.id || "RT-" + Math.floor(Math.random() * 10000);
       let sport = "futbol";
@@ -248,52 +387,288 @@
         pathSteps = [raw.playdoit_path];
       } else {
         pathSteps = [
-          `Abre Playdoit > ${sport_name}`,
-          `Busca la liga: ${cleanLeague}`,
+          "Entra a Playdoit > Deportes",
+          `Busca: ${cleanLeague}`,
           `Partido: ${match}`,
-          `Selección: ${raw.pick}`
+          `Selecciona: ${raw.pick || "Línea Principal"}`
         ];
       }
 
-      const basePick = {
+      const decOdds = Number(raw.market_odds_decimal) || 1.85;
+      const minutesUntil = getMinutesUntilStart(raw.time);
+
+      const norm = {
         id: tid,
-        sport: sport,
-        sport_icon: sport_icon,
-        sport_name: sport_name,
+        sport,
+        sport_icon,
+        sport_name,
         league: cleanLeague,
-        match: match,
-        time_raw: raw.time || "",
+        match,
         time: formatTimeRemaining(raw.time),
-        market: raw.market || "Oportunidad de Valor +EV",
-        pick: raw.pick || "",
-        meaning: raw.meaning || (raw.pick + " en el tiempo regular del partido."),
+        raw_time: raw.time,
+        minutes_until_start: minutesUntil,
+        market: raw.market_name || "Línea Principal",
+        pick: raw.pick || "Selección",
+        odds_dec: decOdds,
+        odds_ame: ameOdds || "+100",
+        min_odds: minAme || "-110",
+        stake: (raw.stake_units || 1.2) + "U",
+        meaning: raw.meaning || "Gana si se cumple la condición del pronóstico.",
         playdoit_path: pathSteps,
-        odds_dec: raw.market_odds_decimal || 1.80,
-        odds_ame: ameOdds || "-120",
-        min_odds: minAme || "-140",
-        stake: raw.stake_units ? (raw.stake_units + " U") : "1.2 U",
-        status: discardedPicks.has(tid) ? "discarded" : (raw.status || "pending"),
-        reasoning: raw.reasoning || "Ventaja matemática y situacional detectada en Playdoit."
+        reasoning: raw.reasoning || "Ventaja estadística detectada frente a cuotas de mercado.",
+        status: raw.status || "active"
       };
 
-      basePick.score = scorePick(basePick);
-      basePick.is_jewel = basePick.score >= 75;
-      return basePick;
+      norm.score = scorePick(norm);
+      norm.is_jewel = norm.score >= 70;
+      return norm;
+    }
+
+    // Funciones de Banca y Staking
+    function updateBankrollUI() {
+      const bEl = document.getElementById("bankroll-display");
+      const uEl = document.getElementById("unit-size-display");
+      if (bEl) bEl.textContent = `$${userBankroll.toLocaleString('es-MX')} MXN`;
+      if (uEl) uEl.textContent = `$${Math.round(userBankroll * 0.01).toLocaleString('es-MX')} MXN`;
+    }
+
+    function openBankrollModal() {
+      document.getElementById("bankroll-input").value = userBankroll;
+      document.getElementById("bankroll-modal").classList.remove("hidden");
+    }
+
+    function closeBankrollModal() {
+      document.getElementById("bankroll-modal").classList.add("hidden");
+    }
+
+    function setQuickBankroll(amount) {
+      document.getElementById("bankroll-input").value = amount;
+    }
+
+    function saveBankroll() {
+      const val = parseFloat(document.getElementById("bankroll-input").value);
+      if (!isNaN(val) && val > 0) {
+        userBankroll = val;
+        localStorage.setItem("reytaco_bankroll", userBankroll);
+        updateBankrollUI();
+        renderGoldenParlay();
+        renderPicks();
+        closeBankrollModal();
+        if (window.Telegram?.WebApp?.HapticFeedback) {
+          window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+        }
+      }
+    }
+
+    function toggleUserMode() {
+      userMode = userMode === "vip" ? "free_preview" : "vip";
+      localStorage.setItem("reytaco_user_mode", userMode);
+      updateUserModeUI();
+      renderGoldenParlay();
+      renderPicks();
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+      }
+    }
+
+    function updateUserModeUI() {
+      const btn = document.getElementById("user-mode-btn");
+      if (!btn) return;
+      if (userMode === "vip") {
+        btn.className = "px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-400 text-[11px] font-bold border border-amber-500/30 transition flex items-center gap-1";
+        btn.innerHTML = "<span>👑</span><span>VIP (Activo)</span>";
+      } else {
+        btn.className = "px-2.5 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 text-[11px] font-bold border border-indigo-500/30 transition flex items-center gap-1";
+        btn.innerHTML = "<span>👤</span><span>Free Demo</span>";
+      }
+    }
+
+    function openVipModal() {
+      document.getElementById("vip-modal").classList.remove("hidden");
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
+      }
+    }
+
+    function closeVipModal() {
+      document.getElementById("vip-modal").classList.add("hidden");
+    }
+
+    // Generador y Render del Parlay de Oro
+    function getGoldenParlay() {
+      const valid = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
+      const jewels = valid.filter(p => p.is_jewel).sort((a, b) => b.score - a.score);
+
+      if (jewels.length < 2) return null;
+
+      // Buscar dos selecciones de eventos distintos en rango de cuota balanceada (1.40 a 2.45)
+      const sweetSpot = jewels.filter(p => p.odds_dec >= 1.40 && p.odds_dec <= 2.45);
+      let leg1 = sweetSpot[0] || jewels[0];
+      let leg2 = sweetSpot.find(p => p.id !== leg1.id && p.match !== leg1.match);
+      if (!leg2) {
+        leg2 = jewels.find(p => p.id !== leg1.id && p.match !== leg1.match);
+      }
+      if (!leg2) return null;
+
+      const combinedDec = Number((leg1.odds_dec * leg2.odds_dec).toFixed(2));
+      let combinedAme = "";
+      if (combinedDec >= 2.0) {
+        combinedAme = "+" + Math.round((combinedDec - 1) * 100);
+      } else {
+        combinedAme = "-" + Math.round(100 / (combinedDec - 1));
+      }
+
+      return {
+        leg1,
+        leg2,
+        combinedDec,
+        combinedAme,
+        stakeUnits: 1.5
+      };
+    }
+
+    function renderGoldenParlay() {
+      const container = document.getElementById("golden-parlay-container");
+      if (!container) return;
+
+      const parlay = getGoldenParlay();
+      if (!parlay) {
+        container.innerHTML = "";
+        return;
+      }
+
+      const unitSize = userBankroll * 0.01;
+      const stakePesos = Math.round(parlay.stakeUnits * unitSize);
+      const profitPesos = Math.round(stakePesos * (parlay.combinedDec - 1));
+      const totalPayout = stakePesos + profitPesos;
+      const copyText = `👑 PARLAY DE ORO REY TACO (${parlay.combinedAme}):\n1. ${parlay.leg1.match}: ${parlay.leg1.pick} @ ${parlay.leg1.odds_ame}\n2. ${parlay.leg2.match}: ${parlay.leg2.pick} @ ${parlay.leg2.odds_ame}\nCuota Combinada: ${parlay.combinedAme} (${parlay.combinedDec})`;
+
+      if (userMode === "free_preview") {
+        container.innerHTML = `
+          <div class="relative overflow-hidden bg-cardBg border-2 border-amber-500/40 rounded-2xl p-4 shadow-xl mb-3.5 text-center">
+            <div class="filter blur-md select-none pointer-events-none opacity-40">
+              <div class="h-6 w-48 bg-amber-500 rounded mx-auto mb-2"></div>
+              <div class="h-16 bg-slate-800 rounded-xl mb-2"></div>
+              <div class="h-16 bg-slate-800 rounded-xl mb-2"></div>
+            </div>
+            <div class="absolute inset-0 bg-darkBg/85 backdrop-blur-sm flex flex-col items-center justify-center p-4">
+              <div class="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-xl mb-2 shadow">
+                🔒
+              </div>
+              <h3 class="text-xs font-black text-amber-400 uppercase tracking-wide">PARLAY DE ORO REY TACO • CUOTA ${parlay.combinedAme}</h3>
+              <p class="text-[11px] text-slate-300 max-w-sm mt-1 mb-3">
+                El combo cuantitativo diario de mayor probabilidad (+EV) está reservado para miembros VIP.
+              </p>
+              <button onclick="openVipModal()" class="py-2 px-4 rounded-xl text-xs font-black bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-lg hover:scale-105 transition">
+                👑 Desbloquear con VIP ($299 MXN / Mes)
+              </button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="relative overflow-hidden bg-gradient-to-br from-amber-950/40 via-cardBg to-slate-900 border-2 border-amber-500/60 rounded-2xl p-4 shadow-xl mb-3.5 animate-gold-glow">
+          
+          <!-- Encabezado Parlay -->
+          <div class="flex items-center justify-between gap-2 mb-2.5">
+            <div class="flex items-center gap-2">
+              <span class="px-2.5 py-1 rounded-md text-[10px] font-black bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-md uppercase tracking-wider">
+                👑 PARLAY DE ORO REY TACO
+              </span>
+              <span class="text-xs font-mono font-black text-amber-300">
+                CUOTA ${parlay.combinedAme} (${parlay.combinedDec})
+              </span>
+            </div>
+            <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              ⚡ Early Bird (+EV)
+            </span>
+          </div>
+
+          <p class="text-[11px] text-slate-300 mb-3 leading-snug">
+            Combinación de las <b>2 mejores Joyas Top</b> del día analizadas matemáticamente con máxima ventaja sobre las líneas matutinas de Playdoit.
+          </p>
+
+          <!-- Piernas del Parlay -->
+          <div class="space-y-2 mb-3">
+            <!-- Pierna 1 -->
+            <div class="bg-darkBg/90 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between">
+              <div class="flex items-center gap-2.5">
+                <span class="text-lg">${parlay.leg1.sport_icon}</span>
+                <div>
+                  <div class="text-[10px] text-amber-400 font-bold uppercase">${parlay.leg1.league} • ${parlay.leg1.time}</div>
+                  <div class="text-xs font-bold text-white">${parlay.leg1.match}</div>
+                  <div class="text-[11px] font-semibold text-emerald-400">👉 ${parlay.leg1.pick}</div>
+                </div>
+              </div>
+              <span class="px-2.5 py-1 rounded text-xs font-black font-mono bg-cardBg text-amber-400 border border-slate-700">
+                ${parlay.leg1.odds_ame}
+              </span>
+            </div>
+
+            <!-- Pierna 2 -->
+            <div class="bg-darkBg/90 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between">
+              <div class="flex items-center gap-2.5">
+                <span class="text-lg">${parlay.leg2.sport_icon}</span>
+                <div>
+                  <div class="text-[10px] text-amber-400 font-bold uppercase">${parlay.leg2.league} • ${parlay.leg2.time}</div>
+                  <div class="text-xs font-bold text-white">${parlay.leg2.match}</div>
+                  <div class="text-[11px] font-semibold text-emerald-400">👉 ${parlay.leg2.pick}</div>
+                </div>
+              </div>
+              <span class="px-2.5 py-1 rounded text-xs font-black font-mono bg-cardBg text-amber-400 border border-slate-700">
+                ${parlay.leg2.odds_ame}
+              </span>
+            </div>
+          </div>
+
+          <!-- Cálculo Financiero Kelly -->
+          <div class="grid grid-cols-2 gap-2 bg-darkBg border border-amber-500/30 rounded-xl p-2.5 mb-3">
+            <div>
+              <div class="text-[9px] text-slate-400 font-medium uppercase tracking-wider">🎯 Stake Kelly (${parlay.stakeUnits}U):</div>
+              <div class="text-xs font-bold text-amber-400 font-mono">
+                $${stakePesos} MXN
+              </div>
+            </div>
+            <div>
+              <div class="text-[9px] text-slate-400 font-medium uppercase tracking-wider">💰 Ganancia Neta Estimada:</div>
+              <div class="text-xs font-bold text-emerald-400 font-mono">
+                +$${profitPesos} MXN <span class="text-[9px] text-slate-400 font-normal font-mono">(Cobras $${totalPayout})</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Botones de Acción -->
+          <div class="flex items-center justify-between gap-2">
+            <button onclick="copyGoldenParlay()" class="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-darkBg hover:bg-slate-800 text-white border border-slate-700 transition flex items-center justify-center gap-1.5">
+              <span>📋</span>
+              <span>Copiar Parlay</span>
+            </button>
+            <a href="https://www.playdoit.mx/es/" target="_blank" class="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black shadow-md transition flex items-center justify-center gap-1.5">
+              <span>👑</span>
+              <span>Armar en Playdoit</span>
+            </a>
+          </div>
+
+        </div>
+      `;
     }
 
     let isFetching = false;
 
-    async function fetchLivePicks(isManual = false) {
+    async function fetchLivePicks(showSpinner = false) {
       if (isFetching) return;
       isFetching = true;
 
-      const statusEl = document.getElementById("sync-status");
       const refreshBtn = document.getElementById("btn-refresh");
-      if (isManual && refreshBtn) refreshBtn.classList.add("animate-spin");
+      const statusEl = document.getElementById("sync-status");
+      if (showSpinner && refreshBtn) refreshBtn.classList.add("animate-spin");
 
+      const cacheBuster = "?t=" + Date.now();
       const sources = [
-        `/active_private_picks.json?t=${Date.now()}`,
-        `https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json?t=${Date.now()}`
+        "https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json" + cacheBuster,
+        "/active_private_picks.json" + cacheBuster
       ];
 
       let rawList = null;
@@ -308,9 +683,7 @@
               break;
             }
           }
-        } catch (e) {
-          // Fallback
-        }
+        } catch (e) {}
       }
 
       if (rawList && rawList.length > 0) {
@@ -321,6 +694,7 @@
         if (prevKeys !== nextKeys) {
           PICKS_DATA = nextPicks;
           updateFilterCounts();
+          renderGoldenParlay();
           renderPicks();
         }
         localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
@@ -333,6 +707,7 @@
           try {
             PICKS_DATA = JSON.parse(cached).map(normalizePick).filter(isGameUpcoming);
             updateFilterCounts();
+            renderGoldenParlay();
             renderPicks();
           } catch (e) {}
         }
@@ -354,7 +729,7 @@
         jBtn.className = "flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold transition bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-md";
         aBtn.className = "flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition";
         bTitle.textContent = "Joyas Top del Día (Filtradas por Hora & Valor)";
-        bDesc.textContent = "Solo partidos que aún no empiezan, con cuotas de alto valor (+EV) y ligas de primer nivel (MLB, Euroliga, Copa Africana).";
+        bDesc.textContent = "Partidos que aún no empiezan, con cuotas de alto valor (+EV) y ligas de primer nivel (MLB, Euroliga, Copa Africana).";
         bIcon.textContent = "💎";
       } else {
         aBtn.className = "flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold transition bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-md";
@@ -368,11 +743,11 @@
         window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
       }
       updateFilterCounts();
+      renderGoldenParlay();
       renderPicks();
     }
 
     function updateFilterCounts() {
-      // Filtrar activos y que falten por jugarse
       const valid = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
       const jewels = valid.filter(p => p.is_jewel);
 
@@ -417,6 +792,7 @@
         window.Telegram.WebApp.HapticFeedback.notificationOccurred('warning');
       }
       updateFilterCounts();
+      renderGoldenParlay();
       renderPicks();
     }
 
@@ -428,6 +804,20 @@
       alert("✅ Selección copiada:\n" + text);
     }
 
+    function copyPick(id) {
+      const p = PICKS_DATA.find(x => x.id === id);
+      if (!p) return;
+      const text = `${p.match}\n👉 ${p.pick} @ ${p.odds_ame} (${p.league} • ${p.time})\n💡 ${p.meaning}`;
+      copyToClipboard(text);
+    }
+
+    function copyGoldenParlay() {
+      const parlay = getGoldenParlay();
+      if (!parlay) return;
+      const text = `👑 PARLAY DE ORO REY TACO (${parlay.combinedAme}):\n1. ${parlay.leg1.match}: ${parlay.leg1.pick} @ ${parlay.leg1.odds_ame}\n2. ${parlay.leg2.match}: ${parlay.leg2.pick} @ ${parlay.leg2.odds_ame}\nCuota Combinada: ${parlay.combinedAme} (${parlay.combinedDec})`;
+      copyToClipboard(text);
+    }
+
     function renderPicks() {
       const container = document.getElementById("picks-container");
       
@@ -435,11 +825,7 @@
 
       if (viewMode === "jewels") {
         candidateList = candidateList.filter(p => p.is_jewel);
-        // Ordenar por score de calidad descendente
         candidateList.sort((a, b) => b.score - a.score);
-      } else {
-        // En modo all, ordenar por horario más próximo primero
-        // candidateList ya viene en orden cronológico
       }
 
       const filtered = candidateList.filter(p => currentFilter === "all" || p.sport === currentFilter);
@@ -458,96 +844,153 @@
         return;
       }
 
-      container.innerHTML = filtered.map(p => `
-        <div class="bg-cardBg border border-slate-800 rounded-xl p-4 shadow-sm transition hover:border-amber-500/40 relative">
-          
-          <!-- Encabezado con Deporte, Liga y Horario Dinámico -->
-          <div class="flex items-center justify-between gap-2 mb-2.5">
-            <div class="flex items-center gap-1.5">
-              <span class="text-base">${p.sport_icon}</span>
-              <span class="text-[11px] font-bold text-amber-400 uppercase tracking-wide truncate max-w-[190px]">${p.league}</span>
+      const unitSize = userBankroll * 0.01;
+
+      container.innerHTML = filtered.map((p, idx) => {
+        // En Free Preview, bloquear picks de Joyas después de los primeros 2
+        const isLockedForFree = userMode === "free_preview" && viewMode === "jewels" && idx >= 2;
+
+        if (isLockedForFree) {
+          return `
+            <div class="bg-cardBg border border-amber-500/30 rounded-xl p-4 shadow-sm relative overflow-hidden text-center">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold text-amber-400">${p.sport_icon} ${p.league}</span>
+                <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300">💎 JOYA VIP</span>
+              </div>
+              <div class="text-xs font-bold text-slate-400 blur-sm mb-3">
+                ${p.match} • ${p.time}
+              </div>
+              <div class="p-3 bg-darkBg/90 rounded-lg border border-slate-800">
+                <div class="text-xl mb-1">🔒</div>
+                <div class="text-xs font-bold text-white mb-0.5">Joya Top Exclusiva VIP</div>
+                <div class="text-[11px] text-slate-400 mb-2.5">Esta selección tiene valor esperado superior al +12% sobre Playdoit.</div>
+                <button onclick="openVipModal()" class="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow hover:bg-amber-400 transition">
+                  👑 Desbloquear con VIP ($299 MXN)
+                </button>
+              </div>
             </div>
-            <div class="flex items-center gap-1.5">
-              ${p.is_jewel ? `
-                <span class="px-2 py-0.5 rounded text-[9px] font-black bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-sm">
-                  💎 JOYA
+          `;
+        }
+
+        // Staking Kelly y cálculos financieros
+        const stakeUnits = p.is_jewel && p.score >= 80 ? 2.5 : (p.is_jewel ? 1.5 : (p.odds_dec > 2.80 ? 0.75 : 1.0));
+        const stakePesos = Math.round(stakeUnits * unitSize);
+        const profitPesos = Math.round(stakePesos * (p.odds_dec - 1));
+        const totalPayout = stakePesos + profitPesos;
+        const isEarlyBird = p.minutes_until_start >= 90;
+
+        return `
+          <div class="bg-cardBg border border-slate-800 rounded-xl p-4 shadow-sm transition hover:border-amber-500/40 relative">
+            
+            <!-- Encabezado con Deporte, Liga y Horario Dinámico -->
+            <div class="flex items-center justify-between gap-2 mb-2">
+              <div class="flex items-center gap-1.5">
+                <span class="text-base">${p.sport_icon}</span>
+                <span class="text-[11px] font-bold text-amber-400 uppercase tracking-wide truncate max-w-[190px]">${p.league}</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                ${isEarlyBird ? `
+                  <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                    ⚡ Early Bird
+                  </span>
+                ` : ''}
+                ${p.is_jewel ? `
+                  <span class="px-2 py-0.5 rounded text-[9px] font-black bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-sm">
+                    💎 JOYA
+                  </span>
+                ` : ''}
+                <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-darkBg text-slate-400 border border-slate-800">
+                  ${p.id}
                 </span>
-              ` : ''}
-              <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-darkBg text-slate-400 border border-slate-800">
-                ${p.id}
-              </span>
+              </div>
             </div>
-          </div>
 
-          <!-- Tiempo Restante Destacado -->
-          <div class="inline-flex items-center gap-1 text-[11px] font-mono font-semibold text-slate-300 bg-darkBg/90 px-2.5 py-1 rounded-md mb-2 border border-slate-800">
-            ${p.time}
-          </div>
+            <!-- Tiempo Restante Destacado -->
+            <div class="inline-flex items-center gap-1 text-[11px] font-mono font-semibold text-slate-300 bg-darkBg/90 px-2.5 py-1 rounded-md mb-2 border border-slate-800">
+              ${p.time}
+            </div>
 
-          <!-- Partido -->
-          <h2 class="text-sm font-extrabold text-white mb-2 leading-tight">${p.match}</h2>
-          
-          <!-- Bloque Pronóstico y Cuota -->
-          <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 mb-3">
-            <div class="flex items-center justify-between">
+            <!-- Partido -->
+            <h2 class="text-sm font-extrabold text-white mb-2 leading-tight">${p.match}</h2>
+            
+            <!-- Bloque Pronóstico y Cuota -->
+            <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 mb-2.5">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-[10px] uppercase font-bold text-amber-400 tracking-wider">${p.market}</p>
+                  <p class="text-base font-black text-white">${p.pick}</p>
+                </div>
+                <div class="text-right">
+                  <span class="text-lg font-black text-amber-400 font-mono">${p.odds_ame}</span>
+                  <p class="text-[9px] text-slate-400 font-mono">Mín: ${p.min_odds}</p>
+                </div>
+              </div>
+              <div class="mt-2 pt-1.5 border-t border-amber-500/20 text-[11px] text-amber-200/90 flex items-start gap-1.5">
+                <span class="shrink-0">💡</span>
+                <span><b>¿Qué significa?:</b> ${p.meaning}</span>
+              </div>
+            </div>
+
+            <!-- Fila de Staking Kelly & Ganancia Neta en Pesos -->
+            <div class="grid grid-cols-2 gap-2 bg-darkBg/90 border border-slate-800 rounded-lg p-2.5 mb-2.5">
               <div>
-                <p class="text-[10px] uppercase font-bold text-amber-400 tracking-wider">${p.market}</p>
-                <p class="text-base font-black text-white">${p.pick}</p>
+                <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">🎯 Stake Kelly (${stakeUnits}U):</div>
+                <div class="text-xs font-bold text-amber-400 font-mono">
+                  $${stakePesos} MXN
+                </div>
               </div>
-              <div class="text-right">
-                <span class="text-lg font-black text-amber-400 font-mono">${p.odds_ame}</span>
-                <p class="text-[9px] text-slate-400 font-mono">Mín: ${p.min_odds} | ${p.stake}</p>
+              <div>
+                <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">💰 Ganancia Neta:</div>
+                <div class="text-xs font-bold text-emerald-400 font-mono">
+                  +$${profitPesos} MXN <span class="text-[9px] text-slate-400 font-normal">(Cobras $${totalPayout})</span>
+                </div>
               </div>
             </div>
-            <div class="mt-2 pt-1.5 border-t border-amber-500/20 text-[11px] text-amber-200/90 flex items-start gap-1.5">
-              <span class="shrink-0">💡</span>
-              <span><b>¿Qué significa?:</b> ${p.meaning}</span>
+
+            <!-- Ruta Paso a Paso Playdoit -->
+            <div class="bg-darkBg border border-slate-800/80 rounded-lg p-2.5 mb-2.5">
+              <h4 class="text-[11px] font-bold text-slate-200 flex items-center gap-1.5 mb-1.5">
+                <span>🗺️</span>
+                <span>Ruta para meterlo en Playdoit:</span>
+              </h4>
+              <ol class="space-y-0.5 text-[11px] text-slate-300">
+                ${p.playdoit_path.map((step, idx) => `
+                  <li class="flex items-start gap-1.5">
+                    <span class="text-amber-400 font-mono font-bold text-[10px] shrink-0">${idx + 1}.</span>
+                    <span>${step}</span>
+                  </li>
+                `).join('')}
+              </ol>
             </div>
-          </div>
 
-          <!-- Ruta Paso a Paso Playdoit -->
-          <div class="bg-darkBg border border-slate-800/80 rounded-lg p-2.5 mb-3">
-            <h4 class="text-[11px] font-bold text-slate-200 flex items-center gap-1.5 mb-1.5">
-              <span>🗺️</span>
-              <span>Ruta para meterlo en Playdoit:</span>
-            </h4>
-            <ol class="space-y-0.5 text-[11px] text-slate-300">
-              ${p.playdoit_path.map((step, idx) => `
-                <li class="flex items-start gap-1.5">
-                  <span class="text-amber-400 font-mono font-bold text-[10px] shrink-0">${idx + 1}.</span>
-                  <span>${step}</span>
-                </li>
-              `).join('')}
-            </ol>
-          </div>
-
-          <!-- Justificación Táctica Groq -->
-          <div class="text-[11px] text-slate-400 italic mb-3 border-l-2 border-amber-400/50 pl-2.5 leading-snug">
-            🧠 <b>IA Táctica Groq:</b> ${p.reasoning}
-          </div>
-
-          <!-- Botones de Acción -->
-          <div class="flex items-center justify-between pt-2.5 border-t border-slate-800 gap-1.5">
-            <div class="flex items-center gap-1.5">
-              <button onclick="copyToClipboard('${p.pick} @ ${p.odds_ame}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-white border border-slate-800 transition">
-                📋 Copiar
-              </button>
-              <a href="https://www.playdoit.mx/es/" target="_blank" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-amber-400 border border-amber-500/30 transition">
-                🔗 Playdoit
-              </a>
+            <!-- Justificación Táctica Groq -->
+            <div class="text-[11px] text-slate-400 italic mb-3 border-l-2 border-amber-400/50 pl-2.5 leading-snug">
+              🧠 <b>IA Táctica Groq:</b> ${p.reasoning}
             </div>
-            <div class="flex items-center gap-1.5">
-              <button onclick="discardPick('${p.id}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-rose-400 hover:bg-rose-500/10 border border-rose-500/30 transition">
-                ❌ Descartar
-              </button>
-              <button onclick="alert('📸 Toma la captura de tu boleto en Playdoit y envíala directamente a este chat de Telegram para verificarla automáticamente.')" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow transition">
-                📸 Ya lo Metí
-              </button>
-            </div>
-          </div>
 
-        </div>
-      `).join('');
+            <!-- Botones de Acción -->
+            <div class="flex items-center justify-between pt-2.5 border-t border-slate-800 gap-1.5">
+              <div class="flex items-center gap-1.5">
+                <button onclick="copyPick('${p.id}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-white border border-slate-800 transition">
+                  📋 Copiar
+                </button>
+                <a href="https://www.playdoit.mx/es/" target="_blank" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-amber-400 border border-amber-500/30 transition">
+                  🔗 Playdoit
+                </a>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <button onclick="discardPick('${p.id}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-rose-400 hover:bg-rose-500/10 border border-rose-500/30 transition">
+                  ❌ Descartar
+                </button>
+                <button onclick="alert('📸 Toma la captura de tu boleto en Playdoit y envíala directamente a este chat de Telegram para verificarla automáticamente.')" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow transition">
+                  📸 Ya lo Metí
+                </button>
+              </div>
+            </div>
+
+          </div>
+        `;
+      }).join('');
     }
 
     // Inicializar reloj CDMX
@@ -558,6 +1001,10 @@
     }
     updateClock();
     setInterval(updateClock, 30000);
+
+    // Inicializar UI de Banca y Modo de Usuario
+    updateBankrollUI();
+    updateUserModeUI();
 
     // Cargar picks al iniciar
     fetchLivePicks();

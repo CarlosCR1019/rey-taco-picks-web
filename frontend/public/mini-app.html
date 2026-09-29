@@ -49,12 +49,17 @@
         <p class="text-[11px] text-slate-400">Picks Verificados • Rutas Playdoit</p>
       </div>
     </div>
-    <div class="text-right">
-      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-        Daemon 24/7
-      </span>
-      <p class="text-[10px] text-slate-400 mt-0.5" id="clock-display">CDMX</p>
+    <div class="flex items-center gap-2">
+      <button onclick="fetchLivePicks()" id="btn-refresh" class="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-amber-400 border border-slate-700 transition" title="Actualizar">
+        <span class="text-sm">🔄</span>
+      </button>
+      <div class="text-right">
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          Daemon 24/7
+        </span>
+        <p class="text-[10px] text-slate-400 mt-0.5" id="clock-display">CDMX</p>
+      </div>
     </div>
   </header>
 
@@ -63,9 +68,12 @@
     <div class="flex items-start gap-2.5">
       <div class="text-xl">🗺️</div>
       <div class="flex-1">
-        <h3 class="text-xs font-bold text-amber-300">Rutas Exactas Playdoit & Sin Spam</h3>
+        <div class="flex items-center justify-between">
+          <h3 class="text-xs font-bold text-amber-300">Rutas Exactas Playdoit & Opciones en Vivo</h3>
+          <span id="sync-status" class="text-[10px] text-emerald-400 font-mono">Sincronizado</span>
+        </div>
         <p class="text-[11px] text-slate-300 mt-0.5 leading-snug">
-          Cada pick incluye la <b>ruta paso a paso</b> para encontrarlo en Playdoit sin tener que adivinar qué liga o mercado es.
+          Cada pick incluye el <b>significado simple</b> y la <b>ruta paso a paso</b> para encontrarlo en Playdoit sin perder tiempo.
         </p>
       </div>
     </div>
@@ -73,30 +81,33 @@
 
   <!-- Filtros Rápidos por Deporte -->
   <div class="flex items-center gap-1.5 overflow-x-auto pb-2 mb-3.5 custom-scrollbar" id="sport-filters">
-    <button onclick="setSportFilter('all')" class="sport-btn active shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow-sm transition">
-      ⭐ Todos (<span id="count-all">4</span>)
+    <button onclick="setSportFilter('all')" data-sport="all" class="sport-btn active shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow-sm transition">
+      ⭐ Todos (<span id="count-all">0</span>)
     </button>
-    <button onclick="setSportFilter('futbol')" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
-      ⚽ Fútbol (<span id="count-fut">2</span>)
+    <button onclick="setSportFilter('futbol')" data-sport="futbol" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      ⚽ Fútbol (<span id="count-fut">0</span>)
     </button>
-    <button onclick="setSportFilter('nfl')" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
-      🏈 NFL (<span id="count-nfl">1</span>)
+    <button onclick="setSportFilter('nba')" data-sport="nba" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      🏀 Baloncesto (<span id="count-nba">0</span>)
     </button>
-    <button onclick="setSportFilter('nba')" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
-      🏀 Baloncesto (<span id="count-nba">1</span>)
+    <button onclick="setSportFilter('nfl')" data-sport="nfl" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      🏈 NFL (<span id="count-nfl">0</span>)
     </button>
-    <button onclick="setSportFilter('mlb')" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+    <button onclick="setSportFilter('mlb')" data-sport="mlb" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
       ⚾ Béisbol (<span id="count-mlb">0</span>)
     </button>
   </div>
 
   <!-- Contenedor de Picks -->
   <div class="space-y-3.5" id="picks-container">
-    <!-- Render dinámico -->
+    <div class="text-center py-12">
+      <div class="inline-block animate-spin text-3xl mb-2">🔄</div>
+      <p class="text-xs text-slate-400 font-semibold">Cargando picks privados en vivo desde el VPS...</p>
+    </div>
   </div>
 
   <script>
-    // Inicializar Telegram WebApp si está en Telegram
+    // Inicializar Telegram WebApp si está disponible
     if (window.Telegram && window.Telegram.WebApp) {
       window.Telegram.WebApp.ready();
       window.Telegram.WebApp.expand();
@@ -105,135 +116,170 @@
       }
     }
 
-    const PICKS_DATA = [
-      {
-        id: "RT-20260928-FUT-9191",
-        sport: "futbol",
-        sport_icon: "⚽",
-        sport_name: "Fútbol",
-        league: "Amistosos Internacionales",
-        match: "Filipinas vs. Pakistán",
-        time: "07:00 CDMX",
-        market: "Hándicap Asiático",
-        pick: "Filipinas -1.5",
-        meaning: "Filipinas debe ganar el partido por diferencia de 2 o más goles (ej. 2-0, 3-1, 3-0).",
-        playdoit_path: [
-          "Abre Playdoit > Fútbol",
-          "Categoría: 'Mundo' / 'Internacional'",
-          "Liga: 'Partidos Amistosos Internacionales'",
-          "Partido: 'Filipinas vs. Pakistán'",
-          "Pestaña: 'Hándicap'",
-          "Selección: 'Filipinas (-1.5)'"
-        ],
-        odds_dec: 1.85,
-        odds_ame: "-118",
-        min_odds: "-130",
-        stake: "1.2 U",
-        status: "pending",
-        reasoning: "Pakistán llega con bajas severas en su línea defensiva y más de 8 partidos sin ganar. Filipinas convocó a su base de la liga asiática con ventaja de ritmo y volumen ofensivo claro."
-      },
-      {
-        id: "RT-20260928-FUT-6335",
-        sport: "futbol",
-        sport_icon: "⚽",
-        sport_name: "Fútbol",
-        league: "Superliga India",
-        match: "ATK Mohun Bagan vs. Northeast United FC",
-        time: "08:00 CDMX",
-        market: "Resultado Final (Moneyline 1X2)",
-        pick: "Gana ATK Mohun Bagan (1)",
-        meaning: "ATK Mohun Bagan debe ganar el partido en los 90 minutos reglamentarios.",
-        playdoit_path: [
-          "Abre Playdoit > Fútbol > India",
-          "Liga: 'India Super League'",
-          "Partido: 'ATK Mohun Bagan vs. Northeast United'",
-          "Pestaña Principal: 'Resultado Final (1X2)'",
-          "Selección: Casilla '1' (Local)"
-        ],
-        odds_dec: 1.62,
-        odds_ame: "-161",
-        min_odds: "-180",
-        stake: "1.2 U",
-        status: "pending",
-        reasoning: "Mohun Bagan es el equipo con mayor inversión y profundidad de la liga. En casa promedian 2.4 goles por juego contra un rival que concede 1.8 de visitante."
-      },
-      {
-        id: "RT-20260928-NFL-1508",
-        sport: "nfl",
-        sport_icon: "🏈",
-        sport_name: "Fútbol Americano",
-        league: "NFL (Monday Night Football)",
-        match: "PHI Eagles @ CHI Bears",
-        time: "18:15 CDMX",
-        market: "Hándicap (incl. prórroga)",
-        pick: "CHI Bears +14.5 (Línea de Protección)",
-        meaning: "Chicago puede perder hasta por 14 puntos (o empatar/ganar) y el boleto se cobra.",
-        playdoit_path: [
-          "Abre Playdoit > Fútbol Americano > Estados Unidos",
-          "Liga: 'NFL'",
-          "Partido: 'PHI Eagles @ CHI Bears'",
-          "Pestaña: 'Hándicap alternativo' / 'Línea de Juego'",
-          "Selección: 'CHI Bears (+14.5)'"
-        ],
-        odds_dec: 1.45,
-        odds_ame: "-222",
-        min_odds: "-250",
-        stake: "1.5 U",
-        status: "pending",
-        reasoning: "Ajuste táctico tras el resultado real (Bears 27 - 7 Eagles). El mercado ofreció valor de protección en líneas amplias con juego terrestre conservador."
-      },
-      {
-        id: "RT-20260928-NBA-9589",
-        sport: "nba",
-        sport_icon: "🏀",
-        sport_name: "Baloncesto",
-        league: "Brasil U20 Paulista",
-        match: "AD Santo Andre U20 vs. Sao Jose Dos Campos U20",
-        time: "15:00 CDMX",
-        market: "Hándicap de Puntos",
-        pick: "Sao Jose Dos Campos +13.5",
-        meaning: "Sao Jose puede perder hasta por 13 puntos y el pick resulta ganador.",
-        playdoit_path: [
-          "Abre Playdoit > Baloncesto > Brasil",
-          "Liga: 'U20 Campeonato Paulista'",
-          "Partido: 'AD Santo Andre U20 vs. Sao Jose U20'",
-          "Pestaña: 'Hándicap'",
-          "Selección: 'Sao Jose (+13.5)'"
-        ],
-        odds_dec: 1.83,
-        odds_ame: "-120",
-        min_odds: "-135",
-        stake: "1.0 U",
-        status: "pending",
-        reasoning: "Línea inflada por nombres de institución; ambos equipos mantienen ritmo defensivo de posesiones largas y marcadores cerrados (diferencia histórica media < 8 pts)."
-      }
-    ];
-
+    let PICKS_DATA = [];
     let currentFilter = "all";
+    let discardedPicks = new Set(JSON.parse(localStorage.getItem("reytaco_discarded_ids") || "[]"));
+
+    function normalizePick(raw) {
+      const tid = raw.ticket_id || raw.id || "RT-" + Math.floor(Math.random() * 10000);
+      let sport = "futbol";
+      let sport_icon = "⚽";
+      let sport_name = "Fútbol";
+
+      const leagueStr = String(raw.league || "");
+      if (tid.includes("-NFL-") || leagueStr.includes("🏈") || leagueStr.toLowerCase().includes("nfl")) {
+        sport = "nfl";
+        sport_icon = "🏈";
+        sport_name = "Fútbol Americano";
+      } else if (tid.includes("-NBA-") || leagueStr.includes("🏀") || leagueStr.toLowerCase().includes("baloncesto") || leagueStr.toLowerCase().includes("basket")) {
+        sport = "nba";
+        sport_icon = "🏀";
+        sport_name = "Baloncesto";
+      } else if (tid.includes("-MLB-") || leagueStr.includes("⚾") || leagueStr.toLowerCase().includes("béisbol") || leagueStr.toLowerCase().includes("mlb")) {
+        sport = "mlb";
+        sport_icon = "⚾";
+        sport_name = "Béisbol";
+      }
+
+      const home = raw.home_team || "";
+      const away = raw.away_team || "";
+      const match = raw.match || (home && away ? `${home} vs. ${away}` : (home || away || "Evento"));
+
+      // Limpiar prefijo emoji de la liga si existe
+      const cleanLeague = leagueStr.replace(/^[⚽🏈🏀⚾]\s*/, "").trim() || "Liga";
+
+      // Formatear cuota americana asegurando signo
+      let ameOdds = String(raw.market_odds_american || "");
+      if (ameOdds && !ameOdds.startsWith("+") && !ameOdds.startsWith("-")) {
+        ameOdds = (Number(ameOdds) > 0 ? "+" : "") + ameOdds;
+      }
+
+      let minAme = String(raw.minimum_odds_american || "");
+      if (minAme && !minAme.startsWith("+") && !minAme.startsWith("-")) {
+        minAme = (Number(minAme) > 0 ? "+" : "") + minAme;
+      }
+
+      let pathSteps = [];
+      if (Array.isArray(raw.playdoit_path)) {
+        pathSteps = raw.playdoit_path;
+      } else if (typeof raw.playdoit_path === "string") {
+        pathSteps = [raw.playdoit_path];
+      } else {
+        pathSteps = [
+          `Abre Playdoit > ${sport_name}`,
+          `Busca: ${cleanLeague}`,
+          `Partido: ${match}`,
+          `Selección: ${raw.pick}`
+        ];
+      }
+
+      return {
+        id: tid,
+        sport: sport,
+        sport_icon: sport_icon,
+        sport_name: sport_name,
+        league: cleanLeague,
+        match: match,
+        time: raw.time ? (raw.time.includes("CDMX") ? raw.time : raw.time + " CDMX") : "Hoy",
+        market: raw.market || "Oportunidad de Valor +EV",
+        pick: raw.pick || "",
+        meaning: raw.meaning || (raw.pick + " en el tiempo regular del partido."),
+        playdoit_path: pathSteps,
+        odds_dec: raw.market_odds_decimal || 1.80,
+        odds_ame: ameOdds || "-120",
+        min_odds: minAme || "-140",
+        stake: raw.stake_units ? (raw.stake_units + " U") : "1.2 U",
+        status: discardedPicks.has(tid) ? "discarded" : (raw.status || "pending"),
+        reasoning: raw.reasoning || "Ventaja matemática y situacional detectada en Playdoit."
+      };
+    }
+
+    async function fetchLivePicks() {
+      const statusEl = document.getElementById("sync-status");
+      const refreshBtn = document.getElementById("btn-refresh");
+      if (statusEl) statusEl.textContent = "Actualizando...";
+      if (refreshBtn) refreshBtn.classList.add("animate-spin");
+
+      const sources = [
+        `https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json?t=${Date.now()}`,
+        `/active_private_picks.json?t=${Date.now()}`
+      ];
+
+      let rawList = null;
+
+      for (const url of sources) {
+        try {
+          const resp = await fetch(url, { cache: 'no-store' });
+          if (resp.ok) {
+            const data = await resp.json();
+            if (Array.isArray(data) && data.length > 0) {
+              rawList = data;
+              break;
+            }
+          }
+        } catch (e) {
+          console.warn("Fallo cargando de", url, e);
+        }
+      }
+
+      if (rawList && rawList.length > 0) {
+        PICKS_DATA = rawList.map(normalizePick);
+        localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
+        if (statusEl) statusEl.textContent = "En vivo • " + PICKS_DATA.length + " picks";
+      } else {
+        const cached = localStorage.getItem("reytaco_active_picks");
+        if (cached) {
+          try {
+            PICKS_DATA = JSON.parse(cached).map(normalizePick);
+            if (statusEl) statusEl.textContent = "Caché local • " + PICKS_DATA.length + " picks";
+          } catch (e) {}
+        }
+      }
+
+      if (refreshBtn) refreshBtn.classList.remove("animate-spin");
+      updateFilterCounts();
+      renderPicks();
+    }
+
+    function updateFilterCounts() {
+      const active = PICKS_DATA.filter(p => !discardedPicks.has(p.id));
+      const fut = active.filter(p => p.sport === "futbol");
+      const nba = active.filter(p => p.sport === "nba");
+      const nfl = active.filter(p => p.sport === "nfl");
+      const mlb = active.filter(p => p.sport === "mlb");
+
+      document.getElementById("count-all").textContent = active.length;
+      document.getElementById("count-fut").textContent = fut.length;
+      document.getElementById("count-nba").textContent = nba.length;
+      document.getElementById("count-nfl").textContent = nfl.length;
+      document.getElementById("count-mlb").textContent = mlb.length;
+    }
 
     function setSportFilter(filter) {
       currentFilter = filter;
       document.querySelectorAll(".sport-btn").forEach(btn => {
-        btn.classList.remove("active", "bg-amber-500", "text-black");
-        btn.classList.add("bg-cardBg", "text-slate-400");
+        if (btn.getAttribute("data-sport") === filter) {
+          btn.classList.add("active", "bg-amber-500", "text-black");
+          btn.classList.remove("bg-cardBg", "text-slate-400");
+        } else {
+          btn.classList.remove("active", "bg-amber-500", "text-black");
+          btn.classList.add("bg-cardBg", "text-slate-400");
+        }
       });
-      event.target.classList.add("active", "bg-amber-500", "text-black");
-      event.target.classList.remove("bg-cardBg", "text-slate-400");
       if (window.Telegram?.WebApp?.HapticFeedback) {
         window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
       }
       renderPicks();
     }
 
-    function toggleStatus(id, newStatus) {
-      const item = PICKS_DATA.find(p => p.id === id);
-      if (item) {
-        item.status = newStatus;
-        if (window.Telegram?.WebApp?.HapticFeedback) {
-          window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-        }
-        renderPicks();
+    function discardPick(id) {
+      discardedPicks.add(id);
+      localStorage.setItem("reytaco_discarded_ids", JSON.stringify(Array.from(discardedPicks)));
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.notificationOccurred('warning');
       }
+      updateFilterCounts();
+      renderPicks();
     }
 
     function copyToClipboard(text) {
@@ -241,19 +287,24 @@
       if (window.Telegram?.WebApp?.HapticFeedback) {
         window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
       }
-      alert("✅ Selección copiada: " + text);
+      alert("✅ Selección copiada:\n" + text);
     }
 
     function renderPicks() {
       const container = document.getElementById("picks-container");
-      const filtered = PICKS_DATA.filter(p => (currentFilter === "all" || p.sport === currentFilter) && p.status !== "discarded");
+      const filtered = PICKS_DATA.filter(p => 
+        (currentFilter === "all" || p.sport === currentFilter) && !discardedPicks.has(p.id)
+      );
 
       if (filtered.length === 0) {
         container.innerHTML = `
-          <div class="text-center py-10 border border-dashed border-slate-800 rounded-2xl p-6">
+          <div class="text-center py-12 border border-dashed border-slate-800 rounded-2xl p-6 bg-cardBg/40">
             <div class="text-3xl mb-2">🎉</div>
-            <h4 class="text-sm font-semibold text-white">Todos los picks revisados o descartados</h4>
-            <p class="text-xs text-slate-400 mt-1">El daemon 24/7 en el VPS actualizará la lista en cuanto abran nuevas cuotas.</p>
+            <h4 class="text-sm font-semibold text-white">No hay picks pendientes en este deporte</h4>
+            <p class="text-xs text-slate-400 mt-1">El daemon 24/7 en el VPS actualizará la lista en cuanto se detecte nueva ventaja matemática.</p>
+            <button onclick="fetchLivePicks()" class="mt-4 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow">
+              🔄 Comprobar de nuevo
+            </button>
           </div>
         `;
         return;
@@ -262,12 +313,12 @@
       container.innerHTML = filtered.map(p => `
         <div class="bg-cardBg border border-slate-800 rounded-xl p-4 shadow-sm transition hover:border-amber-500/40">
           
-          <!-- Encabezado -->
+          <!-- Encabezado con Deporte y Hora -->
           <div class="flex items-center justify-between gap-2 mb-2.5">
             <div class="flex items-center gap-1.5">
               <span class="text-base">${p.sport_icon}</span>
               <span class="text-[11px] font-bold text-amber-400 uppercase tracking-wide truncate max-w-[200px]">${p.league}</span>
-              <span class="text-[10px] text-slate-400">• ⏰ ${p.time}</span>
+              <span class="text-[10px] text-slate-400 font-mono">• ⏰ ${p.time}</span>
             </div>
             <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-darkBg text-slate-400 border border-slate-800">
               ${p.id}
@@ -285,12 +336,12 @@
                 <p class="text-base font-black text-white">${p.pick}</p>
               </div>
               <div class="text-right">
-                <span class="text-lg font-black text-amber-400">${p.odds_ame}</span>
+                <span class="text-lg font-black text-amber-400 font-mono">${p.odds_ame}</span>
                 <p class="text-[9px] text-slate-400 font-mono">Mín: ${p.min_odds} | ${p.stake}</p>
               </div>
             </div>
             <div class="mt-2 pt-1.5 border-t border-amber-500/20 text-[11px] text-amber-200/90 flex items-start gap-1.5">
-              <span>💡</span>
+              <span class="shrink-0">💡</span>
               <span><b>¿Qué significa?:</b> ${p.meaning}</span>
             </div>
           </div>
@@ -304,14 +355,14 @@
             <ol class="space-y-0.5 text-[11px] text-slate-300">
               ${p.playdoit_path.map((step, idx) => `
                 <li class="flex items-start gap-1.5">
-                  <span class="text-amber-400 font-mono font-bold text-[10px]">${idx + 1}.</span>
+                  <span class="text-amber-400 font-mono font-bold text-[10px] shrink-0">${idx + 1}.</span>
                   <span>${step}</span>
                 </li>
               `).join('')}
             </ol>
           </div>
 
-          <!-- Justificación Táctica -->
+          <!-- Justificación Táctica Groq -->
           <div class="text-[11px] text-slate-400 italic mb-3 border-l-2 border-amber-400/50 pl-2.5 leading-snug">
             🧠 <b>IA Táctica Groq:</b> ${p.reasoning}
           </div>
@@ -327,10 +378,10 @@
               </a>
             </div>
             <div class="flex items-center gap-1.5">
-              <button onclick="toggleStatus('${p.id}', 'discarded')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-rose-400 hover:bg-rose-500/10 border border-rose-500/30 transition">
+              <button onclick="discardPick('${p.id}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-rose-400 hover:bg-rose-500/10 border border-rose-500/30 transition">
                 ❌ Descartar
               </button>
-              <button onclick="alert('📸 Toma la captura en Playdoit y envíala al chat de Telegram del bot para validar y sellar en el Ledger SHA-256.')" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow transition">
+              <button onclick="alert('📸 Toma la captura de tu boleto en Playdoit y envíala directamente a este chat de Telegram para verificarla automáticamente.')" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow transition">
                 📸 Ya lo Metí
               </button>
             </div>
@@ -340,9 +391,7 @@
       `).join('');
     }
 
-    renderPicks();
-
-    // Actualizar reloj CDMX
+    // Inicializar reloj CDMX
     function updateClock() {
       const now = new Date();
       const options = { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit' };
@@ -350,6 +399,9 @@
     }
     updateClock();
     setInterval(updateClock, 30000);
+
+    // Cargar picks al iniciar
+    fetchLivePicks();
   </script>
 </body>
 </html>

@@ -1,0 +1,33 @@
+{
+  "updated_at_cdmx": "2026-09-29 08:58:47",
+  "kpis": {
+    "total_settled": 1,
+    "won": 1,
+    "lost": 0,
+    "void": 0,
+    "win_rate_pct": 100.0,
+    "net_units": 2.0,
+    "yield_pct": 133.3,
+    "current_streak": 1,
+    "streak_type": "W"
+  },
+  "settled_picks": [
+    {
+      "ticket_id": "RT-20260929-MLB-YANK-SOX",
+      "date_cdmx": "2026-09-29 08:58",
+      "sport_icon": "⚾",
+      "league": "MLB Grandes Ligas",
+      "match": "Boston Red Sox vs. NY Yankees",
+      "pick": "Menos 6.0 carreras",
+      "odds_ame": "+100",
+      "odds_dec": 2.0,
+      "stake_units": 2.0,
+      "profit_units": 2.0,
+      "stake_pesos": 100,
+      "profit_pesos": 100,
+      "total_payout": 200,
+      "is_parlay": false,
+      "result": "WON"
+    }
+  ]
+}

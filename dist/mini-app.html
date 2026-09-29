@@ -298,10 +298,52 @@
     localStorage.setItem("reytaco_user_mode", "vip");
     let discardedPicks = new Set(JSON.parse(localStorage.getItem("reytaco_discarded_ids") || "[]"));
 
-    // Estado de acordeón y desplegables (Parlay minimizado por defecto para ver todas las Joyas)
-    let isParlayCollapsed = true;
+    // Estado de acordeón y selector de Parlays (Expandido por defecto para ver todos los parlays)
+    let isParlayCollapsed = false;
+    let activeParlayTab = "top"; // 'top' | 'mlb' | 'basket' | 'futbol' | 'mega' | 'custom'
+    let customParlayPicks = new Set(JSON.parse(localStorage.getItem("reytaco_custom_parlay_ids") || "[]"));
     let expandedPicks = new Set();
     let allExpanded = false;
+
+    function selectParlayTab(tabId) {
+      activeParlayTab = tabId;
+      isParlayCollapsed = false;
+      renderGoldenParlay();
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
+      }
+    }
+
+    function toggleCustomParlayPick(id) {
+      if (customParlayPicks.has(id)) {
+        customParlayPicks.delete(id);
+      } else {
+        customParlayPicks.add(id);
+        activeParlayTab = 'custom';
+        isParlayCollapsed = false;
+      }
+      localStorage.setItem("reytaco_custom_parlay_ids", JSON.stringify(Array.from(customParlayPicks)));
+      renderGoldenParlay();
+      renderPicks();
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+      }
+      const parlayEl = document.getElementById("golden-parlay-container");
+      if (parlayEl) {
+        parlayEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    function clearCustomParlay() {
+      customParlayPicks.clear();
+      localStorage.removeItem("reytaco_custom_parlay_ids");
+      activeParlayTab = 'top';
+      renderGoldenParlay();
+      renderPicks();
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
+      }
+    }
 
     function toggleGoldenParlay() {
       isParlayCollapsed = !isParlayCollapsed;
@@ -600,37 +642,101 @@
       document.getElementById("vip-modal").classList.add("hidden");
     }
 
-    // Generador y Render del Parlay de Oro
-    function getGoldenParlay() {
+    function toAmericanOdds(dec) {
+      if (dec >= 2.0) {
+        return '+' + Math.round((dec - 1) * 100);
+      } else if (dec > 1.0) {
+        return '-' + Math.round(100 / (dec - 1));
+      }
+      return '+100';
+    }
+
+    function buildParlayCombo(id, title, subtitle, icon, legs, defaultStake) {
+      if (!legs || legs.length < 2) return null;
+      const combinedDec = Number(legs.reduce((acc, l) => acc * (Number(l.odds_dec) || 1.8), 1).toFixed(2));
+      const combinedAme = toAmericanOdds(combinedDec);
+      return { id, title, subtitle, icon, legs, combinedDec, combinedAme, stakeUnits: defaultStake };
+    }
+
+    // Generador Cuantitativo Multi-Parlay de Oro
+    function getAllGoldenParlays() {
       const valid = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
       const jewels = valid.filter(p => p.is_jewel).sort((a, b) => b.score - a.score);
+      const parlays = [];
 
-      if (jewels.length < 2) return null;
-
-      // Buscar dos selecciones de eventos distintos en rango de cuota balanceada (1.40 a 2.45)
-      const sweetSpot = jewels.filter(p => p.odds_dec >= 1.40 && p.odds_dec <= 2.45);
-      let leg1 = sweetSpot[0] || jewels[0];
-      let leg2 = sweetSpot.find(p => p.id !== leg1.id && p.match !== leg1.match);
-      if (!leg2) {
-        leg2 = jewels.find(p => p.id !== leg1.id && p.match !== leg1.match);
-      }
-      if (!leg2) return null;
-
-      const combinedDec = Number((leg1.odds_dec * leg2.odds_dec).toFixed(2));
-      let combinedAme = "";
-      if (combinedDec >= 2.0) {
-        combinedAme = "+" + Math.round((combinedDec - 1) * 100);
-      } else {
-        combinedAme = "-" + Math.round(100 / (combinedDec - 1));
+      // 1. Top +EV General (2 legs)
+      if (jewels.length >= 2) {
+        const sweetSpot = jewels.filter(p => p.odds_dec >= 1.40 && p.odds_dec <= 2.45);
+        let leg1 = sweetSpot[0] || jewels[0];
+        let leg2 = sweetSpot.find(p => p.id !== leg1.id && p.match !== leg1.match) || jewels.find(p => p.id !== leg1.id && p.match !== leg1.match);
+        if (leg1 && leg2) {
+          parlays.push(buildParlayCombo('top', 'Parlay de Oro #1', 'Top +EV del Día (2 Selecciones)', '👑', [leg1, leg2], 1.5));
+        }
       }
 
-      return {
-        leg1,
-        leg2,
-        combinedDec,
-        combinedAme,
-        stakeUnits: 1.5
-      };
+      // 2. MLB Béisbol (Grandes Ligas)
+      const mlbPool = valid.filter(p => p.sport === 'mlb');
+      if (mlbPool.length >= 2) {
+        parlays.push(buildParlayCombo('mlb', 'Parlay de Oro MLB', 'Béisbol de Grandes Ligas', '⚾', mlbPool.slice(0, 3), 1.25));
+      }
+
+      // 3. Baloncesto (Euroliga & Basket)
+      const nbaPool = valid.filter(p => p.sport === 'nba');
+      if (nbaPool.length >= 2) {
+        parlays.push(buildParlayCombo('basket', 'Parlay de Oro Basket', 'Euroliga & Baloncesto', '🏀', nbaPool.slice(0, 2), 1.2));
+      }
+
+      // 4. Fútbol (Fútbol de Élite)
+      const futPool = valid.filter(p => p.sport === 'futbol');
+      if (futPool.length >= 2) {
+        parlays.push(buildParlayCombo('futbol', 'Parlay de Oro Fútbol', 'Fútbol de Élite', '⚽', futPool.slice(0, 2), 1.2));
+      }
+
+      // 5. Mega Parlay Multideporte (Combina las mejores de cada deporte para cuota grande)
+      const megaCandidates = [
+        mlbPool[0],
+        nbaPool[0],
+        futPool[0],
+        mlbPool[1]
+      ].filter(Boolean);
+      const uniqueMega = [];
+      const seenIds = new Set();
+      for (const leg of megaCandidates) {
+        if (!seenIds.has(leg.id)) {
+          seenIds.add(leg.id);
+          uniqueMega.push(leg);
+        }
+      }
+      if (uniqueMega.length >= 3) {
+        parlays.push(buildParlayCombo('mega', 'Mega Parlay Multideporte', 'Todas las Joyas Combinadas', '🚀', uniqueMega.slice(0, 4), 0.75));
+      }
+
+      // 6. Mi Parlay Personalizado (Creado por Carlos al seleccionar picks)
+      if (customParlayPicks.size >= 1) {
+        const customLegs = valid.filter(p => customParlayPicks.has(p.id));
+        if (customLegs.length >= 1) {
+          const combinedDec = Number(customLegs.reduce((acc, l) => acc * (Number(l.odds_dec) || 1.8), 1).toFixed(2));
+          const combinedAme = toAmericanOdds(combinedDec);
+          const stakeU = customLegs.length === 1 ? 2.0 : (customLegs.length === 2 ? 1.5 : (customLegs.length === 3 ? 1.0 : 0.75));
+          parlays.push({
+            id: 'custom',
+            title: 'Mi Parlay Personalizado',
+            subtitle: `${customLegs.length} ${customLegs.length === 1 ? 'pierna elegida' : 'piernas combinadas'}`,
+            icon: '🎯',
+            legs: customLegs,
+            combinedDec,
+            combinedAme,
+            stakeUnits: stakeU
+          });
+        }
+      }
+
+      return parlays;
+    }
+
+    function getGoldenParlay() {
+      const parlays = getAllGoldenParlays();
+      return parlays.find(p => p.id === activeParlayTab) || parlays[0] || null;
     }
 
     function renderGoldenParlay() {
@@ -638,7 +744,31 @@
         const container = document.getElementById("golden-parlay-container");
         if (!container) return;
 
-        const parlay = getGoldenParlay();
+        const parlays = getAllGoldenParlays();
+        if (parlays.length === 0 && (activeParlayTab !== 'custom' || customParlayPicks.size === 0)) {
+          container.innerHTML = "";
+          return;
+        }
+
+        let parlay = parlays.find(p => p.id === activeParlayTab);
+        if (!parlay) {
+          if (activeParlayTab === 'custom') {
+            parlay = {
+              id: 'custom',
+              title: 'Mi Parlay Personalizado',
+              subtitle: 'Arma tu combinación libre de joyas',
+              icon: '🎯',
+              legs: [],
+              combinedDec: 1.0,
+              combinedAme: '+0',
+              stakeUnits: 1.0
+            };
+          } else {
+            parlay = parlays[0];
+            if (parlay) activeParlayTab = parlay.id;
+          }
+        }
+
         if (!parlay) {
           container.innerHTML = "";
           return;
@@ -649,148 +779,171 @@
         const stakePesos = Math.round(parlay.stakeUnits * unitSize);
         const profitPesos = Math.round(stakePesos * (parlay.combinedDec - 1));
         const totalPayout = stakePesos + profitPesos;
-        const copyText = `👑 PARLAY DE ORO REY TACO (${parlay.combinedAme}):\n1. ${parlay.leg1.match}: ${parlay.leg1.pick} @ ${parlay.leg1.odds_ame}\n2. ${parlay.leg2.match}: ${parlay.leg2.pick} @ ${parlay.leg2.odds_ame}\nCuota Combinada: ${parlay.combinedAme} (${parlay.combinedDec})`;
 
-      if (userMode === "free_preview") {
-        container.innerHTML = `
-          <div class="relative overflow-hidden bg-cardBg border-2 border-amber-500/40 rounded-2xl p-4 shadow-xl mb-3.5 text-center">
-            <div class="filter blur-md select-none pointer-events-none opacity-40">
-              <div class="h-6 w-48 bg-amber-500 rounded mx-auto mb-2"></div>
-              <div class="h-16 bg-slate-800 rounded-xl mb-2"></div>
-              <div class="h-16 bg-slate-800 rounded-xl mb-2"></div>
-            </div>
-            <div class="absolute inset-0 bg-darkBg/85 backdrop-blur-sm flex flex-col items-center justify-center p-4">
-              <div class="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-xl mb-2 shadow">
-                🔒
+        if (userMode === "free_preview") {
+          container.innerHTML = `
+            <div class="relative overflow-hidden bg-cardBg border-2 border-amber-500/40 rounded-2xl p-4 shadow-xl mb-3.5 text-center">
+              <div class="filter blur-md select-none pointer-events-none opacity-40">
+                <div class="h-6 w-48 bg-amber-500 rounded mx-auto mb-2"></div>
+                <div class="h-16 bg-slate-800 rounded-xl mb-2"></div>
+                <div class="h-16 bg-slate-800 rounded-xl mb-2"></div>
               </div>
-              <h3 class="text-xs font-black text-amber-400 uppercase tracking-wide">PARLAY DE ORO REY TACO • CUOTA ${parlay.combinedAme}</h3>
-              <p class="text-[11px] text-slate-300 max-w-sm mt-1 mb-3">
-                El combo cuantitativo diario de mayor probabilidad (+EV) está reservado para miembros VIP.
-              </p>
-              <button onclick="openVipModal()" class="py-2 px-4 rounded-xl text-xs font-black bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-lg hover:scale-105 transition">
-                👑 Desbloquear con VIP ($299 MXN / Mes)
+              <div class="absolute inset-0 bg-darkBg/85 backdrop-blur-sm flex flex-col items-center justify-center p-4">
+                <div class="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-xl mb-2 shadow">
+                  🔒
+                </div>
+                <h3 class="text-xs font-black text-amber-400 uppercase tracking-wide">PARLAY DE ORO REY TACO • CUOTA ${parlay.combinedAme}</h3>
+                <p class="text-[11px] text-slate-300 max-w-sm mt-1 mb-3">
+                  Los combos cuantitativos diarios de mayor probabilidad (+EV) están reservados para miembros VIP.
+                </p>
+                <button onclick="openVipModal()" class="py-2 px-4 rounded-xl text-xs font-black bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-lg hover:scale-105 transition">
+                  👑 Desbloquear con VIP ($299 MXN / Mes)
+                </button>
+              </div>
+            </div>
+          `;
+          return;
+        }
+
+        if (isParlayCollapsed) {
+          container.innerHTML = `
+            <div class="relative overflow-hidden bg-gradient-to-r from-amber-950/60 via-cardBg to-slate-900 border border-amber-500/50 rounded-xl p-3 shadow-md mb-3 flex items-center justify-between transition hover:border-amber-400">
+              <div class="flex items-center gap-2.5">
+                <div class="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-sm shadow">
+                  ${parlay.icon}
+                </div>
+                <div>
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-xs font-black text-amber-400 uppercase tracking-wide">${parlay.title}</span>
+                    <span class="text-xs font-mono font-black text-amber-300">${parlay.combinedAme}</span>
+                    <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-darkBg text-amber-300 border border-amber-500/30">${parlays.length} Parlays</span>
+                  </div>
+                  <p class="text-[10px] text-slate-300 truncate max-w-[210px]">${parlay.subtitle} • ${parlay.legs.length} piernas</p>
+                </div>
+              </div>
+              <button onclick="toggleGoldenParlay()" class="px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow flex items-center gap-1 transition">
+                <span>🔽</span>
+                <span>Desplegar</span>
               </button>
             </div>
-          </div>
-        `;
-        return;
-      }
+          `;
+          return;
+        }
 
-      if (isParlayCollapsed) {
         container.innerHTML = `
-          <div class="relative overflow-hidden bg-gradient-to-r from-amber-950/60 via-cardBg to-slate-900 border border-amber-500/50 rounded-xl p-3 shadow-md mb-3 flex items-center justify-between transition hover:border-amber-400">
-            <div class="flex items-center gap-2.5">
-              <div class="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-sm shadow">
-                👑
+          <div class="relative overflow-hidden bg-gradient-to-br from-amber-950/40 via-cardBg to-slate-900 border-2 border-amber-500/60 rounded-2xl p-4 shadow-xl mb-3.5 animate-gold-glow">
+            
+            <!-- Encabezado Parlay con Minimizar -->
+            <div class="flex items-center justify-between gap-2 mb-2.5">
+              <div class="flex items-center gap-2">
+                <span class="px-2.5 py-1 rounded-md text-[10px] font-black bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-md uppercase tracking-wider">
+                  👑 PARLAYS DE ORO (${parlays.length} DISPONIBLES)
+                </span>
+                <span class="text-xs font-mono font-black text-amber-300">
+                  ${parlay.combinedAme} (${parlay.combinedDec})
+                </span>
               </div>
-              <div>
-                <div class="flex items-center gap-1.5">
-                  <span class="text-xs font-black text-amber-400 uppercase tracking-wide">PARLAY DE ORO</span>
-                  <span class="text-xs font-mono font-black text-amber-300">CUOTA ${parlay.combinedAme}</span>
-                </div>
-                <p class="text-[10px] text-slate-300 truncate max-w-[210px]">${parlay.leg1.match} & ${parlay.leg2.match}</p>
-              </div>
-            </div>
-            <button onclick="toggleGoldenParlay()" class="px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow flex items-center gap-1 transition">
-              <span>🔽</span>
-              <span>Desplegar</span>
-            </button>
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = `
-        <div class="relative overflow-hidden bg-gradient-to-br from-amber-950/40 via-cardBg to-slate-900 border-2 border-amber-500/60 rounded-2xl p-4 shadow-xl mb-3.5 animate-gold-glow">
-          
-          <!-- Encabezado Parlay -->
-          <div class="flex items-center justify-between gap-2 mb-2.5">
-            <div class="flex items-center gap-2">
-              <span class="px-2.5 py-1 rounded-md text-[10px] font-black bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-md uppercase tracking-wider">
-                👑 PARLAY DE ORO REY TACO
-              </span>
-              <span class="text-xs font-mono font-black text-amber-300">
-                CUOTA ${parlay.combinedAme} (${parlay.combinedDec})
-              </span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                ⚡ Early Bird
-              </span>
               <button onclick="toggleGoldenParlay()" class="px-2 py-0.5 rounded text-[10px] font-bold bg-darkBg/90 hover:bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-0.5 transition">
                 <span>🔼</span>
                 <span>Minimizar</span>
               </button>
             </div>
-          </div>
 
-          <p class="text-[11px] text-slate-300 mb-3 leading-snug">
-            Combinación de las <b>2 mejores Joyas Top</b> del día analizadas matemáticamente con máxima ventaja sobre las líneas matutinas de Playdoit.
-          </p>
+            <!-- Pestañas de Selección de Parlay -->
+            <div class="flex items-center gap-1.5 overflow-x-auto pb-2 mb-2.5 custom-scrollbar">
+              ${parlays.map(p => `
+                <button onclick="selectParlayTab('${p.id}')" class="shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition flex items-center gap-1.5 ${p.id === parlay.id ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-md' : 'bg-darkBg text-slate-400 hover:text-white border border-slate-800'}">
+                  <span>${p.icon}</span>
+                  <span>${p.title.replace('Parlay de Oro ', '')} (${p.legs.length})</span>
+                  <span class="text-[10px] font-mono ${p.id === parlay.id ? 'text-black font-black' : 'text-amber-400'}">${p.combinedAme}</span>
+                </button>
+              `).join('')}
+              <button onclick="selectParlayTab('custom')" class="shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition flex items-center gap-1.5 ${parlay.id === 'custom' ? 'bg-gradient-to-r from-amber-500 to-yellow-500 text-black shadow-md' : 'bg-darkBg text-slate-400 hover:text-white border border-slate-800'}">
+                <span>🎯</span>
+                <span>Mi Parlay (${customParlayPicks.size})</span>
+              </button>
+            </div>
 
-          <!-- Piernas del Parlay -->
-          <div class="space-y-2 mb-3">
-            <!-- Pierna 1 -->
-            <div class="bg-darkBg/90 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between">
-              <div class="flex items-center gap-2.5">
-                <span class="text-lg">${parlay.leg1.sport_icon}</span>
+            <!-- Detalle del Parlay Activo -->
+            <div class="flex items-center justify-between mb-2.5">
+              <div>
+                <h4 class="text-xs font-extrabold text-white flex items-center gap-1.5">
+                  <span>${parlay.icon}</span>
+                  <span>${parlay.title}</span>
+                </h4>
+                <p class="text-[10px] text-slate-300">${parlay.subtitle}</p>
+              </div>
+              ${parlay.id === 'custom' && customParlayPicks.size > 0 ? `
+                <button onclick="clearCustomParlay()" class="text-[10px] font-semibold text-rose-400 hover:text-rose-300 underline">
+                  Limpiar Parlay
+                </button>
+              ` : ''}
+            </div>
+
+            ${parlay.legs.length === 0 ? `
+              <div class="bg-darkBg/90 border border-dashed border-amber-500/40 rounded-xl p-4 text-center my-2">
+                <div class="text-2xl mb-1">🎯</div>
+                <div class="text-xs font-bold text-white mb-1">Tu Parlay Personalizado está vacío</div>
+                <p class="text-[11px] text-slate-400">Toca el botón <b>[ ➕ Agregar al Parlay ]</b> en cualquiera de los pronósticos de abajo para combinar tus joyas favoritas a tu gusto.</p>
+              </div>
+            ` : `
+              <!-- Piernas del Parlay Activo -->
+              <div class="space-y-2 mb-3">
+                ${parlay.legs.map((leg, idx) => `
+                  <div class="bg-darkBg/90 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between">
+                    <div class="flex items-center gap-2.5">
+                      <span class="text-lg">${leg.sport_icon}</span>
+                      <div>
+                        <div class="text-[10px] text-amber-400 font-bold uppercase">${leg.league} • ${leg.time}</div>
+                        <div class="text-xs font-bold text-white">${leg.match}</div>
+                        <div class="text-[11px] font-semibold text-emerald-400">👉 ${leg.pick}</div>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="px-2.5 py-1 rounded text-xs font-black font-mono bg-cardBg text-amber-400 border border-slate-700">
+                        ${leg.odds_ame}
+                      </span>
+                      ${parlay.id === 'custom' ? `
+                        <button onclick="toggleCustomParlayPick('${leg.id}')" class="w-6 h-6 rounded-md bg-rose-500/20 text-rose-400 hover:bg-rose-500/30 flex items-center justify-center text-xs font-bold transition" title="Quitar">
+                          ✕
+                        </button>
+                      ` : ''}
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+
+              <!-- Cálculo Financiero Kelly -->
+              <div class="grid grid-cols-2 gap-2 bg-darkBg border border-amber-500/30 rounded-xl p-2.5 mb-3">
                 <div>
-                  <div class="text-[10px] text-amber-400 font-bold uppercase">${parlay.leg1.league} • ${parlay.leg1.time}</div>
-                  <div class="text-xs font-bold text-white">${parlay.leg1.match}</div>
-                  <div class="text-[11px] font-semibold text-emerald-400">👉 ${parlay.leg1.pick}</div>
+                  <div class="text-[9px] text-slate-400 font-medium uppercase tracking-wider">🎯 Stake Kelly (${parlay.stakeUnits}U):</div>
+                  <div class="text-xs font-bold text-amber-400 font-mono">
+                    $${stakePesos} MXN
+                  </div>
+                </div>
+                <div>
+                  <div class="text-[9px] text-slate-400 font-medium uppercase tracking-wider">💰 Ganancia Neta Estimada:</div>
+                  <div class="text-xs font-bold text-emerald-400 font-mono">
+                    +$${profitPesos} MXN <span class="text-[9px] text-slate-400 font-normal font-mono">(Cobras $${totalPayout})</span>
+                  </div>
                 </div>
               </div>
-              <span class="px-2.5 py-1 rounded text-xs font-black font-mono bg-cardBg text-amber-400 border border-slate-700">
-                ${parlay.leg1.odds_ame}
-              </span>
-            </div>
 
-            <!-- Pierna 2 -->
-            <div class="bg-darkBg/90 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between">
-              <div class="flex items-center gap-2.5">
-                <span class="text-lg">${parlay.leg2.sport_icon}</span>
-                <div>
-                  <div class="text-[10px] text-amber-400 font-bold uppercase">${parlay.leg2.league} • ${parlay.leg2.time}</div>
-                  <div class="text-xs font-bold text-white">${parlay.leg2.match}</div>
-                  <div class="text-[11px] font-semibold text-emerald-400">👉 ${parlay.leg2.pick}</div>
-                </div>
+              <!-- Botones de Acción -->
+              <div class="flex items-center justify-between gap-2">
+                <button onclick="copyGoldenParlay()" class="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-darkBg hover:bg-slate-800 text-white border border-slate-700 transition flex items-center justify-center gap-1.5">
+                  <span>📋</span>
+                  <span>Copiar Parlay</span>
+                </button>
+                <a href="https://www.playdoit.mx/es/" target="_blank" class="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black shadow-md transition flex items-center justify-center gap-1.5">
+                  <span>👑</span>
+                  <span>Armar en Playdoit</span>
+                </a>
               </div>
-              <span class="px-2.5 py-1 rounded text-xs font-black font-mono bg-cardBg text-amber-400 border border-slate-700">
-                ${parlay.leg2.odds_ame}
-              </span>
-            </div>
-          </div>
+            `}
 
-          <!-- Cálculo Financiero Kelly -->
-          <div class="grid grid-cols-2 gap-2 bg-darkBg border border-amber-500/30 rounded-xl p-2.5 mb-3">
-            <div>
-              <div class="text-[9px] text-slate-400 font-medium uppercase tracking-wider">🎯 Stake Kelly (${parlay.stakeUnits}U):</div>
-              <div class="text-xs font-bold text-amber-400 font-mono">
-                $${stakePesos} MXN
-              </div>
-            </div>
-            <div>
-              <div class="text-[9px] text-slate-400 font-medium uppercase tracking-wider">💰 Ganancia Neta Estimada:</div>
-              <div class="text-xs font-bold text-emerald-400 font-mono">
-                +$${profitPesos} MXN <span class="text-[9px] text-slate-400 font-normal font-mono">(Cobras $${totalPayout})</span>
-              </div>
-            </div>
           </div>
-
-          <!-- Botones de Acción -->
-          <div class="flex items-center justify-between gap-2">
-            <button onclick="copyGoldenParlay()" class="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-darkBg hover:bg-slate-800 text-white border border-slate-700 transition flex items-center justify-center gap-1.5">
-              <span>📋</span>
-              <span>Copiar Parlay</span>
-            </button>
-            <a href="https://www.playdoit.mx/es/" target="_blank" class="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black shadow-md transition flex items-center justify-center gap-1.5">
-              <span>👑</span>
-              <span>Armar en Playdoit</span>
-            </a>
-          </div>
-
-        </div>
-      `;
+        `;
       } catch (e) {
         console.error("Error in renderGoldenParlay:", e);
       }
@@ -1061,9 +1214,19 @@
     }
 
     function copyGoldenParlay() {
-      const parlay = getGoldenParlay();
-      if (!parlay) return;
-      const text = `👑 PARLAY DE ORO REY TACO (${parlay.combinedAme}):\n1. ${parlay.leg1.match}: ${parlay.leg1.pick} @ ${parlay.leg1.odds_ame}\n2. ${parlay.leg2.match}: ${parlay.leg2.pick} @ ${parlay.leg2.odds_ame}\nCuota Combinada: ${parlay.combinedAme} (${parlay.combinedDec})`;
+      const parlays = getAllGoldenParlays();
+      let parlay = parlays.find(p => p.id === activeParlayTab);
+      if (!parlay) parlay = parlays[0];
+      if (!parlay || !parlay.legs || parlay.legs.length === 0) return;
+
+      const b = (typeof userBankroll === 'number' && !isNaN(userBankroll) && userBankroll > 0) ? userBankroll : 5000;
+      const unitSize = b * 0.01;
+      const stakePesos = Math.round(parlay.stakeUnits * unitSize);
+      const profitPesos = Math.round(stakePesos * (parlay.combinedDec - 1));
+
+      let legsText = parlay.legs.map((l, i) => `${i + 1}. ${l.sport_icon} ${l.match}\n   👉 ${l.pick} @ ${l.odds_ame} (${l.league} • ${l.time})`).join('\n');
+
+      const text = `${parlay.icon} ${parlay.title.toUpperCase()} REY TACO (${parlay.combinedAme}):\n\n${legsText}\n\n📊 Cuota Combinada: ${parlay.combinedAme} (${parlay.combinedDec})\n🎯 Stake Sugerido: ${parlay.stakeUnits}U ($${stakePesos} MXN)\n💰 Ganancia Estimada: +$${profitPesos} MXN`;
       copyToClipboard(text);
     }
 
@@ -1215,6 +1378,13 @@
                   +$${profitPesos} MXN <span class="text-[9px] text-slate-400 font-normal">(Cobras $${totalPayout})</span>
                 </div>
               </div>
+            </div>
+
+            <!-- Botón Agregar / Quitar de Mi Parlay -->
+            <div class="mb-2">
+              <button onclick="toggleCustomParlayPick('${p.id}')" class="w-full py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2 ${customParlayPicks.has(p.id) ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-sm' : 'bg-darkBg hover:bg-slate-800 text-amber-300 border border-amber-500/40'}">
+                <span>${customParlayPicks.has(p.id) ? '✅ En Tu Parlay (Toca para quitar)' : '➕ Agregar a Mi Parlay'}</span>
+              </button>
             </div>
 
             <!-- CONTENIDO DESPLEGABLE (Ruta Playdoit, Groq y Botones) -->

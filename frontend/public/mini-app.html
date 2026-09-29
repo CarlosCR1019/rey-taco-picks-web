@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Rey Taco — Mini App de Picks Privados</title>
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: '#f59e0b',
+            darkBg: '#0b1120',
+            cardBg: '#151e32',
+            borderSubtle: '#1e293b'
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #0b1120;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+  </style>
+</head>
+<body class="p-3 sm:p-5 max-w-2xl mx-auto min-h-screen pb-20 select-none">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+    <div class="flex items-center gap-2.5">
+      <div class="text-3xl">🌮👑</div>
+      <div>
+        <h1 class="text-base font-extrabold tracking-tight text-white flex items-center gap-1.5">
+          Rey Taco Picks
+          <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-mono font-bold border border-amber-500/30">ADMIN</span>
+        </h1>
+        <p class="text-[11px] text-slate-400">Picks Verificados • Rutas Playdoit</p>
+      </div>
+    </div>
+    <div class="text-right">
+      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        Daemon 24/7
+      </span>
+      <p class="text-[10px] text-slate-400 mt-0.5" id="clock-display">CDMX</p>
+    </div>
+  </header>
+
+  <!-- Banner de Valor y Control Antispam -->
+  <div class="bg-gradient-to-r from-amber-500/10 via-cardBg to-slate-900 border border-amber-500/30 rounded-xl p-3 mb-4 shadow-sm">
+    <div class="flex items-start gap-2.5">
+      <div class="text-xl">🗺️</div>
+      <div class="flex-1">
+        <h3 class="text-xs font-bold text-amber-300">Rutas Exactas Playdoit & Sin Spam</h3>
+        <p class="text-[11px] text-slate-300 mt-0.5 leading-snug">
+          Cada pick incluye la <b>ruta paso a paso</b> para encontrarlo en Playdoit sin tener que adivinar qué liga o mercado es.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filtros Rápidos por Deporte -->
+  <div class="flex items-center gap-1.5 overflow-x-auto pb-2 mb-3.5 custom-scrollbar" id="sport-filters">
+    <button onclick="setSportFilter('all')" class="sport-btn active shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow-sm transition">
+      ⭐ Todos (<span id="count-all">4</span>)
+    </button>
+    <button onclick="setSportFilter('futbol')" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      ⚽ Fútbol (<span id="count-fut">2</span>)
+    </button>
+    <button onclick="setSportFilter('nfl')" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      🏈 NFL (<span id="count-nfl">1</span>)
+    </button>
+    <button onclick="setSportFilter('nba')" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      🏀 Baloncesto (<span id="count-nba">1</span>)
+    </button>
+    <button onclick="setSportFilter('mlb')" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      ⚾ Béisbol (<span id="count-mlb">0</span>)
+    </button>
+  </div>
+
+  <!-- Contenedor de Picks -->
+  <div class="space-y-3.5" id="picks-container">
+    <!-- Render dinámico -->
+  </div>
+
+  <script>
+    // Inicializar Telegram WebApp si está en Telegram
+    if (window.Telegram && window.Telegram.WebApp) {
+      window.Telegram.WebApp.ready();
+      window.Telegram.WebApp.expand();
+      if (window.Telegram.WebApp.setHeaderColor) {
+        window.Telegram.WebApp.setHeaderColor('#0b1120');
+      }
+    }
+
+    const PICKS_DATA = [
+      {
+        id: "RT-20260928-FUT-9191",
+        sport: "futbol",
+        sport_icon: "⚽",
+        sport_name: "Fútbol",
+        league: "Amistosos Internacionales",
+        match: "Filipinas vs. Pakistán",
+        time: "07:00 CDMX",
+        market: "Hándicap Asiático",
+        pick: "Filipinas -1.5",
+        meaning: "Filipinas debe ganar el partido por diferencia de 2 o más goles (ej. 2-0, 3-1, 3-0).",
+        playdoit_path: [
+          "Abre Playdoit > Fútbol",
+          "Categoría: 'Mundo' / 'Internacional'",
+          "Liga: 'Partidos Amistosos Internacionales'",
+          "Partido: 'Filipinas vs. Pakistán'",
+          "Pestaña: 'Hándicap'",
+          "Selección: 'Filipinas (-1.5)'"
+        ],
+        odds_dec: 1.85,
+        odds_ame: "-118",
+        min_odds: "-130",
+        stake: "1.2 U",
+        status: "pending",
+        reasoning: "Pakistán llega con bajas severas en su línea defensiva y más de 8 partidos sin ganar. Filipinas convocó a su base de la liga asiática con ventaja de ritmo y volumen ofensivo claro."
+      },
+      {
+        id: "RT-20260928-FUT-6335",
+        sport: "futbol",
+        sport_icon: "⚽",
+        sport_name: "Fútbol",
+        league: "Superliga India",
+        match: "ATK Mohun Bagan vs. Northeast United FC",
+        time: "08:00 CDMX",
+        market: "Resultado Final (Moneyline 1X2)",
+        pick: "Gana ATK Mohun Bagan (1)",
+        meaning: "ATK Mohun Bagan debe ganar el partido en los 90 minutos reglamentarios.",
+        playdoit_path: [
+          "Abre Playdoit > Fútbol > India",
+          "Liga: 'India Super League'",
+          "Partido: 'ATK Mohun Bagan vs. Northeast United'",
+          "Pestaña Principal: 'Resultado Final (1X2)'",
+          "Selección: Casilla '1' (Local)"
+        ],
+        odds_dec: 1.62,
+        odds_ame: "-161",
+        min_odds: "-180",
+        stake: "1.2 U",
+        status: "pending",
+        reasoning: "Mohun Bagan es el equipo con mayor inversión y profundidad de la liga. En casa promedian 2.4 goles por juego contra un rival que concede 1.8 de visitante."
+      },
+      {
+        id: "RT-20260928-NFL-1508",
+        sport: "nfl",
+        sport_icon: "🏈",
+        sport_name: "Fútbol Americano",
+        league: "NFL (Monday Night Football)",
+        match: "PHI Eagles @ CHI Bears",
+        time: "18:15 CDMX",
+        market: "Hándicap (incl. prórroga)",
+        pick: "CHI Bears +14.5 (Línea de Protección)",
+        meaning: "Chicago puede perder hasta por 14 puntos (o empatar/ganar) y el boleto se cobra.",
+        playdoit_path: [
+          "Abre Playdoit > Fútbol Americano > Estados Unidos",
+          "Liga: 'NFL'",
+          "Partido: 'PHI Eagles @ CHI Bears'",
+          "Pestaña: 'Hándicap alternativo' / 'Línea de Juego'",
+          "Selección: 'CHI Bears (+14.5)'"
+        ],
+        odds_dec: 1.45,
+        odds_ame: "-222",
+        min_odds: "-250",
+        stake: "1.5 U",
+        status: "pending",
+        reasoning: "Ajuste táctico tras el resultado real (Bears 27 - 7 Eagles). El mercado ofreció valor de protección en líneas amplias con juego terrestre conservador."
+      },
+      {
+        id: "RT-20260928-NBA-9589",
+        sport: "nba",
+        sport_icon: "🏀",
+        sport_name: "Baloncesto",
+        league: "Brasil U20 Paulista",
+        match: "AD Santo Andre U20 vs. Sao Jose Dos Campos U20",
+        time: "15:00 CDMX",
+        market: "Hándicap de Puntos",
+        pick: "Sao Jose Dos Campos +13.5",
+        meaning: "Sao Jose puede perder hasta por 13 puntos y el pick resulta ganador.",
+        playdoit_path: [
+          "Abre Playdoit > Baloncesto > Brasil",
+          "Liga: 'U20 Campeonato Paulista'",
+          "Partido: 'AD Santo Andre U20 vs. Sao Jose U20'",
+          "Pestaña: 'Hándicap'",
+          "Selección: 'Sao Jose (+13.5)'"
+        ],
+        odds_dec: 1.83,
+        odds_ame: "-120",
+        min_odds: "-135",
+        stake: "1.0 U",
+        status: "pending",
+        reasoning: "Línea inflada por nombres de institución; ambos equipos mantienen ritmo defensivo de posesiones largas y marcadores cerrados (diferencia histórica media < 8 pts)."
+      }
+    ];
+
+    let currentFilter = "all";
+
+    function setSportFilter(filter) {
+      currentFilter = filter;
+      document.querySelectorAll(".sport-btn").forEach(btn => {
+        btn.classList.remove("active", "bg-amber-500", "text-black");
+        btn.classList.add("bg-cardBg", "text-slate-400");
+      });
+      event.target.classList.add("active", "bg-amber-500", "text-black");
+      event.target.classList.remove("bg-cardBg", "text-slate-400");
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
+      }
+      renderPicks();
+    }
+
+    function toggleStatus(id, newStatus) {
+      const item = PICKS_DATA.find(p => p.id === id);
+      if (item) {
+        item.status = newStatus;
+        if (window.Telegram?.WebApp?.HapticFeedback) {
+          window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+        }
+        renderPicks();
+      }
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text);
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+      }
+      alert("✅ Selección copiada: " + text);
+    }
+
+    function renderPicks() {
+      const container = document.getElementById("picks-container");
+      const filtered = PICKS_DATA.filter(p => (currentFilter === "all" || p.sport === currentFilter) && p.status !== "discarded");
+
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="text-center py-10 border border-dashed border-slate-800 rounded-2xl p-6">
+            <div class="text-3xl mb-2">🎉</div>
+            <h4 class="text-sm font-semibold text-white">Todos los picks revisados o descartados</h4>
+            <p class="text-xs text-slate-400 mt-1">El daemon 24/7 en el VPS actualizará la lista en cuanto abran nuevas cuotas.</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = filtered.map(p => `
+        <div class="bg-cardBg border border-slate-800 rounded-xl p-4 shadow-sm transition hover:border-amber-500/40">
+          
+          <!-- Encabezado -->
+          <div class="flex items-center justify-between gap-2 mb-2.5">
+            <div class="flex items-center gap-1.5">
+              <span class="text-base">${p.sport_icon}</span>
+              <span class="text-[11px] font-bold text-amber-400 uppercase tracking-wide truncate max-w-[200px]">${p.league}</span>
+              <span class="text-[10px] text-slate-400">• ⏰ ${p.time}</span>
+            </div>
+            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-darkBg text-slate-400 border border-slate-800">
+              ${p.id}
+            </span>
+          </div>
+
+          <!-- Partido -->
+          <h2 class="text-sm font-extrabold text-white mb-2 leading-tight">${p.match}</h2>
+          
+          <!-- Bloque Pronóstico y Cuota -->
+          <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 mb-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-[10px] uppercase font-bold text-amber-400 tracking-wider">${p.market}</p>
+                <p class="text-base font-black text-white">${p.pick}</p>
+              </div>
+              <div class="text-right">
+                <span class="text-lg font-black text-amber-400">${p.odds_ame}</span>
+                <p class="text-[9px] text-slate-400 font-mono">Mín: ${p.min_odds} | ${p.stake}</p>
+              </div>
+            </div>
+            <div class="mt-2 pt-1.5 border-t border-amber-500/20 text-[11px] text-amber-200/90 flex items-start gap-1.5">
+              <span>💡</span>
+              <span><b>¿Qué significa?:</b> ${p.meaning}</span>
+            </div>
+          </div>
+
+          <!-- Ruta Paso a Paso Playdoit -->
+          <div class="bg-darkBg border border-slate-800/80 rounded-lg p-2.5 mb-3">
+            <h4 class="text-[11px] font-bold text-slate-200 flex items-center gap-1.5 mb-1.5">
+              <span>🗺️</span>
+              <span>Ruta para meterlo en Playdoit:</span>
+            </h4>
+            <ol class="space-y-0.5 text-[11px] text-slate-300">
+              ${p.playdoit_path.map((step, idx) => `
+                <li class="flex items-start gap-1.5">
+                  <span class="text-amber-400 font-mono font-bold text-[10px]">${idx + 1}.</span>
+                  <span>${step}</span>
+                </li>
+              `).join('')}
+            </ol>
+          </div>
+
+          <!-- Justificación Táctica -->
+          <div class="text-[11px] text-slate-400 italic mb-3 border-l-2 border-amber-400/50 pl-2.5 leading-snug">
+            🧠 <b>IA Táctica Groq:</b> ${p.reasoning}
+          </div>
+
+          <!-- Botones de Acción -->
+          <div class="flex items-center justify-between pt-2.5 border-t border-slate-800 gap-1.5">
+            <div class="flex items-center gap-1.5">
+              <button onclick="copyToClipboard('${p.pick} @ ${p.odds_ame}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-white border border-slate-800 transition">
+                📋 Copiar
+              </button>
+              <a href="https://www.playdoit.mx/es/" target="_blank" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-amber-400 border border-amber-500/30 transition">
+                🔗 Playdoit
+              </a>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <button onclick="toggleStatus('${p.id}', 'discarded')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-rose-400 hover:bg-rose-500/10 border border-rose-500/30 transition">
+                ❌ Descartar
+              </button>
+              <button onclick="alert('📸 Toma la captura en Playdoit y envíala al chat de Telegram del bot para validar y sellar en el Ledger SHA-256.')" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow transition">
+                📸 Ya lo Metí
+              </button>
+            </div>
+          </div>
+
+        </div>
+      `).join('');
+    }
+
+    renderPicks();
+
+    // Actualizar reloj CDMX
+    function updateClock() {
+      const now = new Date();
+      const options = { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit' };
+      document.getElementById('clock-display').textContent = now.toLocaleTimeString('es-MX', options) + ' CDMX';
+    }
+    updateClock();
+    setInterval(updateClock, 30000);
+  </script>
+</body>
+</html>

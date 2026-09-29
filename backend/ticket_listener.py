@@ -769,6 +769,21 @@ def procesar_foto(update):
             except Exception as e:
                 print(f"   ⚠️ Error en Supabase (tabla opcional): {e}")
         
+        # 0. Verificar si hay una solicitud de foto para GENERACIÓN DE CONTENIDO DE VICTORIA
+        try:
+            from backend.victory_content_verifier import (
+                get_latest_waiting_victory_request,
+                process_winning_ticket_photo
+            )
+            waiting_victory = get_latest_waiting_victory_request()
+            if waiting_victory:
+                v_tid = waiting_victory.get("ticket_id")
+                print(f"🎉 Procesando foto de victoria de Playdoit para ticket {v_tid}...")
+                process_winning_ticket_photo(v_tid, Path(save_path), chat_id=chat_id)
+                return
+        except Exception as e:
+            print(f"⚠️ Error procesando foto de victoria: {e}")
+
         # 1. Verificar si hay un pick pendiente esperando obligatoriamente la foto de Playdoit
         try:
             from backend.interactive_telegram_dispatcher import (
@@ -867,6 +882,35 @@ def procesar_callback_query(cb):
     elif data == "menu_auditoria":
         responder_auditoria(chat_id)
         telegram_api("answerCallbackQuery", {"callback_query_id": cb_id})
+        return
+
+    # Botón para descartar generación de contenido de victoria si Carlos no apostó en Playdoit
+    if data.startswith("discard_win_photo_"):
+        if ADMIN_CHAT_ID and user_id != str(ADMIN_CHAT_ID):
+            telegram_api("answerCallbackQuery", {
+                "callback_query_id": cb_id,
+                "text": "⛔ No autorizado.",
+                "show_alert": True
+            })
+            return
+
+        tid = data.replace("discard_win_photo_", "")
+        try:
+            from backend.victory_content_verifier import discard_victory_content
+            discard_text = discard_victory_content(tid)
+            telegram_api("answerCallbackQuery", {
+                "callback_query_id": cb_id,
+                "text": "🚫 Contenido descartado. No se publicará nada falso."
+            })
+            if message.get("message_id") and chat_id:
+                telegram_api("editMessageText", {
+                    "chat_id": chat_id,
+                    "message_id": message.get("message_id"),
+                    "text": discard_text,
+                    "parse_mode": "HTML"
+                })
+        except Exception as e:
+            print(f"⚠️ Error procesando descarte de victoria: {e}")
         return
 
     # Botones de control administrativo para Carlos (Despacho interactivo)

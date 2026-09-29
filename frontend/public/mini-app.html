@@ -50,7 +50,7 @@
       </div>
     </div>
     <div class="flex items-center gap-2">
-      <button onclick="fetchLivePicks()" id="btn-refresh" class="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-amber-400 border border-slate-700 transition" title="Actualizar">
+      <button onclick="fetchLivePicks(true)" id="btn-refresh" class="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-amber-400 border border-slate-700 transition" title="Actualizar">
         <span class="text-sm">🔄</span>
       </button>
       <div class="text-right">
@@ -70,10 +70,13 @@
       <div class="flex-1">
         <div class="flex items-center justify-between">
           <h3 class="text-xs font-bold text-amber-300">Rutas Exactas Playdoit & Opciones en Vivo</h3>
-          <span id="sync-status" class="text-[10px] text-emerald-400 font-mono">Sincronizado</span>
+          <span id="sync-status" class="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            Auto-sync activo (8s)
+          </span>
         </div>
         <p class="text-[11px] text-slate-300 mt-0.5 leading-snug">
-          Cada pick incluye el <b>significado simple</b> y la <b>ruta paso a paso</b> para encontrarlo en Playdoit sin perder tiempo.
+          Cada pick incluye el <b>significado simple</b> y la <b>ruta paso a paso</b> para encontrarlo en Playdoit sin perder tiempo. La app se actualiza sola automáticamente en segundo plano.
         </p>
       </div>
     </div>
@@ -90,11 +93,11 @@
     <button onclick="setSportFilter('nba')" data-sport="nba" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
       🏀 Baloncesto (<span id="count-nba">0</span>)
     </button>
-    <button onclick="setSportFilter('nfl')" data-sport="nfl" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
-      🏈 NFL (<span id="count-nfl">0</span>)
-    </button>
     <button onclick="setSportFilter('mlb')" data-sport="mlb" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
       ⚾ Béisbol (<span id="count-mlb">0</span>)
+    </button>
+    <button onclick="setSportFilter('nfl')" data-sport="nfl" class="sport-btn shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-cardBg text-slate-400 hover:text-white border border-slate-800 transition">
+      🏈 NFL (<span id="count-nfl">0</span>)
     </button>
   </div>
 
@@ -127,15 +130,15 @@
       let sport_name = "Fútbol";
 
       const leagueStr = String(raw.league || "");
-      if (tid.includes("-NFL-") || leagueStr.includes("🏈") || leagueStr.toLowerCase().includes("nfl")) {
+      if (tid.includes("-NFL-") || leagueStr.includes("🏈") || leagueStr.toLowerCase().includes("nfl") || leagueStr.toLowerCase().includes("americano")) {
         sport = "nfl";
         sport_icon = "🏈";
         sport_name = "Fútbol Americano";
-      } else if (tid.includes("-NBA-") || leagueStr.includes("🏀") || leagueStr.toLowerCase().includes("baloncesto") || leagueStr.toLowerCase().includes("basket")) {
+      } else if (tid.includes("-NBA-") || leagueStr.includes("🏀") || leagueStr.toLowerCase().includes("baloncesto") || leagueStr.toLowerCase().includes("basket") || leagueStr.toLowerCase().includes("euro")) {
         sport = "nba";
         sport_icon = "🏀";
         sport_name = "Baloncesto";
-      } else if (tid.includes("-MLB-") || leagueStr.includes("⚾") || leagueStr.toLowerCase().includes("béisbol") || leagueStr.toLowerCase().includes("mlb")) {
+      } else if (tid.includes("-MLB-") || leagueStr.includes("⚾") || leagueStr.toLowerCase().includes("béisbol") || leagueStr.toLowerCase().includes("mlb") || leagueStr.toLowerCase().includes("kbo") || leagueStr.toLowerCase().includes("npb")) {
         sport = "mlb";
         sport_icon = "⚾";
         sport_name = "Béisbol";
@@ -167,7 +170,7 @@
       } else {
         pathSteps = [
           `Abre Playdoit > ${sport_name}`,
-          `Busca: ${cleanLeague}`,
+          `Busca la liga: ${cleanLeague}`,
           `Partido: ${match}`,
           `Selección: ${raw.pick}`
         ];
@@ -194,15 +197,19 @@
       };
     }
 
-    async function fetchLivePicks() {
+    let isFetching = false;
+
+    async function fetchLivePicks(isManual = false) {
+      if (isFetching) return;
+      isFetching = true;
+
       const statusEl = document.getElementById("sync-status");
       const refreshBtn = document.getElementById("btn-refresh");
-      if (statusEl) statusEl.textContent = "Actualizando...";
-      if (refreshBtn) refreshBtn.classList.add("animate-spin");
+      if (isManual && refreshBtn) refreshBtn.classList.add("animate-spin");
 
       const sources = [
-        `https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json?t=${Date.now()}`,
-        `/active_private_picks.json?t=${Date.now()}`
+        `/active_private_picks.json?t=${Date.now()}`,
+        `https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json?t=${Date.now()}`
       ];
 
       let rawList = null;
@@ -218,41 +225,54 @@
             }
           }
         } catch (e) {
-          console.warn("Fallo cargando de", url, e);
+          // Continuar con siguiente fallback
         }
       }
 
       if (rawList && rawList.length > 0) {
-        PICKS_DATA = rawList.map(normalizePick);
+        const nextPicks = rawList.map(normalizePick);
+        const prevKeys = PICKS_DATA.map(p => p.id + p.status).join(',');
+        const nextKeys = nextPicks.map(p => p.id + p.status).join(',');
+
+        if (prevKeys !== nextKeys) {
+          PICKS_DATA = nextPicks;
+          updateFilterCounts();
+          renderPicks();
+        }
         localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
-        if (statusEl) statusEl.textContent = "En vivo • " + PICKS_DATA.length + " picks";
-      } else {
+        if (statusEl) {
+          statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Auto-sync activo • ${PICKS_DATA.length} picks`;
+        }
+      } else if (PICKS_DATA.length === 0) {
         const cached = localStorage.getItem("reytaco_active_picks");
         if (cached) {
           try {
             PICKS_DATA = JSON.parse(cached).map(normalizePick);
-            if (statusEl) statusEl.textContent = "Caché local • " + PICKS_DATA.length + " picks";
+            updateFilterCounts();
+            renderPicks();
+            if (statusEl) {
+              statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400 mr-1"></span> Caché • ${PICKS_DATA.length} picks`;
+            }
           } catch (e) {}
         }
       }
 
       if (refreshBtn) refreshBtn.classList.remove("animate-spin");
-      updateFilterCounts();
-      renderPicks();
+      isFetching = false;
     }
 
     function updateFilterCounts() {
       const active = PICKS_DATA.filter(p => !discardedPicks.has(p.id));
       const fut = active.filter(p => p.sport === "futbol");
       const nba = active.filter(p => p.sport === "nba");
-      const nfl = active.filter(p => p.sport === "nfl");
       const mlb = active.filter(p => p.sport === "mlb");
+      const nfl = active.filter(p => p.sport === "nfl");
 
       document.getElementById("count-all").textContent = active.length;
       document.getElementById("count-fut").textContent = fut.length;
       document.getElementById("count-nba").textContent = nba.length;
-      document.getElementById("count-nfl").textContent = nfl.length;
       document.getElementById("count-mlb").textContent = mlb.length;
+      document.getElementById("count-nfl").textContent = nfl.length;
     }
 
     function setSportFilter(filter) {
@@ -302,8 +322,8 @@
             <div class="text-3xl mb-2">🎉</div>
             <h4 class="text-sm font-semibold text-white">No hay picks pendientes en este deporte</h4>
             <p class="text-xs text-slate-400 mt-1">El daemon 24/7 en el VPS actualizará la lista en cuanto se detecte nueva ventaja matemática.</p>
-            <button onclick="fetchLivePicks()" class="mt-4 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow">
-              🔄 Comprobar de nuevo
+            <button onclick="fetchLivePicks(true)" class="mt-4 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow">
+              🔄 Comprobar ahora
             </button>
           </div>
         `;
@@ -402,6 +422,28 @@
 
     // Cargar picks al iniciar
     fetchLivePicks();
+
+    // AUTO-ACTUALIZACIÓN CONTINUA EN SEGUNDO PLANO (cada 8 segundos)
+    setInterval(() => {
+      fetchLivePicks(false);
+    }, 8000);
+
+    // AUTO-ACTUALIZACIÓN INMEDIATA al regresar a la app o cambiar foco
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        fetchLivePicks(true);
+      }
+    });
+
+    window.addEventListener("focus", () => {
+      fetchLivePicks(true);
+    });
+
+    if (window.Telegram && window.Telegram.WebApp) {
+      window.Telegram.WebApp.onEvent("viewportChanged", () => {
+        fetchLivePicks(false);
+      });
+    }
   </script>
 </body>
 </html>

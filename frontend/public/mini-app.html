@@ -24,11 +24,17 @@
     }
   </script>
   <style>
-    body {
+    html, body {
       background-color: #0b1120;
       color: #f8fafc;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       -webkit-tap-highlight-color: transparent;
+      overflow-x: hidden;
+      overflow-y: auto !important;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+      height: auto;
+      min-height: 100%;
     }
     .custom-scrollbar::-webkit-scrollbar {
       display: none;
@@ -38,11 +44,11 @@
       50% { opacity: 0.85; }
     }
     .animate-gold-glow {
-      box-shadow: 0 0 20px -3px rgba(245, 158, 11, 0.25);
+      box-shadow: 0 0 20px -3px rgba(245, 158, 11, 0.4);
     }
   </style>
 </head>
-<body class="p-3 sm:p-5 max-w-2xl mx-auto min-h-screen pb-24 select-none">
+<body class="p-3 sm:p-5 max-w-2xl mx-auto min-h-screen pb-28">
 
   <!-- Header -->
   <header class="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
@@ -153,6 +159,27 @@
     </button>
   </div>
 
+  <!-- MENÚ DESPLEGABLE RÁPIDO DE JOYAS TOP -->
+  <div class="bg-cardBg/90 border border-amber-500/40 rounded-xl p-2.5 mb-3 shadow-md" id="dropdown-container">
+    <div class="flex items-center justify-between mb-1.5">
+      <label for="pick-dropdown-selector" class="text-[11px] font-bold text-amber-400 flex items-center gap-1.5">
+        <span>📋</span>
+        <span>Desplegable de Opciones:</span>
+      </label>
+      <button onclick="toggleAllPicks()" id="btn-toggle-all" class="text-[10px] font-bold text-slate-300 hover:text-white px-2 py-0.5 rounded bg-darkBg border border-slate-700 transition">
+        🔽 Desplegar Todos
+      </button>
+    </div>
+    <div class="relative">
+      <select id="pick-dropdown-selector" onchange="handleDropdownSelect(this.value)" class="w-full appearance-none bg-darkBg border border-slate-700 rounded-lg px-3 py-2 text-xs font-semibold text-white focus:outline-none focus:border-amber-500 pr-8 cursor-pointer">
+        <option value="">👇 Toca aquí para desplegar la lista de opciones...</option>
+      </select>
+      <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2.5 text-amber-400 text-xs font-bold">
+        ▼
+      </div>
+    </div>
+  </div>
+
   <!-- Contenedor de Picks -->
   <div class="space-y-3.5" id="picks-container">
     <div class="text-center py-12">
@@ -254,6 +281,9 @@
     if (window.Telegram && window.Telegram.WebApp) {
       window.Telegram.WebApp.ready();
       window.Telegram.WebApp.expand();
+      if (window.Telegram.WebApp.disableVerticalSwipes) {
+        window.Telegram.WebApp.disableVerticalSwipes();
+      }
       if (window.Telegram.WebApp.setHeaderColor) {
         window.Telegram.WebApp.setHeaderColor('#0b1120');
       }
@@ -267,6 +297,72 @@
     let userMode = (new URLSearchParams(window.location.search).get("mode") === "free_preview") ? "free_preview" : (localStorage.getItem("reytaco_user_mode") || "vip");
     if (userMode !== "free_preview") userMode = "vip";
     let discardedPicks = new Set(JSON.parse(localStorage.getItem("reytaco_discarded_ids") || "[]"));
+
+    // Estado de acordeón y desplegables
+    let isParlayCollapsed = false;
+    let expandedPicks = new Set();
+    let allExpanded = false;
+
+    function toggleGoldenParlay() {
+      isParlayCollapsed = !isParlayCollapsed;
+      renderGoldenParlay();
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
+      }
+    }
+
+    function togglePickDetails(id) {
+      if (expandedPicks.has(id)) {
+        expandedPicks.delete(id);
+      } else {
+        expandedPicks.add(id);
+      }
+      renderPicks();
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('light');
+      }
+    }
+
+    function toggleAllPicks() {
+      allExpanded = !allExpanded;
+      if (!allExpanded) {
+        expandedPicks.clear();
+      } else {
+        PICKS_DATA.forEach(p => expandedPicks.add(p.id));
+      }
+      const btn = document.getElementById("btn-toggle-all");
+      if (btn) btn.textContent = allExpanded ? "🔼 Contraer Todos" : "🔽 Desplegar Todos";
+      const btnH = document.getElementById("btn-toggle-all-header");
+      if (btnH) btnH.textContent = allExpanded ? "🔼 Contraer" : "🔽 Desplegar Todo";
+      renderPicks();
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
+      }
+    }
+
+    function handleDropdownSelect(id) {
+      if (!id) return;
+      expandedPicks.add(id);
+      const targetPick = PICKS_DATA.find(p => p.id === id);
+      if (targetPick && currentFilter !== "all" && targetPick.sport !== currentFilter) {
+        setSportFilter("all");
+      } else {
+        renderPicks();
+      }
+      setTimeout(() => {
+        const el = document.getElementById("pick-card-" + id);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add("ring-2", "ring-amber-400", "animate-gold-glow");
+          setTimeout(() => {
+            el.classList.remove("ring-2", "ring-amber-400", "animate-gold-glow");
+          }, 3000);
+        }
+      }, 150);
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+      }
+    }
 
     function scorePick(p) {
       let score = 50;
@@ -574,6 +670,30 @@
         return;
       }
 
+      if (isParlayCollapsed) {
+        container.innerHTML = `
+          <div class="relative overflow-hidden bg-gradient-to-r from-amber-950/60 via-cardBg to-slate-900 border border-amber-500/50 rounded-xl p-3 shadow-md mb-3 flex items-center justify-between transition hover:border-amber-400">
+            <div class="flex items-center gap-2.5">
+              <div class="w-8 h-8 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-sm shadow">
+                👑
+              </div>
+              <div>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-xs font-black text-amber-400 uppercase tracking-wide">PARLAY DE ORO</span>
+                  <span class="text-xs font-mono font-black text-amber-300">CUOTA ${parlay.combinedAme}</span>
+                </div>
+                <p class="text-[10px] text-slate-300 truncate max-w-[210px]">${parlay.leg1.match} & ${parlay.leg2.match}</p>
+              </div>
+            </div>
+            <button onclick="toggleGoldenParlay()" class="px-2.5 py-1.5 rounded-lg text-[10px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow flex items-center gap-1 transition">
+              <span>🔽</span>
+              <span>Desplegar</span>
+            </button>
+          </div>
+        `;
+        return;
+      }
+
       container.innerHTML = `
         <div class="relative overflow-hidden bg-gradient-to-br from-amber-950/40 via-cardBg to-slate-900 border-2 border-amber-500/60 rounded-2xl p-4 shadow-xl mb-3.5 animate-gold-glow">
           
@@ -587,9 +707,15 @@
                 CUOTA ${parlay.combinedAme} (${parlay.combinedDec})
               </span>
             </div>
-            <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-              ⚡ Early Bird (+EV)
-            </span>
+            <div class="flex items-center gap-1.5">
+              <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                ⚡ Early Bird
+              </span>
+              <button onclick="toggleGoldenParlay()" class="px-2 py-0.5 rounded text-[10px] font-bold bg-darkBg/90 hover:bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-0.5 transition">
+                <span>🔼</span>
+                <span>Minimizar</span>
+              </button>
+            </div>
           </div>
 
           <p class="text-[11px] text-slate-300 mb-3 leading-snug">
@@ -960,21 +1086,34 @@
 
       const unitSize = userBankroll * 0.01;
 
+      // Actualizar el menú desplegable nativo
+      const selectEl = document.getElementById("pick-dropdown-selector");
+      if (selectEl) {
+        let opts = `<option value="">👇 Toca aquí para desplegar la lista (${filtered.length} opciones disponibles)...</option>`;
+        filtered.forEach((p, idx) => {
+          opts += `<option value="${p.id}">${idx + 1}. ${p.sport_icon} ${p.match} — ${p.pick} (${p.odds_ame})</option>`;
+        });
+        selectEl.innerHTML = opts;
+      }
+      const dropCountLabel = document.getElementById("dropdown-count-label");
+      if (dropCountLabel) dropCountLabel.textContent = `${filtered.length} Opciones`;
+
       const sectionHeader = viewMode === "jewels" ? `
-        <div class="flex items-center justify-between pb-2 mb-1 border-b border-amber-500/30">
+        <div class="flex items-center justify-between pb-2 mb-2 border-b border-amber-500/30">
           <div class="flex items-center gap-2">
             <span class="text-base">💎</span>
             <div>
               <h4 class="text-xs font-black text-amber-400 uppercase tracking-wide">Joyas Top Individuales (${filtered.length} Disponibles)</h4>
-              <p class="text-[10px] text-slate-400">Picks cuantitativos individuales de mayor probabilidad y valor (+EV)</p>
+              <p class="text-[10px] text-slate-400">Picks de alto valor esperado (+EV) con análisis detallado</p>
             </div>
           </div>
-          <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-            ${filtered.length} Picks
-          </span>
+          <button onclick="toggleAllPicks()" id="btn-toggle-all-header" class="text-[10px] font-bold text-slate-300 hover:text-white px-2.5 py-1 rounded-lg bg-darkBg border border-slate-700 transition flex items-center gap-1">
+            <span>${allExpanded ? '🔼' : '🔽'}</span>
+            <span>${allExpanded ? 'Contraer' : 'Desplegar Todo'}</span>
+          </button>
         </div>
       ` : `
-        <div class="flex items-center justify-between pb-2 mb-1 border-b border-slate-800">
+        <div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
           <div class="flex items-center gap-2">
             <span class="text-base">⏰</span>
             <div>
@@ -982,6 +1121,10 @@
               <p class="text-[10px] text-slate-400">Cartelera completa ordenada cronológicamente</p>
             </div>
           </div>
+          <button onclick="toggleAllPicks()" id="btn-toggle-all-header" class="text-[10px] font-bold text-slate-300 hover:text-white px-2.5 py-1 rounded-lg bg-darkBg border border-slate-700 transition flex items-center gap-1">
+            <span>${allExpanded ? '🔼' : '🔽'}</span>
+            <span>${allExpanded ? 'Contraer' : 'Desplegar Todo'}</span>
+          </button>
         </div>
       `;
 
@@ -1017,9 +1160,10 @@
         const profitPesos = Math.round(stakePesos * (p.odds_dec - 1));
         const totalPayout = stakePesos + profitPesos;
         const isEarlyBird = p.minutes_until_start >= 90;
+        const isExpanded = expandedPicks.has(p.id) || allExpanded;
 
         return `
-          <div class="bg-cardBg border border-slate-800 rounded-xl p-4 shadow-sm transition hover:border-amber-500/40 relative">
+          <div id="pick-card-${p.id}" class="bg-cardBg border border-slate-800 rounded-xl p-3.5 shadow-sm transition hover:border-amber-500/40 relative">
             
             <!-- Encabezado con Deporte, Liga y Horario Dinámico -->
             <div class="flex items-center justify-between gap-2 mb-2">
@@ -1071,7 +1215,7 @@
             </div>
 
             <!-- Fila de Staking Kelly & Ganancia Neta en Pesos -->
-            <div class="grid grid-cols-2 gap-2 bg-darkBg/90 border border-slate-800 rounded-lg p-2.5 mb-2.5">
+            <div class="grid grid-cols-2 gap-2 bg-darkBg/90 border border-slate-800 rounded-lg p-2.5 mb-2">
               <div>
                 <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">🎯 Stake Kelly (${stakeUnits}U):</div>
                 <div class="text-xs font-bold text-amber-400 font-mono">
@@ -1086,46 +1230,63 @@
               </div>
             </div>
 
-            <!-- Ruta Paso a Paso Playdoit -->
-            <div class="bg-darkBg border border-slate-800/80 rounded-lg p-2.5 mb-2.5">
-              <h4 class="text-[11px] font-bold text-slate-200 flex items-center gap-1.5 mb-1.5">
-                <span>🗺️</span>
-                <span>Ruta para meterlo en Playdoit:</span>
-              </h4>
-              <ol class="space-y-0.5 text-[11px] text-slate-300">
-                ${p.playdoit_path.map((step, idx) => `
-                  <li class="flex items-start gap-1.5">
-                    <span class="text-amber-400 font-mono font-bold text-[10px] shrink-0">${idx + 1}.</span>
-                    <span>${step}</span>
-                  </li>
-                `).join('')}
-              </ol>
-            </div>
+            <!-- CONTENIDO DESPLEGABLE (Ruta Playdoit, Groq y Botones) -->
+            ${isExpanded ? `
+              <div class="space-y-2.5 pt-2 border-t border-slate-800/80 animate-fadeIn">
+                <!-- Ruta Paso a Paso Playdoit -->
+                <div class="bg-darkBg border border-slate-800/80 rounded-lg p-2.5">
+                  <h4 class="text-[11px] font-bold text-slate-200 flex items-center gap-1.5 mb-1.5">
+                    <span>🗺️</span>
+                    <span>Ruta para meterlo en Playdoit:</span>
+                  </h4>
+                  <ol class="space-y-0.5 text-[11px] text-slate-300">
+                    ${p.playdoit_path.map((step, sIdx) => `
+                      <li class="flex items-start gap-1.5">
+                        <span class="text-amber-400 font-mono font-bold text-[10px] shrink-0">${sIdx + 1}.</span>
+                        <span>${step}</span>
+                      </li>
+                    `).join('')}
+                  </ol>
+                </div>
 
-            <!-- Justificación Táctica Groq -->
-            <div class="text-[11px] text-slate-400 italic mb-3 border-l-2 border-amber-400/50 pl-2.5 leading-snug">
-              🧠 <b>IA Táctica Groq:</b> ${p.reasoning}
-            </div>
+                <!-- Justificación Táctica Groq -->
+                <div class="text-[11px] text-slate-400 italic border-l-2 border-amber-400/50 pl-2.5 leading-snug">
+                  🧠 <b>IA Táctica Groq:</b> ${p.reasoning}
+                </div>
 
-            <!-- Botones de Acción -->
-            <div class="flex items-center justify-between pt-2.5 border-t border-slate-800 gap-1.5">
-              <div class="flex items-center gap-1.5">
-                <button onclick="copyPick('${p.id}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-white border border-slate-800 transition">
-                  📋 Copiar
+                <!-- Botones de Acción -->
+                <div class="flex items-center justify-between pt-2 border-t border-slate-800 gap-1.5">
+                  <div class="flex items-center gap-1.5">
+                    <button onclick="copyPick('${p.id}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-white border border-slate-800 transition">
+                      📋 Copiar
+                    </button>
+                    <a href="https://www.playdoit.mx/es/" target="_blank" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-amber-400 border border-amber-500/30 transition">
+                      🔗 Playdoit
+                    </a>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <button onclick="discardPick('${p.id}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-rose-400 hover:bg-rose-500/10 border border-rose-500/30 transition">
+                      ❌ Descartar
+                    </button>
+                    <button onclick="alert('📸 Toma la captura de tu boleto en Playdoit y envíala directamente a este chat de Telegram para verificarla automáticamente.')" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow transition">
+                      📸 Ya lo Metí
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Botón para Plegar / Ocultar -->
+                <button onclick="togglePickDetails('${p.id}')" class="w-full mt-2 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-slate-400 border border-slate-700 flex items-center justify-center gap-1 transition">
+                  <span>🔼</span>
+                  <span>Ocultar Detalles</span>
                 </button>
-                <a href="https://www.playdoit.mx/es/" target="_blank" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-darkBg hover:bg-slate-800 text-amber-400 border border-amber-500/30 transition">
-                  🔗 Playdoit
-                </a>
               </div>
-              <div class="flex items-center gap-1.5">
-                <button onclick="discardPick('${p.id}')" class="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-rose-400 hover:bg-rose-500/10 border border-rose-500/30 transition">
-                  ❌ Descartar
-                </button>
-                <button onclick="alert('📸 Toma la captura de tu boleto en Playdoit y envíala directamente a este chat de Telegram para verificarla automáticamente.')" class="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-black shadow transition">
-                  📸 Ya lo Metí
-                </button>
-              </div>
-            </div>
+            ` : `
+              <!-- Botón para Desplegar Detalles -->
+              <button onclick="togglePickDetails('${p.id}')" class="w-full mt-1 py-1.5 px-3 rounded-lg text-[11px] font-bold bg-gradient-to-r from-amber-500/10 via-amber-500/20 to-amber-500/10 hover:from-amber-500/30 hover:to-amber-500/30 text-amber-300 border border-amber-500/30 flex items-center justify-center gap-1.5 transition shadow-sm">
+                <span>🔽</span>
+                <span>Desplegar Ruta Playdoit & Análisis</span>
+              </button>
+            `}
 
           </div>
         `;

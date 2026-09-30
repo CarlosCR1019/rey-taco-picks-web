@@ -118,20 +118,20 @@
     </button>
   </div>
 
-  <!-- Banner Dinámico de Estado -->
-  <div class="bg-gradient-to-r from-amber-500/10 via-cardBg to-slate-900 border border-amber-500/30 rounded-xl p-3 mb-3 shadow-sm">
+  <!-- Banner Dinámico de Estado: Protocolo Francotirador & Madrugada Asiática -->
+  <div class="bg-gradient-to-r from-indigo-950/60 via-cardBg to-slate-900 border border-amber-500/40 rounded-xl p-3 mb-3 shadow-md">
     <div class="flex items-start gap-2.5">
-      <div class="text-xl" id="banner-icon">💎</div>
+      <div class="text-xl" id="banner-icon">🎯</div>
       <div class="flex-1">
         <div class="flex items-center justify-between">
-          <h3 class="text-xs font-bold text-amber-300" id="banner-title">Joyas Top del Día (Filtradas por Hora & Valor)</h3>
+          <h3 class="text-xs font-bold text-amber-300" id="banner-title">Protocolo Francotirador • Madrugada Asiática (NPB & KBO)</h3>
           <span id="sync-status" class="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
             <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            Auto-sync activo (8s)
+            Auto-sync activo
           </span>
         </div>
         <p class="text-[11px] text-slate-300 mt-0.5 leading-snug" id="banner-desc">
-          Partidos que <b>aún no empiezan</b>, con ventaja matemática sobre líneas matutinas (+EV) y ligas de primer nivel.
+          <b>Cartelera Filtrada:</b> Béisbol profesional de élite (NPB Japón y KBO Corea). Máximo 3-5 jugadas Sniper con gestión de banca blindada (máximo 3.0U por día).
         </p>
       </div>
     </div>
@@ -410,27 +410,30 @@
       let score = 50;
       const league = (p.league || "").toLowerCase();
       
-      const tier1 = ['mlb', 'nfl', 'euroliga', 'eurocup', 'copa de naciones africanas', 'liga mx', 'premier', 'la liga', 'serie a', 'champions'];
-      const tier2 = ['kbo', 'npb', 'lna', 'bbl', 'juegos asiáticos'];
-      const obscure = ['sub-20', 'u20', 'sub-21', 'u21', 'sub-23', 'u23', 'development', 'northeast', 'district', 'amistoso'];
+      const tier1 = ['mlb', 'kbo', 'npb', 'j-league', 'j1', 'nfl', 'euroliga', 'eurocup', 'liga mx', 'premier', 'la liga', 'serie a', 'champions'];
+      const tier2 = ['lna', 'bbl', 'copa de naciones africanas'];
+      const obscure = ['sub-20', 'u20', 'sub-21', 'u21', 'sub-23', 'u23', 'development', 'northeast', 'district', 'amistoso', 'danmarksserien', 'kolmonen', 'shillong', 'southern league'];
 
       if (obscure.some(k => league.includes(k))) {
-        score -= 35;
+        score -= 60;
       } else if (tier1.some(k => league.includes(k))) {
         score += 35;
       } else if (tier2.some(k => league.includes(k))) {
         score += 15;
+      } else {
+        score -= 30;
       }
 
       const odds = Number(p.odds_dec) || 1.8;
-      if (odds >= 1.60 && odds <= 2.30) {
-        score += 25; // Rango más rentable
-      } else if ((odds >= 1.50 && odds < 1.60) || (odds > 2.30 && odds <= 2.65)) {
+      if (odds >= 1.60 && odds <= 2.20) {
+        score += 25;
+      } else if ((odds >= 1.50 && odds < 1.60) || (odds > 2.20 && odds <= 2.50)) {
         score += 10;
-      } else if (odds < 1.40 || odds > 3.20) {
-        score -= 25;
+      } else if (odds < 1.40 || odds > 2.70) {
+        score -= 30;
       }
 
+      if (p.is_sniper) score += 15;
       if (p.reasoning && p.reasoning.length > 80) score += 5;
       return Math.max(10, Math.min(99, score));
     }
@@ -755,32 +758,38 @@
       const parlays = [];
 
 
+      // 0. Parlay Despertador de Madrugada (NPB Japón & KBO Corea)
+      const madrugadaPool = valid.filter(p => p.block === 'madrugada' || (p.league && (p.league.includes('NPB') || p.league.includes('KBO'))));
+      if (madrugadaPool.length >= 2) {
+        parlays.push(buildParlayCombo('despertador', 'Parlay Despertador Asiático', 'NPB Japón & KBO Corea (2 Selecciones)', '🌅', [madrugadaPool[0], madrugadaPool[1]], 1.0));
+      }
+
       // 1. Top +EV General (2 legs)
       if (jewels.length >= 2) {
         const sweetSpot = jewels.filter(p => p.odds_dec >= 1.40 && p.odds_dec <= 2.45);
         let leg1 = sweetSpot[0] || jewels[0];
         let leg2 = sweetSpot.find(p => p.id !== leg1.id && p.match !== leg1.match) || jewels.find(p => p.id !== leg1.id && p.match !== leg1.match);
         if (leg1 && leg2) {
-          parlays.push(buildParlayCombo('top', 'Parlay de Oro #1', 'Top +EV del Día (2 Selecciones)', '👑', [leg1, leg2], 1.5));
+          parlays.push(buildParlayCombo('top', 'Parlay de Oro #1', 'Top +EV del Día (2 Selecciones)', '👑', [leg1, leg2], 1.0));
         }
       }
 
       // 2. MLB Béisbol (Grandes Ligas)
       const mlbPool = valid.filter(p => p.sport === 'mlb');
       if (mlbPool.length >= 2) {
-        parlays.push(buildParlayCombo('mlb', 'Parlay de Oro MLB', 'Béisbol de Grandes Ligas', '⚾', mlbPool.slice(0, 3), 1.25));
+        parlays.push(buildParlayCombo('mlb', 'Parlay de Oro Béisbol', 'Béisbol Profesional', '⚾', mlbPool.slice(0, 3), 1.0));
       }
 
       // 3. Baloncesto (Euroliga & Basket)
       const nbaPool = valid.filter(p => p.sport === 'nba');
       if (nbaPool.length >= 2) {
-        parlays.push(buildParlayCombo('basket', 'Parlay de Oro Basket', 'Euroliga & Baloncesto', '🏀', nbaPool.slice(0, 2), 1.2));
+        parlays.push(buildParlayCombo('basket', 'Parlay de Oro Basket', 'Euroliga & Baloncesto', '🏀', nbaPool.slice(0, 2), 1.0));
       }
 
       // 4. Fútbol (Fútbol de Élite)
       const futPool = valid.filter(p => p.sport === 'futbol');
       if (futPool.length >= 2) {
-        parlays.push(buildParlayCombo('futbol', 'Parlay de Oro Fútbol', 'Fútbol de Élite', '⚽', futPool.slice(0, 2), 1.2));
+        parlays.push(buildParlayCombo('futbol', 'Parlay de Oro Fútbol', 'Fútbol de Élite', '⚽', futPool.slice(0, 2), 1.0));
       }
 
       // 5. Mega Parlay Multideporte (Combina las mejores de cada deporte para cuota grande)
@@ -799,7 +808,7 @@
         }
       }
       if (uniqueMega.length >= 3) {
-        parlays.push(buildParlayCombo('mega', 'Mega Parlay Multideporte', 'Todas las Joyas Combinadas', '🚀', uniqueMega.slice(0, 4), 0.75));
+        parlays.push(buildParlayCombo('mega', 'Mega Parlay Multideporte', 'Todas las Joyas Combinadas', '🚀', uniqueMega.slice(0, 4), 0.5));
       }
 
       // 6. Mi Parlay Personalizado (Creado por Carlos al seleccionar picks)
@@ -1412,8 +1421,8 @@
       `;
 
       container.innerHTML = sectionHeader + filtered.map((p, idx) => {
-        // Staking Kelly y cálculos financieros
-        const stakeUnits = p.is_jewel && p.score >= 80 ? 2.5 : (p.is_jewel ? 1.5 : (p.odds_dec > 2.80 ? 0.75 : 1.0));
+        // Staking Defensivo Francotirador (Máximo 1.0U por pick para blindar la banca)
+        const stakeUnits = p.is_sniper ? 1.0 : (p.score >= 80 ? 1.0 : 0.75);
         const stakePesos = Math.round(stakeUnits * unitSize);
         const profitPesos = Math.round(stakePesos * (p.odds_dec - 1));
         const totalPayout = stakePesos + profitPesos;
@@ -1435,11 +1444,20 @@
                     ⚡ Early Bird
                   </span>
                 ` : ''}
-                ${p.is_jewel ? `
+                ${p.block === 'madrugada' || (p.league && (p.league.includes('NPB') || p.league.includes('KBO'))) ? `
+                  <span class="px-2 py-0.5 rounded text-[9px] font-black bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-sm">
+                    🌙 MADRUGADA
+                  </span>
+                ` : ''}
+                ${p.is_sniper ? `
+                  <span class="px-2 py-0.5 rounded text-[9px] font-black bg-gradient-to-r from-emerald-500 to-teal-500 text-black shadow-sm">
+                    🎯 SNIPER
+                  </span>
+                ` : `
                   <span class="px-2 py-0.5 rounded text-[9px] font-black bg-gradient-to-r from-amber-500 to-amber-600 text-black shadow-sm">
                     💎 JOYA #${idx + 1}
                   </span>
-                ` : ''}
+                `}
                 <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-darkBg text-slate-400 border border-slate-800">
                   ${p.id}
                 </span>
@@ -1472,12 +1490,12 @@
               </div>
             </div>
 
-            <!-- Fila de Staking Kelly & Ganancia Neta en Pesos -->
+            <!-- Fila de Staking Francotirador & Ganancia Neta en Pesos -->
             <div class="grid grid-cols-2 gap-2 bg-darkBg/90 border border-slate-800 rounded-lg p-2.5 mb-2">
               <div>
-                <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">🎯 Stake Kelly (${stakeUnits}U):</div>
+                <div class="text-[9px] text-slate-400 uppercase tracking-wider font-semibold">🎯 Stake Sniper (${stakeUnits}U):</div>
                 <div class="text-xs font-bold text-amber-400 font-mono">
-                  $${stakePesos} MXN
+                  $${stakePesos} MXN <span class="text-[9px] text-slate-400 font-normal">(Máx 3U/día)</span>
                 </div>
               </div>
               <div>

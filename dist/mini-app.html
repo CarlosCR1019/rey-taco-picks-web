@@ -1057,9 +1057,13 @@
 
       const refreshBtn = document.getElementById("btn-refresh");
       const statusEl = document.getElementById("sync-status");
-      if (showSpinner && refreshBtn) refreshBtn.classList.add("animate-spin");
+      if (showSpinner) {
+        if (refreshBtn) refreshBtn.classList.add("animate-spin");
+        if (statusEl) statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span> Sincronizando...`;
+        localStorage.removeItem("reytaco_active_picks");
+      }
 
-      const cacheBuster = "?t=" + Date.now();
+      const cacheBuster = "?t=" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
       const sources = [
         "/active_private_picks.json" + cacheBuster,
         "https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json" + cacheBuster
@@ -1073,8 +1077,11 @@
           if (resp.ok) {
             const data = await resp.json();
             if (Array.isArray(data) && data.length > 0) {
-              rawList = data;
-              break;
+              const hasUpcoming = data.some(isGameUpcoming);
+              if (hasUpcoming || !rawList) {
+                rawList = data;
+              }
+              if (hasUpcoming) break;
             }
           }
         } catch (e) {}
@@ -1085,15 +1092,11 @@
         const upcomingPicks = allNormalized.filter(isGameUpcoming);
         const nextPicks = upcomingPicks.length > 0 ? upcomingPicks : allNormalized;
 
-        const prevKeys = PICKS_DATA.map(p => p.id + p.status).join(',');
-        const nextKeys = nextPicks.map(p => p.id + p.status).join(',');
+        PICKS_DATA = nextPicks;
+        try { updateFilterCounts(); } catch (e) { console.error(e); }
+        try { renderGoldenParlay(); } catch (e) { console.error(e); }
+        try { renderPicks(); } catch (e) { console.error(e); }
 
-        if (prevKeys !== nextKeys || PICKS_DATA.length === 0) {
-          PICKS_DATA = nextPicks;
-          try { updateFilterCounts(); } catch (e) { console.error(e); }
-          try { renderGoldenParlay(); } catch (e) { console.error(e); }
-          try { renderPicks(); } catch (e) { console.error(e); }
-        }
         localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
         if (statusEl) {
           if (upcomingPicks.length > 0) {

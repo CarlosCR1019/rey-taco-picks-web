@@ -436,55 +436,141 @@
     }
 
     function isGameUpcoming(p) {
-      if (!p.time) return true;
+      if (!p) return false;
       const now = new Date();
-      const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
-      const [currH, currM] = nowCdmxStr.split(':').map(Number);
-      const currentMinutes = currH * 60 + currM;
 
-      const match = p.time.match(/(\d{1,2}):(\d{2})/);
-      if (!match) return true;
-      const gameMinutes = parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+      // 1. Prioridad: start_time_utc con timestamp ISO exacto
+      if (p.start_time_utc) {
+        try {
+          const gameTime = new Date(p.start_time_utc);
+          if (!isNaN(gameTime.getTime())) {
+            const diffMinutes = Math.round((gameTime.getTime() - now.getTime()) / 60000);
+            return diffMinutes >= -15; // Muestra si inicia en el futuro o inició hace < 15 min
+          }
+        } catch (e) {}
+      }
 
-      // Si el partido empezó hace más de 10 minutos, se oculta automáticamente
-      return (gameMinutes - currentMinutes) >= -10;
+      // 2. Extraer fecha desde ticket_id (formato RT-YYYYMMDD-...) y hora
+      const tid = String(p.ticket_id || p.id || "");
+      const dateMatch = tid.match(/RT-(\d{4})(\d{2})(\d{2})/);
+      const timeMatch = String(p.raw_time || p.time || "").match(/(\d{1,2}):(\d{2})/);
+
+      if (dateMatch && timeMatch) {
+        try {
+          const year = parseInt(dateMatch[1], 10);
+          const month = parseInt(dateMatch[2], 10) - 1;
+          const day = parseInt(dateMatch[3], 10);
+          const hour = parseInt(timeMatch[1], 10);
+          const min = parseInt(timeMatch[2], 10);
+
+          const nowCdmxStr = now.toLocaleDateString('en-US', { timeZone: 'America/Mexico_City' });
+          const nowCdmxTimeStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
+          const nowDate = new Date(nowCdmxStr);
+          const [currH, currM] = nowCdmxTimeStr.split(':').map(Number);
+
+          const gameDate = new Date(year, month, day);
+          const dayDiff = Math.round((gameDate.getTime() - nowDate.getTime()) / (1000 * 60 * 60 * 24));
+          const diffMinutes = (dayDiff * 24 * 60) + ((hour * 60 + min) - (currH * 60 + currM));
+          return diffMinutes >= -15;
+        } catch (e) {}
+      }
+
+      // 3. Fallback: comparación con hora CDMX respetando partidos del día siguiente
+      if (timeMatch) {
+        const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
+        const [currH, currM] = nowCdmxStr.split(':').map(Number);
+        const currentMinutes = currH * 60 + currM;
+        const gameMinutes = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
+        let diff = gameMinutes - currentMinutes;
+        // Si es de noche (>= 19h) y el partido es temprano (<= 16h), corresponde a la jornada de mañana
+        if (diff < -180 && currH >= 19 && parseInt(timeMatch[1], 10) <= 16) {
+          diff += 1440;
+        }
+        return diff >= -15;
+      }
+
+      return true;
     }
 
-    function formatTimeRemaining(timeStr) {
-      if (!timeStr) return "Hoy";
+    function formatTimeRemaining(raw) {
+      if (!raw) return "Hoy";
+      const timeStr = typeof raw === 'string' ? raw : (raw.time || "");
+      const startUtc = typeof raw === 'object' ? raw.start_time_utc : null;
       const now = new Date();
-      const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
-      const [currH, currM] = nowCdmxStr.split(':').map(Number);
-      const currentMinutes = currH * 60 + currM;
+
+      if (startUtc) {
+        try {
+          const gameTime = new Date(startUtc);
+          if (!isNaN(gameTime.getTime())) {
+            const diffMinutes = Math.round((gameTime.getTime() - now.getTime()) / 60000);
+            const cdmxHourMin = gameTime.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false });
+            const nowDay = now.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+            const gameDay = gameTime.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' });
+            const prefix = (nowDay === gameDay) ? "" : "Mañana ";
+
+            if (diffMinutes < -120) return `${prefix}${cdmxHourMin} CDMX (Finalizado)`;
+            if (diffMinutes < 0) return `${prefix}${cdmxHourMin} CDMX (En juego)`;
+            if (diffMinutes <= 60) return `⏳ En ${diffMinutes}m (${cdmxHourMin} CDMX)`;
+            const h = Math.floor(diffMinutes / 60);
+            const m = diffMinutes % 60;
+            return `⏳ ${prefix}${cdmxHourMin} CDMX (En ${h}h ${m}m)`;
+          }
+        } catch (e) {}
+      }
 
       const match = timeStr.match(/(\d{1,2}):(\d{2})/);
-      if (!match) return timeStr;
+      if (!match) return timeStr || "Hoy";
 
       const h = parseInt(match[1], 10);
       const m = parseInt(match[2], 10);
-      const gameMinutes = h * 60 + m;
-      const diff = gameMinutes - currentMinutes;
-
       const cleanH = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ' CDMX';
 
+      const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
+      const [currH, currM] = nowCdmxStr.split(':').map(Number);
+      const currentMinutes = currH * 60 + currM;
+      const gameMinutes = h * 60 + m;
+      let diff = gameMinutes - currentMinutes;
+
+      let isNextDay = false;
+      if (diff < -180 && currH >= 19 && h <= 16) {
+        diff += 1440;
+        isNextDay = true;
+      }
+
+      const dayPrefix = isNextDay ? "Mañana " : "";
       if (diff < 0) return `${cleanH} (En juego)`;
       if (diff <= 60) return `⏳ En ${diff}m (${cleanH})`;
       const hours = Math.floor(diff / 60);
       const mins = diff % 60;
-      return `⏳ En ${hours}h ${mins}m (${cleanH})`;
+      return `⏳ ${dayPrefix}${cleanH} (En ${hours}h ${mins}m)`;
     }
 
-    function getMinutesUntilStart(timeStr) {
-      if (!timeStr) return 999;
+    function getMinutesUntilStart(raw) {
+      if (!raw) return 999;
+      const startUtc = typeof raw === 'object' ? raw.start_time_utc : null;
+      const timeStr = typeof raw === 'string' ? raw : (raw.time || "");
       const now = new Date();
-      const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
-      const [currH, currM] = nowCdmxStr.split(':').map(Number);
-      const currentMinutes = currH * 60 + currM;
+
+      if (startUtc) {
+        try {
+          const gameTime = new Date(startUtc);
+          if (!isNaN(gameTime.getTime())) {
+            return Math.round((gameTime.getTime() - now.getTime()) / 60000);
+          }
+        } catch (e) {}
+      }
 
       const match = timeStr.match(/(\d{1,2}):(\d{2})/);
       if (!match) return 999;
+      const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
+      const [currH, currM] = nowCdmxStr.split(':').map(Number);
+      const currentMinutes = currH * 60 + currM;
       const gameMinutes = parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
-      return gameMinutes - currentMinutes;
+      let diff = gameMinutes - currentMinutes;
+      if (diff < -180 && currH >= 19 && parseInt(match[1], 10) <= 16) {
+        diff += 1440;
+      }
+      return diff;
     }
 
     function normalizePick(raw) {
@@ -539,19 +625,22 @@
       }
 
       const decOdds = Number(raw.market_odds_decimal) || 1.85;
-      const minutesUntil = getMinutesUntilStart(raw.time);
+      const minutesUntil = getMinutesUntilStart(raw);
 
       const norm = {
         id: tid,
+        ticket_id: raw.ticket_id || tid,
+        start_time_utc: raw.start_time_utc || null,
         sport,
         sport_icon,
         sport_name,
         league: cleanLeague,
         match,
-        time: formatTimeRemaining(raw.time),
+        time: formatTimeRemaining(raw),
         raw_time: raw.time,
         minutes_until_start: minutesUntil,
         market: raw.market_name || "Línea Principal",
+
         pick: raw.pick || "Selección",
         odds_dec: decOdds,
         odds_ame: ameOdds || "+100",
@@ -660,9 +749,11 @@
 
     // Generador Cuantitativo Multi-Parlay de Oro
     function getAllGoldenParlays() {
-      const valid = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
+      let upcoming = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
+      const valid = upcoming.length >= 2 ? upcoming : PICKS_DATA.filter(p => !discardedPicks.has(p.id));
       const jewels = valid.filter(p => p.is_jewel).sort((a, b) => b.score - a.score);
       const parlays = [];
+
 
       // 1. Top +EV General (2 legs)
       if (jewels.length >= 2) {
@@ -961,8 +1052,8 @@
 
       const cacheBuster = "?t=" + Date.now();
       const sources = [
-        "https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json" + cacheBuster,
-        "/active_private_picks.json" + cacheBuster
+        "/active_private_picks.json" + cacheBuster,
+        "https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json" + cacheBuster
       ];
 
       let rawList = null;
@@ -981,7 +1072,10 @@
       }
 
       if (rawList && rawList.length > 0) {
-        const nextPicks = rawList.map(normalizePick).filter(isGameUpcoming);
+        const allNormalized = rawList.map(normalizePick);
+        const upcomingPicks = allNormalized.filter(isGameUpcoming);
+        const nextPicks = upcomingPicks.length > 0 ? upcomingPicks : allNormalized;
+
         const prevKeys = PICKS_DATA.map(p => p.id + p.status).join(',');
         const nextKeys = nextPicks.map(p => p.id + p.status).join(',');
 
@@ -993,13 +1087,19 @@
         }
         localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
         if (statusEl) {
-          statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Auto-sync • ${PICKS_DATA.length} por jugar`;
+          if (upcomingPicks.length > 0) {
+            statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Auto-sync • ${upcomingPicks.length} por jugar`;
+          } else {
+            statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Cartelera activa • ${allNormalized.length} jugadas`;
+          }
         }
       } else if (PICKS_DATA.length === 0) {
         const cached = localStorage.getItem("reytaco_active_picks");
         if (cached) {
           try {
-            PICKS_DATA = JSON.parse(cached).map(normalizePick).filter(isGameUpcoming);
+            const allCached = JSON.parse(cached).map(normalizePick);
+            const upcomingCached = allCached.filter(isGameUpcoming);
+            PICKS_DATA = upcomingCached.length > 0 ? upcomingCached : allCached;
           } catch (e) {}
         }
         try { updateFilterCounts(); } catch (e) {}
@@ -1009,6 +1109,7 @@
 
       if (refreshBtn) refreshBtn.classList.remove("animate-spin");
       isFetching = false;
+
     }
 
     function setViewMode(mode) {
@@ -1150,13 +1251,16 @@
     }
 
     function updateFilterCounts() {
-      const valid = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
+      const pool = PICKS_DATA.filter(p => !discardedPicks.has(p.id));
+      const upcoming = pool.filter(isGameUpcoming);
+      const valid = upcoming.length > 0 ? upcoming : pool;
       const jewels = valid.filter(p => p.is_jewel);
 
       document.getElementById("badge-jewels-count").textContent = jewels.length;
       document.getElementById("badge-all-count").textContent = valid.length;
 
       const activeSet = viewMode === "jewels" ? jewels : valid;
+
 
       const fut = activeSet.filter(p => p.sport === "futbol");
       const nba = activeSet.filter(p => p.sport === "nba");
@@ -1235,12 +1339,16 @@
         const container = document.getElementById("picks-container");
         if (!container) return;
         
-        let candidateList = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
+        let pool = PICKS_DATA.filter(p => !discardedPicks.has(p.id));
+        let upcoming = pool.filter(isGameUpcoming);
+        let candidateList = upcoming.length > 0 ? upcoming : pool;
 
         if (viewMode === "jewels") {
-          candidateList = candidateList.filter(p => p.is_jewel);
+          let jewels = candidateList.filter(p => p.is_jewel);
+          candidateList = jewels.length > 0 ? jewels : candidateList;
           candidateList.sort((a, b) => b.score - a.score);
         }
+
 
         const filtered = candidateList.filter(p => currentFilter === "all" || p.sport === currentFilter);
 

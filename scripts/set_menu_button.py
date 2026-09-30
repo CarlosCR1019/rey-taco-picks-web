@@ -21,7 +21,7 @@ def set_telegram_menu_button():
             "type": "web_app",
             "text": "🌮 Picks Privados",
             "web_app": {
-                "url": "https://reytacopicks.com/mini-app.html?v=10"
+                "url": "https://reytacopicks.com/mini-app.html?v=11"
             }
         }
     }
@@ -45,7 +45,7 @@ def set_telegram_menu_button():
             "type": "web_app",
             "text": "🌮 Picks Privados",
             "web_app": {
-                "url": "https://reytacopicks.com/mini-app.html?v=10"
+                "url": "https://reytacopicks.com/mini-app.html?v=11"
             }
         }
     }

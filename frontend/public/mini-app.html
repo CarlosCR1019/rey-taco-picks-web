@@ -1081,10 +1081,12 @@
             const data = await resp.json();
             if (Array.isArray(data) && data.length > 0) {
               const hasUpcoming = data.some(isGameUpcoming);
-              if (hasUpcoming || !rawList) {
+              if (hasUpcoming) {
+                rawList = data;
+                break;
+              } else if (!rawList) {
                 rawList = data;
               }
-              if (hasUpcoming) break;
             }
           }
         } catch (e) {}
@@ -1100,7 +1102,12 @@
         try { renderGoldenParlay(); } catch (e) { console.error(e); }
         try { renderPicks(); } catch (e) { console.error(e); }
 
-        localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
+        if (upcomingPicks.length > 0) {
+          localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
+        } else {
+          localStorage.removeItem("reytaco_active_picks");
+        }
+
         if (statusEl) {
           if (upcomingPicks.length > 0) {
             statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Auto-sync • ${upcomingPicks.length} por jugar`;
@@ -1114,7 +1121,11 @@
           try {
             const allCached = JSON.parse(cached).map(normalizePick);
             const upcomingCached = allCached.filter(isGameUpcoming);
-            PICKS_DATA = upcomingCached.length > 0 ? upcomingCached : allCached;
+            if (upcomingCached.length > 0) {
+              PICKS_DATA = upcomingCached;
+            } else {
+              localStorage.removeItem("reytaco_active_picks");
+            }
           } catch (e) {}
         }
         try { updateFilterCounts(); } catch (e) {}

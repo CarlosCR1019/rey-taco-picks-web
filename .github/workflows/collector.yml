@@ -1,12 +1,8 @@
 name: Rey Taco Residential Collector
 
+# NOTA: Crons programados desactivados. La recolección y escaneo profundo 24/7 
+# ahora corre de forma autónoma en el VPS (204.168.247.173) sin depender de runners locales.
 on:
-  schedule:
-    # Lightweight residential checks every 30 minutes; the planner chooses full scans.
-    - cron: '7 * * * *'
-    - cron: '37 * * * *'
-    # Existing 10:00 Mexico City cloud-only release.
-    - cron: '0 16 * * *'
   workflow_dispatch:
 
 concurrency:

@@ -200,33 +200,69 @@ def discover_upcoming_multisport_events(session: requests.Session, hours_ahead: 
 
 
 def condense_markets_for_audit(enriched: Dict[str, Any]) -> str:
-    """Condensa las cuotas más líquidas en texto legible para no saturar tokens de Groq."""
+    """
+    Condensa las cuotas más líquidas de la sección 'Todas' en texto legible para Groq,
+    priorizando mercados de alto valor (+EV): Combos, Totales de Equipo, F5 Béisbol, Props y BTTS.
+    """
     lines = []
+    cat = enriched.get("market_categories", {})
     
-    # Moneyline
-    for m in enriched.get("market_categories", {}).get("moneyline", [])[:1]:
+    # 1. Moneyline
+    for m in cat.get("moneyline", [])[:1]:
         sel_str = ", ".join([f"{s['name']}: {s['price_decimal']} ({s['price_american']})" for s in m.get("selections", [])])
         lines.append(f"Moneyline [{m.get('market_name')}]: {sel_str}")
 
-    # Spreads / Handicaps
-    for s in enriched.get("market_categories", {}).get("spreads", [])[:2]:
+    # 2. Spreads / Handicaps
+    for s in cat.get("spreads", [])[:2]:
         selections = s.get("selections", [])
-        # Filtrar las líneas principales
         for sel in selections[:8]:
             lines.append(f"Spread [{s.get('scope')}]: {sel['name']} @ {sel['price_decimal']} ({sel['price_american']})")
 
-    # Totales
-    for t in enriched.get("market_categories", {}).get("totals", [])[:6]:
+    # 3. Totales de Partido
+    for t in cat.get("totals", [])[:6]:
         if t.get("over") and t.get("under"):
             lines.append(f"Total [{t.get('market_name')} {t.get('line')}]: Más @ {t['over']['price_decimal']} ({t['over']['price_american']}) | Menos @ {t['under']['price_decimal']} ({t['under']['price_american']})")
 
-    # Córners (fútbol)
-    for c in enriched.get("market_categories", {}).get("corners", [])[:2]:
+    # 4. Combos de Partido (Sección 'Todas': 1X2 & BTTS, Total & BTTS, etc.)
+    for combo in cat.get("combos", [])[:6]:
+        m_name = combo.get("market_name", "Combo")
+        sels = [f"{s['name']} @ {s['price_decimal']} ({s['price_american']})" for s in combo.get("selections", [])[:8]]
+        if sels:
+            lines.append(f"Combo / Sección Todas [{m_name}]: " + " | ".join(sels))
+
+    # 5. Totales por Equipo (Team Totals)
+    for tt in cat.get("team_totals", [])[:6]:
+        m_name = tt.get("market_name", "Team Total")
+        line_val = tt.get("line")
+        parts = []
+        if tt.get("over"):
+            parts.append(f"Más {line_val} @ {tt['over']['price_decimal']} ({tt['over']['price_american']})")
+        if tt.get("under"):
+            parts.append(f"Menos {line_val} @ {tt['under']['price_decimal']} ({tt['under']['price_american']})")
+        if parts:
+            lines.append(f"Total de Equipo [{m_name}]: " + " | ".join(parts))
+
+    # 6. Béisbol F5 (Innings 1 a 5) y 1er Inning (NRFI / YRFI)
+    for f5 in cat.get("baseball_f5", [])[:6]:
+        m_name = f5.get("market_name", "Béisbol Especial")
+        sels = [f"{s['name']} @ {s['price_decimal']} ({s['price_american']})" for s in f5.get("selections", [])[:6]]
+        if sels:
+            lines.append(f"Béisbol Mitad/Inning [{m_name}]: " + " | ".join(sels))
+
+    # 7. Props de Jugador Destacados (Remates a Puerta, Ponches, Puntos)
+    for prop in cat.get("player_props", [])[:6]:
+        m_name = prop.get("market_name", "Prop")
+        sels = [f"{s['name']} @ {s['price_decimal']} ({s['price_american']})" for s in prop.get("selections", [])[:6]]
+        if sels:
+            lines.append(f"Player Prop [{m_name}]: " + " | ".join(sels))
+
+    # 8. Córners (fútbol)
+    for c in cat.get("corners", [])[:2]:
         if c.get("over") and c.get("under"):
             lines.append(f"Córners [{c.get('line')}]: Más @ {c['over']['price_decimal']} ({c['over']['price_american']}) | Menos @ {c['under']['price_decimal']} ({c['under']['price_american']})")
 
-    # BTTS (fútbol)
-    for b in enriched.get("market_categories", {}).get("btts", [])[:1]:
+    # 9. Ambos Equipos Marcan (BTTS)
+    for b in cat.get("btts", [])[:1]:
         if b.get("yes") and b.get("no"):
             lines.append(f"Ambos Anotan: Sí @ {b['yes']['price_decimal']} ({b['yes']['price_american']}) | No @ {b['no']['price_decimal']} ({b['no']['price_american']})")
 
@@ -253,30 +289,37 @@ EVENTO:
 CONTEXTO SITUACIONAL Y REPORTES DE LESIONES/NOTICIAS:
 {extra_context if extra_context else "Análisis situacional de calendario, localía y dinámica de equipos."}
 
-CUOTAS REALES EN PLAYDOIT:
+CUOTAS REALES EN PLAYDOIT (INCLUYENDO SECCIÓN COMPLETA 'TODAS'):
 {market_lines_str}
 
 Instrucciones:
 1. Evalúa si existe una ineficiencia o desajuste de precio real en Playdoit.
-2. Si existe una selección de alto valor, define el pronóstico exacto, la cuota, la cuota mínima de valor y un stake razonable (1.0 a 1.5 U).
-3. Si el partido es equilibrado sin ventaja clara, no fuerces picks innecesarios.
+2. REGLA SHARP Y SESGO DEL FAVORITO:
+   - Evita favoritos pesados planos (cuotas menores a 1.50 / -200) porque no ofrecen valor matemático y la comisión de la casa es abusiva.
+   - EXPLORA PRIORITARIAMENTE el Sweet Spot (+EV entre 1.70 y 2.40 / -140 a +140):
+     * Combos de Partido (ej. '1X2 y Ambos Equipos Marcan', 'Total y Ambos Equipos Marcan', 'Doble Oportunidad & BTTS').
+     * Totales de Equipo (Team Totals): Si un equipo está en racha o su rival concede mucho, su total individual es más seguro y rentable que el total general.
+     * Béisbol F5 / Innings: En béisbol (MLB/KBO/NPB), los mercados de 'Innings 1 a 5' aíslan al abridor estelar sin el riesgo del bullpen tardío; el '1er Inning (NRFI / Carrera en el 1er inning)' tiene valor enorme con lanzadores dominantes.
+     * Props de Jugador: Remates a puerta de delanteros clave o Ponches (Strikeouts) de abridores.
+3. Si existe una selección de alto valor, define el pronóstico exacto, la cuota, la cuota mínima de valor y un stake razonable (1.0 a 1.2 U).
+4. Si el partido es equilibrado sin ventaja matemática evidente, responde "hay_valor": false.
 
 Responde ÚNICAMENTE en JSON con este esquema:
 {{
   "hay_valor": true,
-  "mercado": "Spread / Totales / Moneyline / Ambos Anotan",
+  "mercado": "Combo / Totales de Equipo / Béisbol F5 / Ambos Anotan / Spread / Totales / Prop",
   "pick": "...",
   "cuota_playdoit_decimal": 1.95,
   "cuota_playdoit_american": "-105",
   "cuota_minima_decimal": 1.85,
   "cuota_minima_american": "-118",
-  "stake": 1.2,
+  "stake": 1.0,
   "significado_simple": "Explicación breve de qué debe ocurrir en el juego para ganar (ej. 'Gana si hay 2 goles o menos en total')",
   "ruta_playdoit": [
     "Entra a Playdoit > Sección Deportes > {event['sport_name']}",
     "Busca la liga: {event.get('champ_name')}",
     "Partido: {event['name']}",
-    "Abre la pestaña correspondiente al mercado",
+    "Abre la pestaña 'Todas' o la sub-pestaña correspondiente",
     "Selecciona la cuota indicada"
   ],
   "justificacion_tactica": "...",

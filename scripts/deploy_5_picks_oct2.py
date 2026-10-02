@@ -1,4 +1,17 @@
-[
+import json
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+picks_window = [
   {
     "ticket_id": "RT-20261002-MLB-7458",
     "event_id": "17847458",
@@ -27,8 +40,8 @@
     "analysis_type": "situational",
     "reasoning": "Softbank llega con su rotación principal y lidera la liga en carreras producidas con más de 4.8 por partido. Chiba Lotte arrastra fatiga de bullpen tras permitir más de 5 carreras en 4 de sus últimos 5 juegos. La línea de -1.5 a cuota 1.87 (-115) ofrece un +EV sólido con 57% de probabilidad estimada.",
     "status": "active",
-    "is_jewel": true,
-    "is_sniper": true,
+    "is_jewel": True,
+    "is_sniper": True,
     "block": "madrugada"
   },
   {
@@ -46,7 +59,7 @@
     "pick": "Más de 6.5 carreras (Total del partido)",
     "market_odds_decimal": 1.9524,
     "market_odds_american": "-105",
-    "minimum_odds_decimal": 1.8,
+    "minimum_odds_decimal": 1.80,
     "minimum_odds_american": "-125",
     "stake_units": 1.0,
     "meaning": "Gana si entre ambos equipos anotan 7 o más carreras combinadas (incl. extra innings)",
@@ -59,8 +72,8 @@
     "analysis_type": "situational",
     "reasoning": "El Meiji Jingu Stadium es uno de los parques de mayores dimensiones anotadoras en la liga japonesa. Ambos abridores asignados han promediado más de 3.8 carreras limpias permitidas por apertura en el último mes. La línea en 6.5 a 1.95 (-105) tiene un valor probabilístico superior al 56%.",
     "status": "active",
-    "is_jewel": true,
-    "is_sniper": true,
+    "is_jewel": True,
+    "is_sniper": True,
     "block": "madrugada"
   },
   {
@@ -91,8 +104,8 @@
     "analysis_type": "situational",
     "reasoning": "Fenerbahce debuta en el Ulker Sports Arena con plantilla estelar reforzada bajo Sarunas Jasikevicius. Dubai Basketball es una franquicia en desarrollo con serios desajustes en el perímetro y rotación corta. La ventaja proyectada de Fenerbahce es de 8 a 10 puntos, cubriendo holgadamente el hándicap corto.",
     "status": "active",
-    "is_jewel": true,
-    "is_sniper": true,
+    "is_jewel": True,
+    "is_sniper": True,
     "block": "mañana"
   },
   {
@@ -124,8 +137,8 @@
     "analysis_type": "situational",
     "reasoning": "Bayern en el BMW Park de Múnich promedia 82.4 puntos por partido. Partizan juega posesiones rápidas y su media es de 79 puntos, pero sufre cerrando defensas en transición. Más del 85% de sus partidos superan los 70 puntos por bando. Este combo optimiza la victoria local a cuota 1.74 frente al ML plano de 1.52.",
     "status": "active",
-    "is_jewel": true,
-    "is_sniper": true,
+    "is_jewel": True,
+    "is_sniper": True,
     "block": "mañana"
   },
   {
@@ -156,8 +169,26 @@
     "analysis_type": "situational",
     "reasoning": "El Fernando Buesa Arena de Vitoria es una de las canchas con mayor porcentaje de victorias locales en Euroliga. Milano viaja con bajas en la dirección de juego. La cuota 1.71 (+2.5) protege tanto un triunfo de Baskonia como una derrota apretada de última posesión.",
     "status": "active",
-    "is_jewel": true,
-    "is_sniper": true,
+    "is_jewel": True,
+    "is_sniper": True,
     "block": "mañana"
   }
 ]
+
+print(f"Total picks para la ventana: {len(picks_window)}")
+
+targets = [
+    REPO_ROOT / "data" / "active_private_picks.json",
+    REPO_ROOT / "dist" / "active_private_picks.json",
+    REPO_ROOT / "frontend" / "public" / "active_private_picks.json"
+]
+
+for t in targets:
+    t.parent.mkdir(parents=True, exist_ok=True)
+    t.write_text(json.dumps(picks_window, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"✅ Guardado en {t}")
+
+# Subir a R2
+from scripts.sync_picks_r2 import upload_active_picks_to_r2
+res = upload_active_picks_to_r2(targets[0])
+print(f"✅ Subido a Cloudflare R2: {res}")

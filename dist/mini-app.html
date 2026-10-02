@@ -1053,6 +1053,7 @@
     }
 
     let isFetching = false;
+    let lastPicksHash = "";
 
     async function fetchLivePicks(showSpinner = false) {
       if (isFetching) return;
@@ -1066,76 +1067,95 @@
         localStorage.removeItem("reytaco_active_picks");
       }
 
-      const cacheBuster = "?t=" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
-      const sources = [
-        "/active_private_picks.json" + cacheBuster,
-        "https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json" + cacheBuster
-      ];
+      try {
+        const cacheBuster = "?t=" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
+        const sources = [
+          "/active_private_picks.json" + cacheBuster,
+          "https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json" + cacheBuster
+        ];
 
-      let rawList = null;
+        let rawList = null;
 
-      for (const url of sources) {
-        try {
-          const resp = await fetch(url, { cache: 'no-store' });
-          if (resp.ok) {
-            const data = await resp.json();
-            if (Array.isArray(data) && data.length > 0) {
-              const hasUpcoming = data.some(isGameUpcoming);
-              if (hasUpcoming) {
+        for (const url of sources) {
+          try {
+            const resp = await fetch(url, {
+              cache: 'no-store',
+              headers: {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
+              }
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              if (Array.isArray(data) && data.length > 0) {
                 rawList = data;
                 break;
-              } else if (!rawList) {
-                rawList = data;
               }
             }
+          } catch (e) {
+            console.warn("Fetch failed for source:", url, e);
           }
-        } catch (e) {}
-      }
-
-      if (rawList && rawList.length > 0) {
-        const allNormalized = rawList.map(normalizePick);
-        const upcomingPicks = allNormalized.filter(isGameUpcoming);
-        const nextPicks = upcomingPicks.length > 0 ? upcomingPicks : allNormalized;
-
-        PICKS_DATA = nextPicks;
-        try { updateFilterCounts(); } catch (e) { console.error(e); }
-        try { renderGoldenParlay(); } catch (e) { console.error(e); }
-        try { renderPicks(); } catch (e) { console.error(e); }
-
-        if (upcomingPicks.length > 0) {
-          localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
-        } else {
-          localStorage.removeItem("reytaco_active_picks");
         }
 
-        if (statusEl) {
+        if (rawList && rawList.length > 0) {
+          const currentHash = JSON.stringify(rawList);
+          const isChanged = currentHash !== lastPicksHash;
+
+          const allNormalized = rawList.map(normalizePick);
+          const upcomingPicks = allNormalized.filter(isGameUpcoming);
+          // Limitar estrictamente a 5 picks por ventana de 12 horas
+          const nextPicks = (upcomingPicks.length > 0 ? upcomingPicks : allNormalized).slice(0, 5);
+
+          if (isChanged || PICKS_DATA.length === 0) {
+            lastPicksHash = currentHash;
+            PICKS_DATA = nextPicks;
+            try { updateFilterCounts(); } catch (e) { console.error(e); }
+            try { renderGoldenParlay(); } catch (e) { console.error(e); }
+            try { renderPicks(); } catch (e) { console.error(e); }
+          }
+
           if (upcomingPicks.length > 0) {
-            statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Auto-sync • ${upcomingPicks.length} por jugar`;
+            localStorage.setItem("reytaco_active_picks", JSON.stringify(rawList));
           } else {
-            statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Cartelera activa • ${allNormalized.length} jugadas`;
+            localStorage.removeItem("reytaco_active_picks");
           }
-        }
-      } else if (PICKS_DATA.length === 0) {
-        const cached = localStorage.getItem("reytaco_active_picks");
-        if (cached) {
-          try {
-            const allCached = JSON.parse(cached).map(normalizePick);
-            const upcomingCached = allCached.filter(isGameUpcoming);
-            if (upcomingCached.length > 0) {
-              PICKS_DATA = upcomingCached;
+
+          if (statusEl) {
+            const nowCdmx = new Date().toLocaleTimeString('es-MX', {
+              timeZone: 'America/Mexico_City',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit'
+            });
+            if (upcomingPicks.length > 0) {
+              statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Auto-sync (${nowCdmx}) • ${nextPicks.length} picks`;
             } else {
-              localStorage.removeItem("reytaco_active_picks");
+              statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Ventana activa (${nowCdmx}) • ${nextPicks.length} picks`;
             }
-          } catch (e) {}
+          }
+        } else if (PICKS_DATA.length === 0) {
+          const cached = localStorage.getItem("reytaco_active_picks");
+          if (cached) {
+            try {
+              const allCached = JSON.parse(cached).map(normalizePick);
+              const upcomingCached = allCached.filter(isGameUpcoming);
+              if (upcomingCached.length > 0) {
+                PICKS_DATA = upcomingCached.slice(0, 5);
+              } else {
+                localStorage.removeItem("reytaco_active_picks");
+              }
+            } catch (e) {}
+          }
+          try { updateFilterCounts(); } catch (e) {}
+          try { renderGoldenParlay(); } catch (e) {}
+          try { renderPicks(); } catch (e) {}
         }
-        try { updateFilterCounts(); } catch (e) {}
-        try { renderGoldenParlay(); } catch (e) {}
-        try { renderPicks(); } catch (e) {}
+      } catch (globalErr) {
+        console.error("Error in fetchLivePicks:", globalErr);
+      } finally {
+        if (refreshBtn) refreshBtn.classList.remove("animate-spin");
+        isFetching = false;
       }
-
-      if (refreshBtn) refreshBtn.classList.remove("animate-spin");
-      isFetching = false;
-
     }
 
     function setViewMode(mode) {

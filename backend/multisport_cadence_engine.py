@@ -68,7 +68,8 @@ BANNED_LEAGUE_KEYWORDS = [
     "sub-19", "sub 19", "u19", "sub-21", "u21", "sub-20", "u20", "reserves", "reserva",
     "amateur", "division 2", "division 3", "division 4", "regional", "youth", "juvenil",
     "islandia", "honduras", "nicaragua", "guatemala", "mongolia", "bangladesh", "oman",
-    "vietnam", "tercera", "promocional"
+    "vietnam", "tercera", "promocional", "mizoram", "cymru", "women", "femenil",
+    "saudi", "al-ahli", "neom", "al qadsiah", "lummen", "namur"
 ]
 
 
@@ -382,12 +383,17 @@ def run_multisport_cadence_cycle(hours_ahead: int = 12) -> List[Dict[str, Any]]:
     cutoff_iso = (now_cdmx - timedelta(hours=24)).isoformat()
     history = {k: v for k, v in history.items() if v.get("evaluated_at", "") > cutoff_iso}
 
+    MAX_PICKS_PER_WINDOW = 5
+
     # 3. Evaluar eventos pendientes por deporte
     for sid, evs in discovered.items():
+        if len(dispatched_picks) >= MAX_PICKS_PER_WINDOW:
+            print(f"✅ Cupo máximo de {MAX_PICKS_PER_WINDOW} picks por ventana de 12 horas alcanzado.")
+            break
         meta = SPORT_METADATA[sid]
         sorted_evs = sorted(evs, key=lambda x: x["time_cdmx"])
         # Filtrar los que aún no han sido evaluados en las últimas 24 horas
-        candidates = [ev for ev in sorted_evs if ev["id"] not in history][:10]
+        candidates = [ev for ev in sorted_evs if ev["id"] not in history][:6]
 
         if not candidates:
             print(f"ℹ️ {meta['icon']} {meta['name']}: Todos los partidos del bloque ({len(evs)}) ya fueron evaluados.")
@@ -533,8 +539,17 @@ def run_multisport_cadence_cycle(hours_ahead: int = 12) -> List[Dict[str, Any]]:
 
     existing_active = upcoming_active
 
-    # Mantener hasta 60 picks activos más recientes y no expirados
-    active_picks_file.write_text(json.dumps(existing_active[:60], indent=2, ensure_ascii=False), encoding="utf-8")
+    # REGLA ESTRICTA: Mantener EXACTAMENTE máximo 5 picks por ventana de 12 horas
+    existing_active = existing_active[:5]
+    active_picks_file.write_text(json.dumps(existing_active, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Actualizar copias locales en dist y frontend/public
+    for target_dir in [REPO_ROOT / "dist", REPO_ROOT / "frontend" / "public"]:
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "active_private_picks.json").write_text(json.dumps(existing_active, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
     # Sincronizar automáticamente con Cloudflare R2 para la Mini App
     try:

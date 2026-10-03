@@ -1071,8 +1071,8 @@
       try {
         const cacheBuster = "?t=" + Date.now() + "_" + Math.random().toString(36).substring(2, 8);
         const sources = [
-          "/active_private_picks.json" + cacheBuster,
-          "https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json" + cacheBuster
+          "https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/active_private_picks.json" + cacheBuster,
+          "/active_private_picks.json" + cacheBuster
         ];
 
         let rawList = null;

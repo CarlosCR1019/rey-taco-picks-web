@@ -472,8 +472,8 @@ def run_multisport_cadence_cycle(hours_ahead: int = 12) -> List[Dict[str, Any]]:
                 "block": block_name
             }
 
-            print(f"📢 Despachando propuesta a Telegram: {ticket_id} ({audit['pick']})...")
-            dispatch_interactive_pick(pick_payload)
+            # REGLA ANTISPAM: NO despachar mensajes individuales con botones interactivos por cada pick
+            # dispatch_interactive_pick(pick_payload)
             dispatched_picks.append(pick_payload)
 
             history[eid] = {

@@ -481,21 +481,22 @@
         } catch (e) {}
       }
 
-      // 3. Fallback: comparación con hora CDMX respetando partidos del día siguiente
+      // 3. Fallback: comparación con hora CDMX
       if (timeMatch) {
         const nowCdmxStr = now.toLocaleTimeString('en-US', { timeZone: 'America/Mexico_City', hour12: false });
         const [currH, currM] = nowCdmxStr.split(':').map(Number);
         const currentMinutes = currH * 60 + currM;
         const gameMinutes = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
         let diff = gameMinutes - currentMinutes;
-        // Si es de noche (>= 19h) y el partido es temprano (<= 16h), corresponde a la jornada de mañana
-        if (diff < -180 && currH >= 19 && parseInt(timeMatch[1], 10) <= 16) {
+        // Solo considerar para mañana si explícitamente se especifica 'mañana' en el string de tiempo
+        const rawTimeLower = String(p.raw_time || p.time || "").toLowerCase();
+        if (rawTimeLower.includes("mañana") || rawTimeLower.includes("manana")) {
           diff += 1440;
         }
         return diff >= -15;
       }
 
-      return true;
+      return false;
     }
 
     function formatTimeRemaining(raw) {
@@ -756,7 +757,7 @@
     // Generador Cuantitativo Multi-Parlay de Oro
     function getAllGoldenParlays() {
       let upcoming = PICKS_DATA.filter(p => !discardedPicks.has(p.id) && isGameUpcoming(p));
-      const valid = upcoming.length >= 2 ? upcoming : PICKS_DATA.filter(p => !discardedPicks.has(p.id));
+      const valid = upcoming;
       const jewels = valid.filter(p => p.is_jewel).sort((a, b) => b.score - a.score);
       const parlays = [];
 
@@ -1103,8 +1104,8 @@
 
           const allNormalized = rawList.map(normalizePick);
           const upcomingPicks = allNormalized.filter(isGameUpcoming);
-          // Limitar estrictamente a 5 picks por ventana de 12 horas
-          const nextPicks = (upcomingPicks.length > 0 ? upcomingPicks : allNormalized).slice(0, 5);
+          // Limitar estrictamente a máximo 5 picks vigentes por ventana de 12 horas
+          const nextPicks = upcomingPicks.slice(0, 5);
 
           if (isChanged || PICKS_DATA.length === 0) {
             lastPicksHash = currentHash;
@@ -1299,7 +1300,7 @@
     function updateFilterCounts() {
       const pool = PICKS_DATA.filter(p => !discardedPicks.has(p.id));
       const upcoming = pool.filter(isGameUpcoming);
-      const valid = upcoming.length > 0 ? upcoming : pool;
+      const valid = upcoming;
       const jewels = valid.filter(p => p.is_jewel);
 
       document.getElementById("badge-jewels-count").textContent = jewels.length;
@@ -1387,7 +1388,7 @@
         
         let pool = PICKS_DATA.filter(p => !discardedPicks.has(p.id));
         let upcoming = pool.filter(isGameUpcoming);
-        let candidateList = upcoming.length > 0 ? upcoming : pool;
+        let candidateList = upcoming;
 
         if (viewMode === "jewels") {
           let jewels = candidateList.filter(p => p.is_jewel);
@@ -1395,18 +1396,16 @@
           candidateList.sort((a, b) => b.score - a.score);
         }
 
-
         const filtered = candidateList.filter(p => currentFilter === "all" || p.sport === currentFilter);
 
         if (filtered.length === 0) {
           container.innerHTML = `
-            <div class="text-center py-12 border border-dashed border-slate-800 rounded-2xl p-6 bg-cardBg/40">
-              <div class="text-3xl mb-2">🎉</div>
-              <h4 class="text-sm font-semibold text-white">No hay jugadas pendientes en esta sección</h4>
-              <p class="text-xs text-slate-400 mt-1">Los partidos anteriores ya empezaron. Toca 'Próximas' o espera el próximo ciclo del VPS.</p>
-              <button onclick="setViewMode('all')" class="mt-4 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-black shadow">
-                ⏰ Ver todas las próximas
-              </button>
+            <div class="text-center py-10 border border-dashed border-amber-500/30 rounded-2xl p-6 bg-cardBg/60">
+              <div class="text-3xl mb-2">🌮⏳</div>
+              <h4 class="text-sm font-bold text-amber-400">Cartelera en Transición</h4>
+              <p class="text-xs text-slate-300 mt-1 max-w-sm mx-auto">
+                Los picks de la ventana previa ya concluyeron o están en juego. Nuestro motor cuantitativo está auditando los mercados de Playdoit Altenar para la siguiente ventana.
+              </p>
             </div>
           `;
           return;

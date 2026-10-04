@@ -47,12 +47,13 @@ def fetch_live_event_context(event: dict) -> str:
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=45) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             parts = data.get("candidates", [])[0].get("content", {}).get("parts", [])
             text = "".join(p.get("text", "") for p in parts if "text" in p).strip()
             return text
     except Exception as e:
+        print(f"⚠️ Error obteniendo contexto con Gemini Grounding: {e}")
         return ""
 
 if __name__ == "__main__":

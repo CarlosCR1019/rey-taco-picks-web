@@ -34,6 +34,7 @@ from curl_cffi import requests
 from groq import Groq
 
 from backend.playdoit_deep_markets import extract_all_enriched_markets, decimal_to_american
+from backend.live_grounded_context import fetch_live_event_context
 from backend.interactive_telegram_dispatcher import (
     dispatch_interactive_pick,
     telegram_api_call,
@@ -178,7 +179,7 @@ def discover_upcoming_multisport_events(session: requests.Session, hours_ahead: 
                             continue
                         try:
                             ev_utc = datetime.fromisoformat(sdate_str.replace("Z", "+00:00"))
-                            if now_utc - timedelta(minutes=15) <= ev_utc <= max_utc:
+                            if now_utc + timedelta(minutes=45) <= ev_utc <= max_utc:
                                 ev_cdmx = ev_utc.astimezone(MEXICO_TZ)
                                 discovered[sid].append({
                                     "id": str(ev.get("id")),
@@ -294,21 +295,23 @@ CUOTAS REALES EN PLAYDOIT (INCLUYENDO SECCIÓN COMPLETA 'TODAS'):
 {market_lines_str}
 
 Instrucciones:
-1. Evalúa si existe una ineficiencia o desajuste de precio real en Playdoit.
-2. REGLA SHARP Y SESGO DEL FAVORITO:
-   - Evita favoritos pesados planos (cuotas menores a 1.50 / -200) porque no ofrecen valor matemático y la comisión de la casa es abusiva.
-   - EXPLORA PRIORITARIAMENTE el Sweet Spot (+EV entre 1.70 y 2.40 / -140 a +140):
-     * Combos de Partido (ej. '1X2 y Ambos Equipos Marcan', 'Total y Ambos Equipos Marcan', 'Doble Oportunidad & BTTS').
-     * Totales de Equipo (Team Totals): Si un equipo está en racha o su rival concede mucho, su total individual es más seguro y rentable que el total general.
-     * Béisbol F5 / Innings: En béisbol (MLB/KBO/NPB), los mercados de 'Innings 1 a 5' aíslan al abridor estelar sin el riesgo del bullpen tardío; el '1er Inning (NRFI / Carrera en el 1er inning)' tiene valor enorme con lanzadores dominantes.
-     * Props de Jugador: Remates a puerta de delanteros clave o Ponches (Strikeouts) de abridores.
+1. Evalúa si existe una ineficiencia o desajuste de precio real en Playdoit basándote ESTRICTAMENTE en las métricas deportivas y el contexto fáctico reciente.
+2. REGLA INSTITUCIONAL DE MÁXIMA CALIDAD Y CONTROL DE VARIANZA:
+   - PROHIBIDO ABSOLUTO: Combos cruzados de 2 condiciones (ej. '1X2 y Ambos Equipos Marcan', 'Gana y Total Más de X puntos/goles'). Tienen correlación negativa oculta y alta tasa de falla. Solo selecciones de 1 SOLA CONDICIÓN PURA.
+   - PROHIBIDO ABSOLUTO: Ganador directo (Moneyline) en fútbol americano colegial (NCAAF). El deporte universitario tiene varianza caótica de pérdidas de balón. Solo se permiten hándicaps con colchón grande (+10.5 o más).
+   - PROHIBIDO: Ambos Equipos Anotan (BTTS) si el contexto revela que el visitante o local tiene sequía goleadora de visita o promedia menos de 1.2 goles.
+   - PRIORIDAD MÁXIMA DE ORO (+EV COMPROBADO):
+     * Béisbol F5 (Innings 1 a 5) y Runlines (-1.5 / +1.5): Es el mercado más cuantitativo del deporte profesional porque aísla la calidad del lanzador abridor sin riesgo de bullpens suplentes.
+     * Tiros de Esquina en Fútbol (Over Córners 8.5 / 9.5): Mercado de volumen por bandas independiente del marcador.
+     * Spreads con Colchón / Hándicaps Positivos / Doble Oportunidad (+1.5, +0.5): Protegen empates y derrotas cerradas.
+     * Totales Simples (Over/Under) o Totales de Equipo (Team Totals) respaldados por los goles/carreras reales del contexto en los últimos 5 juegos.
 3. Si existe una selección de alto valor, define el pronóstico exacto, la cuota, la cuota mínima de valor y un stake razonable (1.0 a 1.2 U).
 4. Si el partido es equilibrado sin ventaja matemática evidente, responde "hay_valor": false.
 
 Responde ÚNICAMENTE en JSON con este esquema:
 {{
   "hay_valor": true,
-  "mercado": "Combo / Totales de Equipo / Béisbol F5 / Ambos Anotan / Spread / Totales / Prop",
+  "mercado": "Béisbol F5 / Córners / Totales Simples / Totales de Equipo / Spread con Colchón / Prop",
   "pick": "...",
   "cuota_playdoit_decimal": 1.95,
   "cuota_playdoit_american": "-105",
@@ -421,6 +424,12 @@ def run_multisport_cadence_cycle(hours_ahead: int = 12) -> List[Dict[str, Any]]:
                 continue
 
             extra_ctx = known_contexts.get(eid, "")
+            if not extra_ctx:
+                print(f"🌐 Obteniendo contexto deportivo en vivo (Gemini + Search Grounding) para {ev['name']}...")
+                extra_ctx = fetch_live_event_context(ev)
+                if extra_ctx:
+                    print(f"   Contexto factual obtenido:\n   {extra_ctx[:180]}...")
+
             print(f"🧠 Consultando auditoría a Groq (openai/gpt-oss-120b)...")
             audit = audit_with_groq(ev, condensed, extra_context=extra_ctx)
 

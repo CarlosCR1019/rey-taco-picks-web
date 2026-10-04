@@ -38,7 +38,7 @@ def fetch_live_event_context(event: dict) -> str:
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "tools": [{"googleSearch": {}}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 600}
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 8192}
     }
 
     try:

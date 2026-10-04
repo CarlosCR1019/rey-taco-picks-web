@@ -66,10 +66,10 @@ TIER1_LEAGUE_KEYWORDS = [
 ]
 
 BANNED_LEAGUE_KEYWORDS = [
-    "sub-19", "sub 19", "u19", "sub-21", "u21", "sub-20", "u20", "reserves", "reserva",
+    "sub-19", "sub 19", "u19", "sub-21", "u21", "sub-20", "u20", "reserves", "reserva", "reserve", "(res.)", "res.",
     "amateur", "division 2", "division 3", "division 4", "regional", "youth", "juvenil",
     "islandia", "honduras", "nicaragua", "guatemala", "mongolia", "bangladesh", "oman",
-    "vietnam", "tercera", "promocional", "mizoram", "cymru", "women", "femenil",
+    "vietnam", "tercera", "promocional", "mizoram", "cymru", "women", "femenil", "(f)",
     "saudi", "al-ahli", "neom", "al qadsiah", "lummen", "namur"
 ]
 
@@ -174,6 +174,10 @@ def discover_upcoming_multisport_events(session: requests.Session, hours_ahead: 
                 if res.status_code == 200:
                     evs = res.json().get("events", [])
                     for ev in evs:
+                        ev_name = ev.get("name") or ""
+                        ev_name_lower = ev_name.lower()
+                        if any(b in ev_name_lower for b in ["(res.)", "res.", "reserva", "reserve", "(f)", "women", "femenil"]):
+                            continue
                         champ_name = (champs.get(ev.get("champId")) or {}).get("name") or ev.get("champ", {}).get("name") or "Liga"
                         if not is_whitelisted_championship(champ_name, sid):
                             continue
@@ -217,14 +221,19 @@ def condense_markets_for_audit(enriched: Dict[str, Any]) -> str:
         sel_str = ", ".join([f"{s['name']}: {s['price_decimal']} ({s['price_american']})" for s in m.get("selections", [])])
         lines.append(f"Moneyline [{m.get('market_name')}]: {sel_str}")
 
-    # 2. Spreads / Handicaps
-    for s in cat.get("spreads", [])[:2]:
+    # 2. Spreads / Handicaps (priorizando cuotas en el sweet spot 1.55 a 2.45)
+    for s in cat.get("spreads", [])[:3]:
         selections = s.get("selections", [])
-        for sel in selections[:8]:
+        balanced_sels = [sel for sel in selections if 1.55 <= float(sel.get('price_decimal', 0)) <= 2.50]
+        target_sels = balanced_sels if balanced_sels else selections[:6]
+        for sel in target_sels[:6]:
             lines.append(f"Spread [{s.get('scope')}]: {sel['name']} @ {sel['price_decimal']} ({sel['price_american']})")
 
-    # 3. Totales de Partido
-    for t in cat.get("totals", [])[:6]:
+    # 3. Totales de Partido (priorizando cuotas en el sweet spot 1.55 a 2.45)
+    totals_list = cat.get("totals", [])
+    balanced_totals = [t for t in totals_list if (t.get("over") and t.get("under")) and ((1.55 <= float(t['over']['price_decimal']) <= 2.45) or (1.55 <= float(t['under']['price_decimal']) <= 2.45))]
+    target_totals = balanced_totals if balanced_totals else totals_list[:6]
+    for t in target_totals[:6]:
         if t.get("over") and t.get("under"):
             lines.append(f"Total [{t.get('market_name')} {t.get('line')}]: Más @ {t['over']['price_decimal']} ({t['over']['price_american']}) | Menos @ {t['under']['price_decimal']} ({t['under']['price_american']})")
 
@@ -303,11 +312,13 @@ CUOTAS REALES EN PLAYDOIT (INCLUYENDO SECCIÓN COMPLETA 'TODAS'):
 Instrucciones:
 1. Evalúa si existe una ineficiencia o desajuste de precio real en Playdoit basándote ESTRICTAMENTE en las métricas deportivas y el contexto fáctico reciente.
 2. REGLA INSTITUCIONAL DE MÁXIMA CALIDAD Y CONTROL DE VARIANZA:
+   - PROHIBIDO ABSOLUTO: Cuotas ultra-pesadas o cuotas momio castigado menores a 1.55 (como -300 o -370). Arriesgan demasiado capital por una ganancia insignificante. La cuota DEBE estar en el SWEET SPOT +EV entre 1.60 y 2.50 (-165 a +150).
    - PROHIBIDO ABSOLUTO: Combos cruzados de 2 condiciones (ej. '1X2 y Ambos Equipos Marcan', 'Gana y Total Más de X puntos/goles'). Tienen correlación negativa oculta y alta tasa de falla. Solo selecciones de 1 SOLA CONDICIÓN PURA.
    - PROHIBIDO ABSOLUTO: Ganador directo (Moneyline) en fútbol americano colegial (NCAAF). El deporte universitario tiene varianza caótica de pérdidas de balón. Solo se permiten hándicaps con colchón grande (+10.5 o más).
    - PROHIBIDO: Ambos Equipos Anotan (BTTS) si el contexto revela que el visitante o local tiene sequía goleadora de visita o promedia menos de 1.2 goles.
-   - PRIORIDAD MÁXIMA DE ORO (+EV COMPROBADO):
+   - PRIORIDAD MÁXIMA DE ORO (+EV COMPROBADO EN RANGO 1.60 A 2.50):
      * Béisbol F5 (Innings 1 a 5) y Runlines (-1.5 / +1.5): Es el mercado más cuantitativo del deporte profesional porque aísla la calidad del lanzador abridor sin riesgo de bullpens suplentes.
+     * NFL: Spreads principales (+3.5, -3.5, +7.5) y Totales principales (Over/Under 41.5, 43.5) en momios entre -135 y +120.
      * Tiros de Esquina en Fútbol (Over Córners 8.5 / 9.5): Mercado de volumen por bandas independiente del marcador.
      * Spreads con Colchón / Hándicaps Positivos / Doble Oportunidad (+1.5, +0.5): Protegen empates y derrotas cerradas.
      * Totales Simples (Over/Under) o Totales de Equipo (Team Totals) respaldados por los goles/carreras reales del contexto en los últimos 5 juegos.
@@ -358,20 +369,48 @@ Responde ÚNICAMENTE en JSON con este esquema:
     return None
 
 
-def run_multisport_cadence_cycle(hours_ahead: int = 12) -> List[Dict[str, Any]]:
-    """Ciclo completo de escaneo multideporte, evaluación y despacho a Telegram."""
+def get_current_cadence_window(dt: datetime) -> tuple[str, str, int]:
+    """
+    Retorna (window_key, window_label, hours_until_window_end)
+    4 Ventanas fijas de 6 horas CDMX:
+    - 00:00 - 06:00: madrugada (KBO, NPB, Asia)
+    - 06:00 - 12:00: manana (Fútbol Europeo Élite)
+    - 12:00 - 18:00: tarde (NFL Domingo, MLB Tarde, Fútbol Liga MX/Sudamérica)
+    - 18:00 - 24:00: noche (NFL Sunday Night, Liga MX Noche, MLB Noche, NBA)
+    """
+    h = dt.hour
+    if 0 <= h < 6:
+        return "madrugada", "MADRUGADA (00:00 - 06:00 CDMX)", max(1, 6 - h)
+    elif 6 <= h < 12:
+        return "manana", "MAÑANA (06:00 - 12:00 CDMX)", max(1, 12 - h)
+    elif 12 <= h < 18:
+        return "tarde", "TARDE (12:00 - 18:00 CDMX)", max(1, 18 - h)
+    else:
+        return "noche", "NOCHE (18:00 - 24:00 CDMX)", max(1, 24 - h)
+
+
+def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispatch: bool = False) -> List[Dict[str, Any]]:
+    """Ciclo de escaneo multideporte por ventana de 6 horas y despacho consolidado a Telegram."""
     now_cdmx = datetime.now(MEXICO_TZ)
+    window_key, window_label, window_hours_left = get_current_cadence_window(now_cdmx)
+    actual_hours = hours_ahead if hours_ahead is not None else min(6, window_hours_left + 1)
+
     print("\n" + "=" * 80)
-    print("🌮 REY TACO PICKS — CICLO MULTIDEPORTE 24/7 (PLAYDOIT + GROQ)")
+    print(f"🌮 REY TACO PICKS — CICLO MULTIDEPORTE 24/7 ({window_label})")
     print(f"🕒 Hora CDMX: {now_cdmx.strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
 
     session = get_altenar_session()
     history = _load_history()
 
-    # 1. Descubrir eventos próximos
-    print(f"\n🔍 Buscando partidos en Playdoit para las próximas {hours_ahead} horas...")
-    discovered = discover_upcoming_multisport_events(session, hours_ahead=hours_ahead)
+    window_dispatch_key = f"window_{now_cdmx.strftime('%Y%m%d')}_{window_key}"
+    if window_dispatch_key in history and not force_dispatch:
+        print(f"ℹ️ La ventana '{window_label}' ya fue despachada hoy a las {history[window_dispatch_key].get('dispatched_at')}.")
+        return []
+
+    # 1. Descubrir eventos próximos dentro de la ventana de 6 horas
+    print(f"\n🔍 Buscando partidos en Playdoit para la ventana {window_label} (próximas {actual_hours} horas)...")
+    discovered = discover_upcoming_multisport_events(session, hours_ahead=actual_hours)
 
     total_discovered = sum(len(evs) for evs in discovered.values())
     print(f"📊 Total partidos descubiertos: {total_discovered}")
@@ -392,12 +431,12 @@ def run_multisport_cadence_cycle(hours_ahead: int = 12) -> List[Dict[str, Any]]:
     cutoff_iso = (now_cdmx - timedelta(hours=24)).isoformat()
     history = {k: v for k, v in history.items() if v.get("evaluated_at", "") > cutoff_iso}
 
-    MAX_PICKS_PER_WINDOW = 5
+    MAX_PICKS_PER_WINDOW = 4
 
     # 3. Evaluar eventos pendientes por deporte
     for sid, evs in discovered.items():
         if len(dispatched_picks) >= MAX_PICKS_PER_WINDOW:
-            print(f"✅ Cupo máximo de {MAX_PICKS_PER_WINDOW} picks por ventana de 12 horas alcanzado.")
+            print(f"✅ Cupo máximo de {MAX_PICKS_PER_WINDOW} picks para la ventana {window_label} alcanzado.")
             break
         meta = SPORT_METADATA[sid]
         sorted_evs = sorted(evs, key=lambda x: x["time_cdmx"])
@@ -573,34 +612,79 @@ def run_multisport_cadence_cycle(hours_ahead: int = 12) -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"⚠️ Error subiendo picks a R2: {e}")
 
-    # Enviar tarjeta consolidada antispam a Telegram
+    # Enviar tarjeta consolidada antispam a Telegram (1 SOLO MENSAJE POR VENTANA)
     if dispatched_picks and ADMIN_CHAT_ID:
-        summary_text = f"""🌮 <b>REY TACO — NUEVOS PICKS EN TU MINI APP</b> 👑
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-Se auditaron y aprobaron <b>{len(dispatched_picks)} oportunidades de valor</b> en Playdoit para las próximas horas:
+        import html
+
+        # Construir Parlay de Oro de 2 selecciones si hay al menos 2 picks
+        parlay_block = ""
+        if len(dispatched_picks) >= 2:
+            p1, p2 = dispatched_picks[0], dispatched_picks[1]
+            try:
+                c_dec = round(float(p1.get("market_odds_decimal", 1.8)) * float(p2.get("market_odds_decimal", 1.8)), 2)
+                c_ame = decimal_to_american(c_dec)
+                parlay_block = f"""🎯 <b>PARLAY DE ORO RECOMENDADO ({c_ame}):</b>
+1. {p1['sport_icon']} {html.escape(p1['match'])} ➔ <b>{html.escape(p1['pick'])}</b> ({p1['time']})
+2. {p2['sport_icon']} {html.escape(p2['match'])} ➔ <b>{html.escape(p2['pick'])}</b> ({p2['time']})
+📊 <i>Cuota Combinada: <code>{c_ame}</code> ({c_dec}) • Stake: 1.0 U</i>
 
 """
-        for p in dispatched_picks:
+            except Exception:
+                pass
+
+        summary_text = f"""🌮 <b>REY TACO — CARTELERA OFICIAL DE LA {window_label}</b> 👑
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+{parlay_block}💎 <b>JOYAS INDIVIDUALES APROBADAS ({len(dispatched_picks)}):</b>
+"""
+        for idx, p in enumerate(dispatched_picks, 1):
             match_title = f"{p.get('home_team')} vs. {p.get('away_team')}" if p.get('home_team') and p.get('away_team') else p.get('match', '')
-            summary_text += f"• {p.get('league')} | <b>{match_title}</b>:\n  👉 <b>{p.get('pick')}</b> @ <code>{p.get('market_odds_american')}</code> ({p.get('time')} CDMX)\n"
+            summary_text += f"\n<b>{idx}. {p.get('sport_icon')} {html.escape(match_title)}</b> [{html.escape(p.get('league', ''))}]\n"
+            summary_text += f"   👉 <b>{html.escape(p.get('pick', ''))}</b> @ <code>{p.get('market_odds_american', '')}</code> ({p.get('time', '')})\n"
             if p.get('meaning'):
-                summary_text += f"  <i>💡 {p.get('meaning')}</i>\n"
+                summary_text += f"   <i>💡 {html.escape(p.get('meaning'))}</i>\n"
+            if p.get('playdoit_path'):
+                clean_path = " ➔ ".join(str(s) for s in p.get('playdoit_path')[:3])
+                summary_text += f"   🗺️ <i>Ruta: {html.escape(clean_path)}</i>\n"
 
-        summary_text += """━━━━━━━━━━━━━━━━━━━━━━━━━━
-Toca el botón abajo para ver las <b>rutas exactas paso a paso</b> y registrarlos sin perderte 👇"""
+        summary_text += """\n━━━━━━━━━━━━━━━━━━━━━━━━━━
+📱 <i>Cartelera interactiva lista en tu Mini App de Telegram</i> 👇"""
 
-        telegram_api_call("sendMessage", {
+        res = telegram_api_call("sendMessage", {
             "chat_id": ADMIN_CHAT_ID,
             "text": summary_text,
             "parse_mode": "HTML",
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "📱 Abrir Panel de Picks Privados", "web_app": {"url": "https://reytacopicks.com/mini-app.html?v=2"}}
+                        {"text": "📱 Abrir Mini App Rey Taco", "web_app": {"url": "https://reytacopicks.com/mini-app.html?v=3"}}
                     ]
                 ]
             }
         })
+        if not res.get("ok"):
+            print(f"⚠️ Telegram sendMessage HTML falló: {res}. Reintentando sin parse_mode...")
+            plain_text = (summary_text.replace("<b>", "").replace("</b>", "")
+                                     .replace("<i>", "").replace("</i>", "")
+                                     .replace("<code>", "").replace("</code>", ""))
+            telegram_api_call("sendMessage", {
+                "chat_id": ADMIN_CHAT_ID,
+                "text": plain_text,
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [
+                            {"text": "📱 Abrir Mini App Rey Taco", "web_app": {"url": "https://reytacopicks.com/mini-app.html?v=3"}}
+                        ]
+                    ]
+                }
+            })
+
+        # Marcar la ventana como despachada en history para nunca duplicar
+        history[window_dispatch_key] = {
+            "dispatched_at": now_cdmx.isoformat(),
+            "count": len(dispatched_picks),
+            "picks": [p["ticket_id"] for p in dispatched_picks]
+        }
+        _save_history(history)
 
     print(f"\n🏁 Ciclo completado. {len(dispatched_picks)} nuevas jugadas despachadas a Telegram.")
     return dispatched_picks

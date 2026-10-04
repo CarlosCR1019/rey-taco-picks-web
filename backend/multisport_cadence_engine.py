@@ -92,11 +92,14 @@ def is_whitelisted_championship(champ_name: str, sport_id: int) -> bool:
 
 
 def parse_teams(name: str) -> tuple[str, str]:
-    """Extrae de manera segura el equipo local y visitante."""
-    for delimiter in (" vs. ", " vs ", " @ ", " - "):
+    """Extrae de manera segura el equipo local y visitante (home, away)."""
+    if " @ " in name:
+        parts = name.split(" @ ", 1)
+        return parts[1].strip(), parts[0].strip()  # In US format (Away @ Home), returns (home, away)
+    for delimiter in (" vs. ", " vs ", " - "):
         if delimiter in name:
             parts = name.split(delimiter, 1)
-            return parts[0].strip(), parts[1].strip()
+            return parts[0].strip(), parts[1].strip()  # home, away
     return name.strip(), ""
 
 
@@ -280,11 +283,14 @@ def audit_with_groq(event: Dict[str, Any], market_lines_str: str, extra_context:
 
     client = Groq(api_key=groq_api_key)
 
+    home_t, away_t = parse_teams(event.get('name', ''))
     prompt = f"""Eres el Consejo Cuantitativo y Táctico de Rey Taco Picks.
 Audita el siguiente partido en Playdoit para la jornada de hoy.
 
 EVENTO:
 • Partido: {event['name']}
+• Equipo Local: {home_t}
+• Equipo Visitante: {away_t}
 • Deporte: {event['sport_name']} ({event.get('champ_name')})
 • Horario: {event['time_cdmx']} CDMX
 

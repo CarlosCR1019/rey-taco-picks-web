@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import re
 import time
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -66,11 +67,14 @@ TIER1_LEAGUE_KEYWORDS = [
     "liga mx", "expansión mx", "expansion mx", "champions", "europa league", "conference league",
     "premier league", "laliga", "la liga", "serie a", "bundesliga", "ligue 1", "mls",
     "libertadores", "sudamericana", "primera a", "liga profesional argentina",
-    "brasileirao", "eredivisie", "primeira liga", "copa del rey", "fa cup", "nations league"
+    "brasileirao", "eredivisie", "primeira liga", "copa del rey", "fa cup", "nations league",
+    # Fútbol Japón (J-League y Copas)
+    "liga j", "j-league", "j.league", "j1", "j2", "copa del emperador"
 ]
 
 BANNED_LEAGUE_KEYWORDS = [
-    "sub-19", "sub 19", "u19", "sub-21", "u21", "sub-20", "u20", "reserves", "reserva", "reserve", "(res.)", "res.",
+    "sub-19", "sub 19", "u19", "sub-20", "u20", "sub-21", "u21", "sub-22", "sub 22", "u22", "sub-23", "sub 23", "u23",
+    "reserves", "reserva", "reserve", "(res.)", "res.",
     "amateur", "division 2", "division 3", "division 4", "regional", "youth", "juvenil",
     "islandia", "honduras", "nicaragua", "guatemala", "mongolia", "bangladesh", "oman",
     "vietnam", "tercera", "promocional", "mizoram", "cymru", "women", "femenil", "(f)",
@@ -342,6 +346,10 @@ Instrucciones:
    - PROHIBIDO ABSOLUTO: Combos cruzados de 2 condiciones (ej. '1X2 y Ambos Equipos Marcan', 'Gana y Total Más de X puntos/goles'). Tienen correlación negativa oculta y alta tasa de falla. Solo selecciones de 1 SOLA CONDICIÓN PURA.
    - PROHIBIDO ABSOLUTO EN NPB (BÉISBOL JAPÓN): Runlines de equipo local (-1.5 Local). En la NPB la pelota es de bajísima compresión y más del 32% de partidos terminan por 1 carrera; además, si el equipo local llega ganando a la 9na entrada, la baja de la 9na NO SE JUEGA, lo que destruye el -1.5 aunque el local gane el juego. En NPB SOLO se permiten: Totales (Unders/Bajas), Ganador directo (Moneyline) o Hándicap positivo (+1.5).
    - REGLA DE ORO EN KBO (BÉISBOL COREA): La KBO es liga de bateo explosivo y bullpens con alta efectividad (ERA > 5.00). PROHIBIDO hándicaps de equipos con lanzadores abridores inestables. En KBO se prioriza Totales (Over/Under) o Moneyline directo de abridores de élite.
+   - REGLA EN FÚTBOL JAPONÉS (J-LEAGUE / COPA DEL EMPERADOR):
+     * PRIORIDAD DE ORO: Tiros de Esquina (Over 8.5 / 9.5 Córners) y Hándicaps Positivos / Doble Oportunidad (+0.5, +1.0) al no-favorito debido a la alta paridad técnica de Japón.
+     * PROHIBIDO: Ganador directo (Moneyline) a favoritos visitantes a momios castigados (< 1.70). Japón tiene baja ventaja de localía pero altísima tasa de empates sorpresivos.
+     * PROHIBIDO: Mercados de tarjetas (Japón es de los países con mayor Fair Play y menor índice de amonestaciones).
    - PROHIBIDO ABSOLUTO: Ganador directo (Moneyline) en fútbol americano colegial (NCAAF). El deporte universitario tiene varianza caótica de pérdidas de balón. Solo se permiten hándicaps con colchón grande (+10.5 o más).
    - PROHIBIDO: Ambos Equipos Anotan (BTTS) si el contexto revela que el visitante o local tiene sequía goleadora de visita o promedia menos de 1.2 goles.
    - PRIORIDAD MÁXIMA DE ORO (+EV COMPROBADO EN RANGO 1.60 A 2.50):
@@ -565,10 +573,13 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
             hour_cdmx = int(ev["time_cdmx"].split(":")[0]) if ":" in ev["time_cdmx"] else 12
             block_name = "tarde" if hour_cdmx >= 11 else "madrugada"
 
-            # Stake Defensivo para Madrugada / Ligas Asiáticas (Control de Varianza institucional)
+            # Stake Defensivo para Madrugada / Ligas Asiáticas / Experimental Fútbol Japonés
             c_name_lower = (ev.get("champ_name") or "").lower()
+            is_japan_soccer = any(k in c_name_lower for k in ["liga j", "j-league", "j.league", "copa del emperador"]) and sid == 66
             is_asian_league = any(k in c_name_lower for k in ["npb", "kbo", "japon", "corea", "nippon"])
-            if window_key == "madrugada" or block_name == "madrugada" or is_asian_league:
+            if is_japan_soccer:
+                assigned_stake = 0.1  # Stake Experimental de Calibración
+            elif window_key == "madrugada" or block_name == "madrugada" or is_asian_league:
                 assigned_stake = 0.5
             else:
                 assigned_stake = min(float(audit.get("stake", 1.0)), 1.0)
@@ -648,7 +659,6 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
     # Filtrar rigurosamente solo juegos que aún no han empezado (o empezaron hace menos de 10 min)
     now_cdmx = datetime.now(MEXICO_TZ)
     upcoming_active = []
-    import re
     for p in existing_active:
         st_utc = p.get("start_time_utc")
         if st_utc:
@@ -729,7 +739,12 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
             summary_text += f"\n<b>{idx}. {p.get('sport_icon')} {html.escape(match_title)}</b> [{html.escape(p.get('league', ''))}]\n"
             summary_text += f"   👉 <b>{html.escape(p.get('pick', ''))}</b> @ <code>{p.get('market_odds_american', '')}</code> ({p.get('time', '')})\n"
             stake_val = float(p.get('stake_units', 1.0))
-            stake_txt = f"{stake_val} U (Defensivo Control de Varianza)" if stake_val <= 0.5 else f"{stake_val} U"
+            if stake_val <= 0.15:
+                stake_txt = f"{stake_val} U (Experimental Calibración J-League)"
+            elif stake_val <= 0.5:
+                stake_txt = f"{stake_val} U (Defensivo Control de Varianza)"
+            else:
+                stake_txt = f"{stake_val} U"
             summary_text += f"   ⚖️ <i>Stake Sugerido: {stake_txt}</i>\n"
             if p.get('meaning'):
                 summary_text += f"   <i>💡 {html.escape(p.get('meaning'))}</i>\n"

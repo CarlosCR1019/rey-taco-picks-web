@@ -142,7 +142,7 @@ def publish_instagram_reel(public_video_url: str, caption: str) -> Dict[str, Any
             print(f"⚠️ [IG REEL] Error creando contenedor: {create_res}")
             return {"ok": False, "error": create_res}
 
-        for _ in range(10):
+        for _ in range(25):
             time.sleep(6)
             st = requests.get(
                 f"https://graph.facebook.com/v20.0/{container_id}",
@@ -156,14 +156,22 @@ def publish_instagram_reel(public_video_url: str, caption: str) -> Dict[str, Any
                 print(f"⚠️ [IG REEL] Contenedor falló ({code}): {st}")
                 return {"ok": False, "error": st}
 
-        pub_res = requests.post(
-            f"https://graph.facebook.com/v20.0/{ig_id}/media_publish",
-            data={"creation_id": container_id, "access_token": token},
-            timeout=30,
-        ).json()
-        if pub_res.get("id"):
-            print(f"✅ [IG REEL] Publicado exitosamente en Instagram ({pub_res['id']}).")
-            return {"ok": True, "media_id": pub_res["id"]}
+        pub_res: Dict[str, Any] = {}
+        for _ in range(4):
+            pub_res = requests.post(
+                f"https://graph.facebook.com/v20.0/{ig_id}/media_publish",
+                data={"creation_id": container_id, "access_token": token},
+                timeout=30,
+            ).json()
+            if pub_res.get("id"):
+                print(f"✅ [IG REEL] Publicado exitosamente en Instagram ({pub_res['id']}).")
+                return {"ok": True, "media_id": pub_res["id"]}
+            err_code = (pub_res.get("error") or {}).get("code")
+            if err_code == 9007:
+                time.sleep(8)
+                continue
+            break
+
         print(f"⚠️ [IG REEL] Error en media_publish: {pub_res}")
         return {"ok": False, "error": pub_res}
     except Exception as e:
@@ -176,12 +184,18 @@ def publish_reel_to_meta(
     caption: str,
     mp4_path: Optional[str | Path] = None,
 ) -> Dict[str, Any]:
-    """Despacha el Reel a Facebook Page Reels e Instagram Reels."""
+    """Despacha el Reel a Facebook Page Reels, Instagram Reels y TikTok Studio (si hay sesión activa)."""
     results: Dict[str, Any] = {}
     if mp4_path and Path(mp4_path).exists():
         results["facebook"] = publish_facebook_reel(mp4_path, caption)
     if public_url:
         results["instagram"] = publish_instagram_reel(public_url, caption)
+    if mp4_path and Path(mp4_path).exists():
+        try:
+            from backend.tiktok_auto_uploader import publish_tiktok_video
+            results["tiktok"] = publish_tiktok_video(mp4_path, caption)
+        except Exception as e_tt:
+            results["tiktok"] = {"ok": False, "error": str(e_tt)}
     return results
 
 

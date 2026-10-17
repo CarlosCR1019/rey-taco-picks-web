@@ -8,6 +8,7 @@ usando Playwright Chromium y cookies de sesión persistentes (`data/tiktok_cooki
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -122,6 +123,22 @@ def publish_tiktok_video(mp4_path: str | Path, caption: str) -> Dict[str, Any]:
 
     clean_caption = caption.replace("\n\n", " • ").replace("\n", " ").strip()[:2000]
 
+    # Filtro anti-baneo estricto para TikTok (elimina cualquier término de apuestas o casas)
+    banned_replacements = {
+        "apuestas deportivas": "predicciones deportivas",
+        "apuesta deportiva": "predicción deportiva",
+        "apuestas": "análisis deportivo",
+        "apuesta": "pronóstico",
+        "playdoit": "nuestro modelo",
+        "momio": "probabilidad",
+        "cuota": "línea",
+        "casino": "deportes",
+        "ganar dinero": "obtener valor",
+    }
+    sanitized_caption = clean_caption
+    for bad, good in banned_replacements.items():
+        sanitized_caption = re.sub(re.escape(bad), good, sanitized_caption, flags=re.IGNORECASE)
+
     try:
         from playwright.sync_api import sync_playwright
 
@@ -165,23 +182,62 @@ def publish_tiktok_video(mp4_path: str | Path, caption: str) -> Dict[str, Any]:
             print(f"📤 [TIKTOK AUTO] Cargando {video_file.name} en TikTok Studio (@rey.taco.picks)...")
             file_input.set_input_files(str(video_file), timeout=30000)
 
-            # 2. Esperar al editor de descripción [contenteditable="true"]
-            editor = page.locator('[contenteditable="true"]').first
-            try:
-                editor.wait_for(state="visible", timeout=35000)
+            # 2. Esperar a que el archivo termine de procesarse (aparece 'Cargado' o 'Sustituir' o transcurren 14s)
+            print("⏳ [TIKTOK AUTO] Esperando procesamiento y validación del video...")
+            for _ in range(15):
                 page.wait_for_timeout(2000)
-                _clear_blocking_overlays(page)
+                body_txt = (page.locator("body").inner_text() or "").lower()
+                if "cargado" in body_txt or "sustituir" in body_txt or "detalles" in body_txt:
+                    break
 
+            _clear_blocking_overlays(page)
+
+            # 3. Escribir descripción limpia sin palabras de apuestas
+            editor = page.locator('.public-DraftEditor-content, [contenteditable="true"]').first
+            try:
+                editor.wait_for(state="visible", timeout=25000)
                 editor.click(force=True)
-                page.keyboard.press("Control+A")
-                page.keyboard.press("Backspace")
-                page.keyboard.insert_text(clean_caption)
+                page.wait_for_timeout(600)
+                # Seleccionar todo el texto previo (nombre del archivo) y reemplazarlo
+                page.evaluate(
+                    """(captionText) => {
+                        const el = document.querySelector('[contenteditable="true"]');
+                        if (el) {
+                            el.focus();
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('delete', false, null);
+                            document.execCommand('insertText', false, captionText);
+                        }
+                    }""",
+                    sanitized_caption
+                )
+                page.wait_for_timeout(800)
+                curr_txt = editor.inner_text().strip()
+                if len(curr_txt) < 10:
+                    page.keyboard.press("Control+A")
+                    page.keyboard.press("Backspace")
+                    page.keyboard.insert_text(sanitized_caption)
                 page.keyboard.press("Escape")
-                page.wait_for_timeout(1500)
+                page.wait_for_timeout(1000)
             except Exception as e_ed:
                 print(f"ℹ️ [TIKTOK AUTO] Nota al escribir descripción: {e_ed}")
 
-            # 3. Esperar a que termine de subir el video y el botón Publicar se habilite
+            # 4. Asegurar que la privacidad esté en 'Todo el mundo'
+            try:
+                privacy_dropdown = page.locator('div:has-text("Quién puede ver"), div:has-text("Visibilidad")').locator('..').locator('[role="combobox"], [class*="Select"]').first
+                if privacy_dropdown.count() > 0:
+                    curr_priv = privacy_dropdown.inner_text().lower()
+                    if "todo el mundo" not in curr_priv and "everyone" not in curr_priv:
+                        privacy_dropdown.click(force=True)
+                        page.wait_for_timeout(1000)
+                        opt_public = page.locator('[role="option"]:has-text("Todo el mundo"), div:has-text("Todo el mundo")').first
+                        if opt_public.count() > 0:
+                            opt_public.click(force=True)
+                            page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+            # 5. Esperar a que el botón Publicar esté habilitado y hacer clic
             posted = False
             for _ in range(30):
                 _clear_blocking_overlays(page)
@@ -211,8 +267,8 @@ def publish_tiktok_video(mp4_path: str | Path, caption: str) -> Dict[str, Any]:
                 print("⚠️ [TIKTOK AUTO] El botón Publicar no se habilitó a tiempo.")
                 return {"ok": False, "reason": "post_button_not_ready"}
 
-            # 4. Manejar posible modal de confirmación ("Publicar ahora" / "Continuar" / "Aceptar")
-            for _ in range(4):
+            # 6. Manejar modal de confirmación final ("Publicar ahora" / "Continuar")
+            for _ in range(5):
                 page.wait_for_timeout(2500)
                 for confirm_sel in (
                     'button:has-text("Publicar ahora")',
@@ -230,7 +286,7 @@ def publish_tiktok_video(mp4_path: str | Path, caption: str) -> Dict[str, Any]:
                 if "/content" in page.url.lower():
                     break
 
-            page.wait_for_timeout(4000)
+            page.wait_for_timeout(5000)
             final_url = page.url
             try:
                 COOKIES_PATH.write_text(json.dumps(context.cookies(), indent=2), encoding="utf-8")

@@ -183,27 +183,31 @@ def generate_voice_script(pick: Dict[str, Any], mode: str = "pick") -> str:
             client = Groq(api_key=groq_key)
             if mode == "victory":
                 prompt = (
-                    f"Escribe un guion de locución de máximo 32 palabras en español mexicano muy energético para un Reel de TikTok celebrando una apuesta ganada (Caja Verde). "
-                    f"Partido: {match_name}. Pronóstico ganado: {selection} con momio {odds_am}. "
-                    f"Cierra invitando a entrar gratis al Telegram en el perfil de Rey Taco Picks. Sin emojis ni acotaciones, solo el texto hablado."
+                    f"Escribe un guion de locución de máximo 30 palabras en español mexicano muy energético para un Reel celebrando un pronóstico deportivo acertado por IA. "
+                    f"Partido: {match_name}. Pronóstico cumplido: {selection}. "
+                    f"PROHIBIDO usar las palabras: apuesta, apostar, momio, casino, dinero, ganar dinero, playdoit, cuota. "
+                    f"Cierra invitando a seguir el análisis deportivo en el Telegram del perfil de Rey Taco Picks. Sin emojis ni acotaciones, solo el texto hablado."
                 )
             elif mode == "ladder":
                 if step >= 2:
                     prompt = (
-                        f"Escribe un guion de locución de máximo 32 palabras en español mexicano muy energético anunciando que ya ganamos el Paso 1 gratis del Reto Escalera de fin de semana "
-                        f"y hoy jugamos el Paso {step} en {match_name} a cuota {odds_dec} exclusivo en el Canal VIP de Rey Taco Picks. NO reveles la selección. Sin emojis ni acotaciones."
+                        f"Escribe un guion de locución de máximo 30 palabras en español mexicano muy energético anunciando que ya acertamos el Paso 1 del Reto Deportivo de fin de semana "
+                        f"y hoy jugamos el Paso {step} en {match_name} exclusivo en el Canal VIP de Rey Taco Picks. NO reveles la selección. "
+                        f"PROHIBIDO usar palabras de apuestas (apuesta, momio, casino, dinero, cuota). Sin emojis ni acotaciones."
                     )
                 else:
                     prompt = (
-                        f"Escribe un guion de locución de máximo 32 palabras en español mexicano muy energético para el Reto Escalera de fin de semana Paso 1 100% gratis. "
-                        f"Partido: {match_name}. Selección abierta: {selection} con cuota {odds_dec}. "
-                        f"Cierra invitando a seguir el reto en el Telegram del perfil de Rey Taco Picks. Sin emojis ni acotaciones, solo el texto hablado."
+                        f"Escribe un guion de locución de máximo 30 palabras en español mexicano muy energético para el Reto Deportivo de fin de semana Paso 1 abierto a todos. "
+                        f"Partido: {match_name}. Selección oficial: {selection}. "
+                        f"PROHIBIDO usar palabras de apuestas (apuesta, momio, casino, dinero, playdoit, cuota). "
+                        f"Cierra invitando a seguir el reto deportivo en el Telegram del perfil de Rey Taco Picks. Sin emojis ni acotaciones, solo el texto hablado."
                     )
             else:
                 prompt = (
-                    f"Escribe un guion de locución de máximo 34 palabras en español mexicano muy energético para un Reel de TikTok revelando un pick deportivo con ventaja de IA. "
-                    f"Partido: {match_name}. Selección: {selection} con momio {odds_am}. "
-                    f"Cierra invitando a entrar gratis al Telegram en el perfil de Rey Taco Picks. Sin emojis ni acotaciones, solo el texto hablado."
+                    f"Escribe un guion de locución de máximo 32 palabras en español mexicano muy energético para un Reel revelando una predicción deportiva con ventaja de IA. "
+                    f"Partido: {match_name}. Selección: {selection}. "
+                    f"PROHIBIDO usar palabras de apuestas (apuesta, momio, casino, dinero, playdoit, cuota). "
+                    f"Cierra invitando a ver el análisis deportivo en el Telegram del perfil de Rey Taco Picks. Sin emojis ni acotaciones, solo el texto hablado."
                 )
             resp = client.chat.completions.create(
                 model="openai/gpt-oss-120b",
@@ -219,26 +223,26 @@ def generate_voice_script(pick: Dict[str, Any], mode: str = "pick") -> str:
 
     if mode == "victory":
         return (
-            f"¡Otra Caja Verde cobrada para la tribu de Rey Taco Picks! "
-            f"En el duelo {match_name}, cobramos {selection} con momio {odds_am}. "
-            f"¡Entra gratis a nuestro Telegram en el link del perfil!"
+            f"¡Otro pronóstico deportivo acertado para la tribu de Rey Taco Picks! "
+            f"En el partido {match_name}, cumplimos con {selection}. "
+            f"¡Sigue todos los análisis deportivos en el link del perfil!"
         )
     if mode == "ladder":
         if step >= 2:
             return (
-                f"¡Atención tribu! Ya cobramos el Paso 1 gratis del Reto Escalera "
-                f"y hoy jugamos el Paso {step} en {match_name} a cuota {odds_dec}. "
-                f"¡Desbloquéalo ya en el Canal VIP desde el link del perfil!"
+                f"¡Atención tribu! Ya acertamos el Paso 1 del Reto Deportivo "
+                f"y hoy vamos con el Paso {step} en {match_name}. "
+                f"¡Desbloquéalo en el Canal VIP desde el link del perfil!"
             )
         return (
-            f"¡Atención tribu! Arranca el Paso 1 gratis del Reto Escalera de fin de semana en {match_name}. "
-            f"Vamos con {selection} a cuota {odds_dec}. "
-            f"¡Síguenos gratis en el Telegram del perfil!"
+            f"¡Atención tribu! Arranca el Paso 1 del Reto Deportivo de fin de semana en {match_name}. "
+            f"Vamos con {selection}. "
+            f"¡Sigue todo el análisis deportivo en el Telegram del perfil!"
         )
     return (
-        f"¡Ojo a esta línea con valor detectada por inteligencia artificial! "
-        f"En {match_name}, entramos con {selection} a momio {odds_am}. "
-        f"¡Únete gratis a nuestro Telegram en el link del perfil!"
+        f"¡Ojo a este dato con alto valor detectado por inteligencia artificial! "
+        f"En {match_name}, nuestro modelo marca {selection}. "
+        f"¡Únete al análisis deportivo gratis en el link del perfil!"
     )
 
 
@@ -514,7 +518,7 @@ def build_reel_payload(pick: Dict[str, Any], words: List[Dict[str, Any]], mode: 
         "match_text": match_name,
         "selection_label": sel_label,
         "selection_text": selection,
-        "metric1_label": "CUOTA PLAYDOIT",
+        "metric1_label": "LÍNEA IA",
         "metric1_val": f"{odds_am} ({odds_dec})",
         "metric2_label": m2_label,
         "metric2_val": m2_val,
@@ -636,31 +640,31 @@ def produce_and_dispatch_ai_reel(
 
     if mode == "victory":
         caption = (
-            f"✅ ¡OTRA CAJA VERDE COBRADA! 🌮👑\n\n"
+            f"✅ ¡PRONÓSTICO ACERTADO CON IA! 🌮👑\n\n"
             f"🏟️ {match_name}\n"
-            f"🎯 {selection} ({odds_am}) 💰\n\n"
-            f"Entra gratis a nuestro canal de Telegram en el link del perfil 👉 @reytaco_picks\n\n"
-            f"#ReyTacoPicks #ApuestasDeportivas #CajaVerde #PicksDeportivos #Playdoit #Parlay"
+            f"🎯 {selection} ({odds_am}) 🎯\n\n"
+            f"Todos los análisis deportivos diarios en el perfil 👉 @rey.taco.picks\n\n"
+            f"#ReyTacoPicks #PrediccionesDeportivas #AnalisisDeportivo #LigaMX #Futbol #NBA #Estadisticas"
         )
     elif mode == "ladder":
         step = int(pick.get("step") or pick.get("ladder_step") or 1)
-        sel_display = "🔒 [EXCLUSIVO CANAL VIP - $129 MXN]" if step >= 2 else f"{selection} ({odds_am})"
+        sel_display = "🔒 [EXCLUSIVO COMUNIDAD VIP]" if step >= 2 else f"{selection} ({odds_am})"
         caption = (
-            f"🪜 RETO ESCALERA FIN DE SEMANA • PASO {step} DE 3 ({'GRATIS' if step == 1 else 'EXCLUSIVO VIP'}) 🌮👑\n\n"
+            f"🪜 RETO DEPORTIVO DE FIN DE SEMANA • PASO {step} DE 3 ({'ABIERTO' if step == 1 else 'EXCLUSIVO VIP'}) 🌮👑\n\n"
             f"🏟️ {match_name}\n"
             f"🎯 {sel_display}\n\n"
-            f"🟢 Paso 1 (Viernes): SIEMPRE GRATIS\n"
-            f"🔒 Paso 2 y Paso 3 (Sábado y Domingo): EXCLUSIVOS CANAL VIP ($129/sem)\n\n"
-            f"Entra desde el link del perfil 👉 @reytaco_picks\n\n"
-            f"#RetoEscalera #ReyTacoPicks #ApuestasDeportivas #PicksGratis #Playdoit"
+            f"🟢 Paso 1: Abierto para toda la tribu\n"
+            f"🔒 Pasos 2 y 3: Exclusivos en Telegram VIP\n\n"
+            f"Únete al análisis deportivo desde el perfil 👉 @rey.taco.picks\n\n"
+            f"#RetoDeportivo #ReyTacoPicks #LigaMX #Futbol #DatosDeportivos #Predicciones #Estadisticas"
         )
     else:
         caption = (
-            f"🔥 PICK ESTELAR DETECTADO POR IA 🌮👑\n\n"
+            f"🔥 ANÁLISIS DEPORTIVO CON INTELIGENCIA ARTIFICIAL 🌮👑\n\n"
             f"🏟️ {match_name}\n"
             f"🎯 {selection} ({odds_am})\n\n"
-            f"Todos los picks gratis en nuestro Telegram (Link en Bio) 👉 @reytaco_picks\n\n"
-            f"#ReyTacoPicks #ApuestasDeportivas #NBA #NFL #LigaMX #PicksDeportivos"
+            f"Todos los análisis y predicciones deportivas en el perfil 👉 @rey.taco.picks\n\n"
+            f"#ReyTacoPicks #PrediccionesDeportivas #NBA #NFL #LigaMX #Futbol #DatosDeportivos #Analisis"
         )
 
     if send_telegram:

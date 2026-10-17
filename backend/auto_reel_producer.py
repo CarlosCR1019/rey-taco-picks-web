@@ -147,13 +147,31 @@ def _select_flow_broll(sport_or_pick: Any, mode: str) -> Tuple[Optional[Path], O
     return vid_candidate, img_candidate, sport_key
 
 
+def _explicit_selection(pick: Dict[str, Any]) -> str:
+    raw_sel = str(pick.get("pick") or pick.get("selection") or "Selección Oficial").strip()
+    raw_mkt = str(pick.get("market_name") or pick.get("altenar_market") or pick.get("mercado") or "").strip()
+    try:
+        from backend.ladder_challenge_engine import format_explicit_pick
+        return format_explicit_pick(raw_sel, raw_mkt)
+    except Exception:
+        sel_low = raw_sel.lower()
+        mkt_low = raw_mkt.lower()
+        if any(k in sel_low for k in ("más de", "mas de", "menos de", "over", "under")):
+            if not any(u in sel_low for u in ("esquina", "córner", "corner", "gol", "punto", "carrera", "juego", "set")):
+                if any(c in mkt_low for c in ("esquina", "corner", "córner")):
+                    return f"{raw_sel} Tiros de Esquina (Córners)"
+                if raw_mkt:
+                    return f"{raw_sel} ({raw_mkt})"
+        return raw_sel
+
+
 def generate_voice_script(pick: Dict[str, Any], mode: str = "pick") -> str:
     """
     Genera el guion hablado de 10-12 segundos para el Reel.
     Intenta usar Groq para darle variedad fresca; si no, usa plantilla de alta retención.
     """
     match_name = str(pick.get("match") or pick.get("event_name") or "Partido Estelar").replace(" vs. ", " contra ").replace(" vs ", " contra ").replace(" @ ", " contra ")
-    selection = str(pick.get("pick") or pick.get("selection") or "Selección Oficial")
+    selection = _explicit_selection(pick)
     odds_am = str(pick.get("odds_american") or pick.get("market_odds_american") or "-110")
     odds_dec = str(pick.get("odds_decimal") or pick.get("market_odds_decimal") or "1.90")
     step = int(pick.get("step") or pick.get("ladder_step") or 1)
@@ -445,7 +463,8 @@ def build_reel_payload(pick: Dict[str, Any], words: List[Dict[str, Any]], mode: 
     else:
         league_name = raw_league
     time_str = str(pick.get("time_cdmx") or "HOY")
-    selection = str(pick.get("pick") or pick.get("selection") or "SELECCIÓN OFICIAL").upper()
+    selection = _explicit_selection(pick).upper()
+    mkt_label = str(pick.get("market_name") or pick.get("altenar_market") or "").strip().upper()
     odds_am = str(pick.get("odds_american") or pick.get("market_odds_american") or "-110")
     odds_dec = str(pick.get("odds_decimal") or pick.get("market_odds_decimal") or "1.90")
     stake_val = f"{pick.get('stake', 1.0)} UNIDAD"
@@ -460,7 +479,7 @@ def build_reel_payload(pick: Dict[str, Any], words: List[Dict[str, Any]], mode: 
         step = int(pick.get("step") or pick.get("ladder_step") or 1)
         if step == 1:
             badge_text = "🪜 RETO ESCALERA • PASO 1 GRATIS"
-            sel_label = f"{theme['icon']} PASO 1 ABIERTO (VIERNES A DOMINGO)"
+            sel_label = f"{theme['icon']} PASO 1 ABIERTO • {mkt_label}" if mkt_label else f"{theme['icon']} PASO 1 ABIERTO (VIERNES A DOMINGO)"
             m2_label = "META ESCALERA"
             m2_val = "PASO 1 GRATIS 🟢"
         else:
@@ -472,7 +491,7 @@ def build_reel_payload(pick: Dict[str, Any], words: List[Dict[str, Any]], mode: 
         conf_val = 91
     else:
         badge_text = f"🔥 PICK ESTELAR • {theme['label']}"
-        sel_label = theme["chip"]
+        sel_label = f"{theme['icon']} {mkt_label}" if mkt_label else theme["chip"]
         m2_label = "STAKE RECOMENDADO"
         m2_val = stake_val
         conf_val = int(pick.get("confidence") or 89)

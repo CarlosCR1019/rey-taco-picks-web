@@ -91,6 +91,71 @@ def _save_history(history: Dict[str, Any]) -> None:
     HISTORY_FILE.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def format_explicit_pick(selection_name: str, market_name: str = "") -> str:
+    """
+    Garantiza que la selección nunca sea ambigua (ej. convierte 'Menos de 11.5' en
+    'Menos de 11.5 Tiros de Esquina (Córners)', o agrega el tipo de mercado explícito).
+    """
+    sel = (selection_name or "").strip()
+    mkt = (market_name or "").strip()
+    if not sel:
+        return mkt or "Selección Oficial"
+
+    sel_low = sel.lower()
+    mkt_low = mkt.lower()
+
+    # 1. Mercados Over / Under (Más de / Menos de)
+    if any(k in sel_low for k in ("más de", "mas de", "menos de", "over", "under")):
+        has_unit = any(
+            u in sel_low
+            for u in (
+                "esquina", "córner", "corner", "gol", "punto", "carrera",
+                "juego", "set", "tarjeta", "remate", "tiro", "yarda",
+                "rebote", "triple", "asistencia", "hit", "strikeout",
+            )
+        )
+        if not has_unit:
+            if any(c in mkt_low for c in ("esquina", "corner", "córner")):
+                return f"{sel} Tiros de Esquina (Córners)"
+            if "gol" in mkt_low:
+                return f"{sel} Goles"
+            if any(p in mkt_low for p in ("punto", "point")):
+                return f"{sel} Puntos"
+            if any(r in mkt_low for r in ("carrera", "run")):
+                return f"{sel} Carreras"
+            if any(j in mkt_low for j in ("juego", "game")):
+                return f"{sel} Juegos"
+            if "set" in mkt_low:
+                return f"{sel} Sets"
+            if any(t in mkt_low for t in ("tarjeta", "card")):
+                return f"{sel} Tarjetas"
+            if any(rm in mkt_low for rm in ("remate", "tiro a puerta")):
+                return f"{sel} Remates a Puerta"
+            if mkt:
+                return f"{sel} ({mkt})"
+
+    # 2. Empate No Acción / Draw No Bet
+    if any(k in mkt_low for k in ("no válida", "no valida", "draw no bet", "empate no")):
+        if "empate" not in sel_low and "acción" not in sel_low and "accion" not in sel_low:
+            return f"{sel} (Empate No Acción)"
+
+    # 3. Hándicap / Spread
+    if any(k in mkt_low for k in ("hándicap", "handicap", "spread")):
+        if "(0)" in sel or "(+0)" in sel or "(-0)" in sel:
+            if not any(e in sel_low for e in ("empate", "draw no bet", "dnb")):
+                return f"{sel} — Hándicap 0 (Empate No Acción)"
+        elif not any(h in sel_low for h in ("hándicap", "handicap", "spread", "puntos", "goles", "draw no bet", "dnb", "empate")):
+            return f"{sel} (Hándicap)"
+
+    # 4. Ganador / Moneyline cuando solo viene el nombre del equipo/jugador
+    if any(k in mkt_low for k in ("1x2", "ganador", "moneyline")):
+        if not any(g in sel_low for g in ("gana", "ganador", "moneyline", "directo", "empate")):
+            return f"{sel} a Ganar"
+
+    return sel
+
+
+
 def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str, Any]]:
     """
     Evalúa y despacha el paso correspondiente del Reto Escalera si está en ventana activa.
@@ -142,7 +207,7 @@ def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str,
 
     step_meta = {
         1: {"entry": 300, "target": 540, "channel": "public"},
-        2: {"entry": 540, "target": 980, "channel": "free_channel"},
+        2: {"entry": 540, "target": 980, "channel": "vip_only"},
         3: {"entry": 980, "target": 1800, "channel": "vip_only"},
     }[step]
     entry_monto = step_meta["entry"]
@@ -245,6 +310,7 @@ def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str,
     away_t = parts[1] if len(parts) >= 2 else ""
 
     ticket_id = f"RT-{now_cdmx.strftime('%Y%m%d')}-LADDER-{step:02d}"
+    explicit_pick_str = format_explicit_pick(mkt.get("selection_name", ""), mkt.get("market_name", ""))
 
     ladder_pick = {
         "ticket_id": ticket_id,
@@ -259,7 +325,7 @@ def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str,
         "time": f"{ev.get('time_cdmx')} CDMX",
         "time_cdmx": ev.get("time_cdmx"),
         "start_time_utc": ev.get("start_date_utc") or ev.get("datetime_utc"),
-        "pick": mkt.get("selection_name"),
+        "pick": explicit_pick_str,
         "market_name": mkt.get("market_name"),
         "altenar_market": mkt.get("market_name"),
         "altenar_selection": mkt.get("selection_name"),
@@ -333,6 +399,11 @@ def _inject_ladder_pick_to_active(pick: Dict[str, Any]) -> None:
                 )
             except Exception:
                 pass
+        try:
+            from scripts.sync_picks_r2 import upload_active_picks_to_r2
+            upload_active_picks_to_r2(ACTIVE_PICKS_FILE)
+        except Exception:
+            pass
     except Exception as e:
         LOGGER.error("Error al inyectar reto escalera en active_private_picks: %s", e)
 
@@ -348,8 +419,8 @@ def _notify_telegram_channels(pick: Dict[str, Any], channel_type: str) -> None:
     payout = pick["ladder_payout"]
     match = html.escape(str(pick["match"]))
     league = html.escape(str(pick.get("league", "")))
-    selection = html.escape(str(pick["pick"]))
-    mkt_name = html.escape(str(pick.get("market_name", "")))
+    selection = html.escape(str(format_explicit_pick(str(pick.get("pick", "")), str(pick.get("market_name", "")))))
+    mkt_name = html.escape(str(pick.get("market_name", "Mercado Oficial")))
     odds = html.escape(str(pick["market_odds_american"]))
     odds_dec = pick.get("market_odds_decimal", 1.80)
     time_str = html.escape(str(pick.get("time_cdmx", "")))
@@ -360,18 +431,19 @@ def _notify_telegram_channels(pick: Dict[str, Any], channel_type: str) -> None:
 
 🏟️ <b>Evento:</b> {match} [{league}]
 ⏰ <b>Horario:</b> {time_str} CDMX
-👉 <b>Selección ({mkt_name}):</b> <b>{selection}</b>
+📌 <b>Mercado Playdoit:</b> {mkt_name}
+👉 <b>Pronóstico Exacto:</b> <b>{selection}</b>
 📊 <b>Cuota Playdoit:</b> <code>{odds}</code> ({odds_dec})
 💵 <b>Inversión Paso {step}:</b> <code>${entry} MXN</code> ➔ <b>Retorno:</b> <code>${payout} MXN</code>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-📈 <b>Motor de Alta Efectividad:</b> Basado en mercados Moneyline/Hándicap (<code>74.1% Win Rate auditado</code>).
-👑 <b>El Paso 3 Final ($980 ➔ $1,800 MXN) es exclusivo del Canal VIP:</b>"""
+📈 <b>Motor de Alta Efectividad:</b> Basado en mercados de baja varianza (<code>74.1% Win Rate auditado</code>).
+👑 <b>El Paso 1 es 100% Gratis • Los Pasos 2 y 3 ($540 ➔ $1,800+ MXN) son exclusivos del Canal VIP:</b>"""
 
     kb_public = {
         "inline_keyboard": [
             [
-                {"text": "👑 Asegurar Acceso al Paso 3 VIP ($129)", "url": "https://reytacopicks.com/#vip"},
+                {"text": "👑 Desbloquear Pasos 2 y 3 VIP ($129)", "url": "https://reytacopicks.com/#vip"},
                 {"text": "📱 Ver Mini App", "url": "https://reytacopicks.com/mini-app.html?v=3"}
             ]
         ]

@@ -2,7 +2,7 @@
 backend/multisport_cadence_engine.py
 ====================================
 Motor de Evaluación y Despacho Multideporte 24/7 para Rey Taco Picks:
-- Deportes Cubiertos: Fútbol (66), Fútbol Americano NFL/NCAAF (75), Béisbol MLB (76), Baloncesto NBA/Euroliga (67).
+- Deportes Cubiertos: Fútbol (66), Fútbol Americano NFL Profesional (75 - NCAA Prohibido), Béisbol MLB (76), Baloncesto NBA/Euroliga (67).
 - Extracción de Cuotas Reales Playdoit Altenar API (Moneyline, Spreads/Handicaps, Totales, Córners, BTTS).
 - Auditoría Táctica con Groq (openai/gpt-oss-120b).
 - Despacho Interactivo con Botón [ ❌ Descartar Jugada ] al Telegram de Carlos.
@@ -52,17 +52,16 @@ HISTORY_FILE = REPO_ROOT / "data" / "dispatched_events_history.json"
 SPORT_METADATA = {
     66: {"name": "Fútbol", "icon": "⚽", "code": "FUT", "cadence_hours": 4},
     75: {"name": "Fútbol Americano", "icon": "🏈", "code": "NFL", "cadence_hours": 6},
-    76: {"name": "Béisbol", "icon": "⚾", "code": "MLB", "cadence_hours": 6},
     67: {"name": "Baloncesto", "icon": "🏀", "code": "NBA", "cadence_hours": 4},
+    68: {"name": "Tenis", "icon": "🎾", "code": "TEN", "cadence_hours": 4},
 }
 
+
 TIER1_LEAGUE_KEYWORDS = [
-    # Béisbol Élite
-    "mlb", "npb", "kbo", "lmb",
     # Baloncesto Élite
     "nba", "euroliga", "euroleague", "wnba", "champions league", "acb", "liga endesa",
-    # Fútbol Americano
-    "nfl", "ncaa", "ncaaf",
+    # Fútbol Americano (Exclusivamente NFL Profesional)
+    "nfl",
     # Fútbol Tier-1 y Tier-2
     "liga mx", "expansión mx", "expansion mx", "champions", "europa league", "conference league",
     "premier league", "laliga", "la liga", "serie a", "bundesliga", "ligue 1", "mls",
@@ -73,6 +72,11 @@ TIER1_LEAGUE_KEYWORDS = [
 ]
 
 BANNED_LEAGUE_KEYWORDS = [
+    # Prohibición Total Béisbol (Suspendido institucionalmente por ROI negativo)
+    "mlb", "npb", "kbo", "lmb", "béisbol", "baseball",
+    # Prohibición Total NCAA / Deporte Colegial (Orden Institucional Directa)
+    "ncaa", "ncaaf", "ncaab", "college", "colegial", "universitario", "universitaria", "fcs",
+    # Divisiones inferiores y no profesionales
     "sub-19", "sub 19", "u19", "sub-20", "u20", "sub-21", "u21", "sub-22", "sub 22", "u22", "sub-23", "sub 23", "u23",
     "reserves", "reserva", "reserve", "(res.)", "res.",
     "amateur", "division 2", "division 3", "division 4", "regional", "youth", "juvenil",
@@ -89,14 +93,30 @@ def is_whitelisted_championship(champ_name: str, sport_id: int) -> bool:
     if any(b in c_lower for b in BANNED_LEAGUE_KEYWORDS):
         return False
     if sport_id == 76:
-        return any(k in c_lower for k in ["mlb", "npb", "kbo", "lmb"])
+        # Béisbol suspendido institucionalmente
+        return False
     if sport_id == 67:
         return any(k in c_lower for k in ["nba", "euroliga", "euroleague", "wnba", "acb", "endesa", "champions"])
     if sport_id == 66:
         return any(k in c_lower for k in TIER1_LEAGUE_KEYWORDS)
     if sport_id == 75:
-        return any(k in c_lower for k in ["nfl", "ncaa"])
+        # Única y exclusivamente NFL Profesional. Cero colegial.
+        return "nfl" in c_lower and not any(k in c_lower for k in ["ncaa", "college", "colegial", "fcs"])
+    if sport_id == 68:
+        tier1_tennis = [
+            "atp", "wta", "grand slam", "australia", "roland garros", "wimbledon",
+            "us open", "estados unidos", "shanghái", "shanghai", "pekín", "beijing",
+            "wuhan", "davis cup", "masters", "finals", "francia", "abierto"
+        ]
+        banned_tennis = [
+            "utr", "itf", "m15", "w15", "m25", "w25", "w35", "w50", "w75", "w100",
+            "challenger", "dobles", "doubles", "mixto", "mixed"
+        ]
+        if any(k in c_lower for k in tier1_tennis):
+            return not any(b in c_lower for b in banned_tennis)
+        return False
     return False
+
 
 
 def parse_teams(name: str) -> tuple[str, str]:
@@ -208,6 +228,9 @@ def discover_upcoming_multisport_events(session: requests.Session, hours_ahead: 
                         ev_name_lower = ev_name.lower()
                         if any(b in ev_name_lower for b in ["(res.)", "res.", "reserva", "reserve", "(f)", "women", "femenil"]):
                             continue
+                        if sid == 68 and "/" in ev_name:
+                            # Veto estricto a Tenis de Dobles (los dobles siempre llevan '/' entre compañeros)
+                            continue
                         champ_name = (champs.get(ev.get("champId")) or {}).get("name") or ev.get("champ", {}).get("name") or "Liga"
                         if not is_whitelisted_championship(champ_name, sid):
                             continue
@@ -218,6 +241,9 @@ def discover_upcoming_multisport_events(session: requests.Session, hours_ahead: 
                             ev_utc = datetime.fromisoformat(sdate_str.replace("Z", "+00:00"))
                             if now_utc + timedelta(minutes=45) <= ev_utc <= max_utc:
                                 ev_cdmx = ev_utc.astimezone(MEXICO_TZ)
+                                venue_value = ev.get("stadium") or ev.get("venueName") or ev.get("venue") or ""
+                                if isinstance(venue_value, dict):
+                                    venue_value = venue_value.get("name") or venue_value.get("stadium") or ""
                                 discovered[sid].append({
                                     "id": str(ev.get("id")),
                                     "name": ev.get("name"),
@@ -228,6 +254,7 @@ def discover_upcoming_multisport_events(session: requests.Session, hours_ahead: 
                                     "champ_name": champ_name,
                                     "time_cdmx": ev_cdmx.strftime("%H:%M"),
                                     "date_cdmx": ev_cdmx.strftime("%Y-%m-%d"),
+                                    "stadium": str(venue_value).strip(),
                                     "datetime_utc": ev_utc.isoformat(),
                                 })
                         except Exception:
@@ -238,77 +265,90 @@ def discover_upcoming_multisport_events(session: requests.Session, hours_ahead: 
     return discovered
 
 
-def condense_markets_for_audit(enriched: Dict[str, Any]) -> str:
+def extract_deep_props_markets(event_id: str, session: Any) -> List[Dict[str, Any]]:
+    """Extrae todos los mercados y selecciones planas para un evento de Altenar (usado por Reto Escalera)."""
+    detail_url = f"https://sb2frontend-altenar2.biahosted.com/api/widget/GetEventDetails?culture=es-ES&timezoneOffset=0&integration=playdoit2&deviceType=1&numFormat=en-GB&countryCode=MX&eventId={event_id}&showNonBoosts=false"
+    try:
+        res = session.get(detail_url, timeout=15)
+        if res.status_code != 200:
+            return []
+        raw = res.json()
+        enriched = extract_all_enriched_markets(raw)
+        flat_list = []
+        cats = enriched.get("market_categories", {})
+        for cat_name, mkt_list in cats.items():
+            for m in mkt_list:
+                m_name = m.get("market_name", cat_name)
+                for s in m.get("selections", []):
+                    flat_list.append({
+                        "market_name": m_name,
+                        "selection_name": s.get("name", ""),
+                        "decimal_odds": s.get("price_decimal", 0.0),
+                        "american_odds": s.get("price_american", "+100"),
+                    })
+                if m.get("over"):
+                    flat_list.append({
+                        "market_name": f"{m_name} Más de {m.get('line', '')}",
+                        "selection_name": f"Over {m.get('line', '')}",
+                        "decimal_odds": m["over"].get("price_decimal", 0.0),
+                        "american_odds": m["over"].get("price_american", "+100"),
+                    })
+                if m.get("under"):
+                    flat_list.append({
+                        "market_name": f"{m_name} Menos de {m.get('line', '')}",
+                        "selection_name": f"Under {m.get('line', '')}",
+                        "decimal_odds": m["under"].get("price_decimal", 0.0),
+                        "american_odds": m["under"].get("price_american", "+100"),
+                    })
+        return flat_list
+    except Exception:
+        return []
+
+
+def condense_markets_for_audit(enriched: Dict[str, Any], sport_id: int = 0) -> str:
     """
     Condensa las cuotas más líquidas de la sección 'Todas' en texto legible para Groq,
-    priorizando mercados de alto valor (+EV): Combos, Totales de Equipo, F5 Béisbol, Props y BTTS.
+    priorizando estrictamente los mercados ganadores comprobados por deporte:
+    - NBA (67) / NFL (75): Moneyline (2 vías) y Spreads con Colchón.
+    - Tenis Singles (68): Exclusivamente Moneyline (Ganador directo 2 vías, 73.3% WR).
+    - Fútbol (66): Prioridad a Hándicap Asiático (+0 Empate No Acción, +0.5, -1.0) para blindarse contra empates.
     """
     lines = []
     cat = enriched.get("market_categories", {})
-    
-    # 1. Moneyline
-    for m in cat.get("moneyline", [])[:1]:
-        sel_str = ", ".join([f"{s['name']}: {s['price_decimal']} ({s['price_american']})" for s in m.get("selections", [])])
-        lines.append(f"Moneyline [{m.get('market_name')}]: {sel_str}")
 
-    # 2. Spreads / Handicaps (priorizando cuotas en el sweet spot 1.55 a 2.45)
-    for s in cat.get("spreads", [])[:3]:
-        selections = s.get("selections", [])
-        balanced_sels = [sel for sel in selections if 1.55 <= float(sel.get('price_decimal', 0)) <= 2.50]
-        target_sels = balanced_sels if balanced_sels else selections[:6]
-        for sel in target_sels[:6]:
-            lines.append(f"Spread [{s.get('scope')}]: {sel['name']} @ {sel['price_decimal']} ({sel['price_american']})")
+    # Para Fútbol (66), extraer primero Spreads / Hándicaps Asiáticos con protección de empate
+    spread_lines = []
+    if sport_id != 68:  # En Tenis se excluyen hándicaps de juegos por alta varianza
+        for s in cat.get("spreads", [])[:3]:
+            selections = s.get("selections", [])
+            balanced_sels = [sel for sel in selections if 1.78 <= float(sel.get('price_decimal', 0)) <= 2.35]
+            target_sels = balanced_sels if balanced_sels else [sel for sel in selections if 1.70 <= float(sel.get('price_decimal', 0)) <= 2.45]
+            for sel in target_sels[:6]:
+                spread_lines.append(f"Spread / Hándicap con Colchón [{s.get('scope')}]: {sel['name']} @ {sel['price_decimal']} ({sel['price_american']})")
 
-    # 3. Totales de Partido (priorizando cuotas en el sweet spot 1.55 a 2.45)
-    totals_list = cat.get("totals", [])
-    balanced_totals = [t for t in totals_list if (t.get("over") and t.get("under")) and ((1.55 <= float(t['over']['price_decimal']) <= 2.45) or (1.55 <= float(t['under']['price_decimal']) <= 2.45))]
-    target_totals = balanced_totals if balanced_totals else totals_list[:6]
-    for t in target_totals[:6]:
-        if t.get("over") and t.get("under"):
-            lines.append(f"Total [{t.get('market_name')} {t.get('line')}]: Más @ {t['over']['price_decimal']} ({t['over']['price_american']}) | Menos @ {t['under']['price_decimal']} ({t['under']['price_american']})")
+    # 1. Moneyline (En deportes de 2 vías siempre; en Fútbol solo si no hay Hándicap con colchón disponible)
+    if sport_id in (67, 68, 75, 0) or not spread_lines:
+        for m in cat.get("moneyline", [])[:1]:
+            valid_sels = [
+                s for s in m.get("selections", [])
+                if float(s.get('price_decimal', 0)) >= 1.75
+                and str(s.get("name", "")).strip().lower() != "empate"
+            ]
+            sels_to_show = valid_sels if valid_sels else m.get("selections", [])
+            sel_str = ", ".join([f"{s['name']}: {s['price_decimal']} ({s['price_american']})" for s in sels_to_show])
+            if sel_str:
+                lines.append(f"Moneyline / Ganador Directo [{m.get('market_name')}]: {sel_str}")
 
-    # 4. Combos de Partido (Sección 'Todas': 1X2 & BTTS, Total & BTTS, etc.)
-    for combo in cat.get("combos", [])[:6]:
-        m_name = combo.get("market_name", "Combo")
-        sels = [f"{s['name']} @ {s['price_decimal']} ({s['price_american']})" for s in combo.get("selections", [])[:8]]
-        if sels:
-            lines.append(f"Combo / Sección Todas [{m_name}]: " + " | ".join(sels))
+    # 2. Spreads / Handicaps
+    lines.extend(spread_lines)
 
-    # 5. Totales por Equipo (Team Totals)
-    for tt in cat.get("team_totals", [])[:6]:
-        m_name = tt.get("market_name", "Team Total")
-        line_val = tt.get("line")
-        parts = []
-        if tt.get("over"):
-            parts.append(f"Más {line_val} @ {tt['over']['price_decimal']} ({tt['over']['price_american']})")
-        if tt.get("under"):
-            parts.append(f"Menos {line_val} @ {tt['under']['price_decimal']} ({tt['under']['price_american']})")
-        if parts:
-            lines.append(f"Total de Equipo [{m_name}]: " + " | ".join(parts))
-
-    # 6. Béisbol F5 (Innings 1 a 5) y 1er Inning (NRFI / YRFI)
-    for f5 in cat.get("baseball_f5", [])[:6]:
-        m_name = f5.get("market_name", "Béisbol Especial")
-        sels = [f"{s['name']} @ {s['price_decimal']} ({s['price_american']})" for s in f5.get("selections", [])[:6]]
-        if sels:
-            lines.append(f"Béisbol Mitad/Inning [{m_name}]: " + " | ".join(sels))
-
-    # 7. Props de Jugador Destacados (Remates a Puerta, Ponches, Puntos)
-    for prop in cat.get("player_props", [])[:6]:
-        m_name = prop.get("market_name", "Prop")
-        sels = [f"{s['name']} @ {s['price_decimal']} ({s['price_american']})" for s in prop.get("selections", [])[:6]]
-        if sels:
-            lines.append(f"Player Prop [{m_name}]: " + " | ".join(sels))
-
-    # 8. Córners (fútbol)
-    for c in cat.get("corners", [])[:2]:
-        if c.get("over") and c.get("under"):
-            lines.append(f"Córners [{c.get('line')}]: Más @ {c['over']['price_decimal']} ({c['over']['price_american']}) | Menos @ {c['under']['price_decimal']} ({c['under']['price_american']})")
-
-    # 9. Ambos Equipos Marcan (BTTS)
-    for b in cat.get("btts", [])[:1]:
-        if b.get("yes") and b.get("no"):
-            lines.append(f"Ambos Anotan: Sí @ {b['yes']['price_decimal']} ({b['yes']['price_american']}) | No @ {b['no']['price_decimal']} ({b['no']['price_american']})")
+    # 3. Córners (fútbol élite únicamente: volumen por bandas independiente del marcador)
+    if sport_id in (66, 0):
+        for c in cat.get("corners", [])[:2]:
+            if c.get("over") and c.get("under"):
+                over_price = float(c['over'].get('price_decimal', 0))
+                if 1.75 <= over_price <= 2.25:
+                    lines.append(f"Córners de Fútbol [{c.get('line')}]: Más @ {c['over']['price_decimal']} ({c['over']['price_american']})")
 
     return "\n".join(lines)
 
@@ -341,38 +381,31 @@ CUOTAS REALES EN PLAYDOIT (INCLUYENDO SECCIÓN COMPLETA 'TODAS'):
 
 Instrucciones:
 1. Evalúa si existe una ineficiencia o desajuste de precio real en Playdoit basándote ESTRICTAMENTE en las métricas deportivas y el contexto fáctico reciente.
-2. REGLA INSTITUCIONAL DE MÁXIMA CALIDAD Y CONTROL DE VARIANZA:
-   - PROHIBIDO ABSOLUTO: Cuotas ultra-pesadas o cuotas momio castigado menores a 1.55 (como -300 o -370). Arriesgan demasiado capital por una ganancia insignificante. La cuota DEBE estar en el SWEET SPOT +EV entre 1.60 y 2.50 (-165 a +150).
-   - PROHIBIDO ABSOLUTO: Combos cruzados de 2 condiciones (ej. '1X2 y Ambos Equipos Marcan', 'Gana y Total Más de X puntos/goles'). Tienen correlación negativa oculta y alta tasa de falla. Solo selecciones de 1 SOLA CONDICIÓN PURA.
-   - PROHIBIDO ABSOLUTO EN NPB (BÉISBOL JAPÓN): Runlines de equipo local (-1.5 Local). En la NPB la pelota es de bajísima compresión y más del 32% de partidos terminan por 1 carrera; además, si el equipo local llega ganando a la 9na entrada, la baja de la 9na NO SE JUEGA, lo que destruye el -1.5 aunque el local gane el juego. En NPB SOLO se permiten: Totales (Unders/Bajas), Ganador directo (Moneyline) o Hándicap positivo (+1.5).
-   - REGLA DE ORO EN KBO (BÉISBOL COREA): La KBO es liga de bateo explosivo y bullpens con alta efectividad (ERA > 5.00). PROHIBIDO hándicaps de equipos con lanzadores abridores inestables. En KBO se prioriza Totales (Over/Under) o Moneyline directo de abridores de élite.
-   - REGLA EN FÚTBOL JAPONÉS (J-LEAGUE / COPA DEL EMPERADOR):
-     * PRIORIDAD DE ORO: Tiros de Esquina (Over 8.5 / 9.5 Córners) y Hándicaps Positivos / Doble Oportunidad (+0.5, +1.0) al no-favorito debido a la alta paridad técnica de Japón.
-     * PROHIBIDO: Ganador directo (Moneyline) a favoritos visitantes a momios castigados (< 1.70). Japón tiene baja ventaja de localía pero altísima tasa de empates sorpresivos.
-     * PROHIBIDO: Mercados de tarjetas (Japón es de los países con mayor Fair Play y menor índice de amonestaciones).
-   - PROHIBIDO ABSOLUTO: Ganador directo (Moneyline) en fútbol americano colegial (NCAAF). El deporte universitario tiene varianza caótica de pérdidas de balón. Solo se permiten hándicaps con colchón grande (+10.5 o más).
-   - PROHIBIDO: Ambos Equipos Anotan (BTTS) si el contexto revela que el visitante o local tiene sequía goleadora de visita o promedia menos de 1.2 goles.
-   - PRIORIDAD MÁXIMA DE ORO (+EV COMPROBADO EN RANGO 1.60 A 2.50):
-     * Béisbol F5 (Innings 1 a 5) y Runlines (-1.5 / +1.5 en MLB): Es el mercado más cuantitativo del béisbol profesional porque aísla la calidad del lanzador abridor sin riesgo de bullpens suplentes.
-     * NFL: Spreads principales (+3.5, -3.5, +7.5) y Totales principales (Over/Under 41.5, 43.5) en momios entre -135 y +120.
-     * NBA: Hándicaps con colchón (+3.5 a +8.5) y Totales simples (Over/Under) en sweet spot.
-     * Tiros de Esquina en Fútbol (Over Córners 8.5 / 9.5): Mercado de volumen por bandas independiente del marcador.
-     * Spreads con Colchón / Hándicaps Positivos / Doble Oportunidad (+1.5, +0.5): Protegen empates y derrotas cerradas.
-     * Totales Simples (Over/Under) o Totales de Equipo (Team Totals) respaldados por los goles/carreras reales del contexto en los últimos 5 juegos.
-3. Si existe una selección de alto valor, define el pronóstico exacto, la cuota, la cuota mínima de valor y un stake razonable (1.0 a 1.2 U).
+2. REGLAS INSTITUCIONALES RIGUROSAS DE CONTROL DE VARIANZA Y ALTA RENTABILIDAD:
+   - EN BALONCESTO NBA (2 VÍAS), NFL (2 VÍAS) Y TENIS SINGLES ATP/WTA (2 VÍAS):
+     * MERCADO GANADOR (MONEYLINE DIRECTO DE 2 VÍAS): Con 81.8% de acierto en deportes sin empate y 73.3% en Tenis Singles, si identificas ventaja clara en momio 1.75 a 2.35, prioriza Moneyline Directo o Spread con Colchón (+3.5 a +8.5 / -2.5 a -6.5 en NBA/NFL).
+     * EN TENIS: Selecciona EXCLUSIVAMENTE Ganador Directo (Moneyline). Prohibido seleccionar Hándicap de juegos o Totales de juegos en Tenis.
+   - EN FÚTBOL (DEPORTE DE 3 VÍAS CON ALTO RIESGO DE EMPATE):
+     * BLINDAJE ANTI-EMPATE OBLIGATORIO: En fútbol, el 1X2 directo sufre pérdidas innecesarias por empates (1-1, 2-2). Prioriza SIEMPRE 'Spread con Colchón' (Hándicap Asiático +0 / +0.5 / -1.0 / +1.0) donde el empate reembolsa o gana la apuesta, o bien Córners Over (8.5 / 9.5).
+   - PROHIBIDO ABSOLUTO E IRREVOCABLE:
+     * TOTALES GENERALES (OVER/UNDER DE PARTIDO COMPLETO): Prohibido pronosticar altas/bajas de puntos, goles, juegos o carreras.
+     * BÉISBOL (MLB, KBO, NPB), NCAA / DEPORTES COLEGIALES Y TENIS DE DOBLES: Prohibición total institucional. Responde "hay_valor": false inmediatamente.
+     * CUOTAS MENORES A 1.75: La cuota DEBE estar en el SWEET SPOT +EV entre 1.75 y 2.35.
+     * COMBOS CRUZADOS (ej. '1x2 y total', 'Gana y Ambos Anotan'): Prohibidos 100%. Solo selecciones de 1 SOLA CONDICIÓN PURA.
+3. Si existe una selección de alto valor, define el pronóstico exacto, la cuota, la cuota mínima de valor y un stake razonable (1.0 U).
 4. Si el partido es equilibrado sin ventaja matemática evidente, responde "hay_valor": false.
 
 Responde ÚNICAMENTE en JSON con este esquema:
 {{
   "hay_valor": true,
-  "mercado": "Béisbol F5 / Córners / Totales Simples / Totales de Equipo / Spread con Colchón / Prop",
+  "mercado": "Moneyline / Spread con Colchón / Córners",
   "pick": "...",
   "cuota_playdoit_decimal": 1.95,
   "cuota_playdoit_american": "-105",
   "cuota_minima_decimal": 1.85,
   "cuota_minima_american": "-118",
   "stake": 1.0,
-  "significado_simple": "Explicación breve de qué debe ocurrir en el juego para ganar (ej. 'Gana si hay 2 goles o menos en total')",
+  "significado_simple": "Explicación breve de qué debe ocurrir en el juego para ganar (ej. 'Gana si Denver gana el partido directo')",
   "ruta_playdoit": [
     "Entra a Playdoit > Sección Deportes > {event['sport_name']}",
     "Busca la liga: {event.get('champ_name')}",
@@ -440,6 +473,11 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
     session = get_altenar_session()
     history = _load_history()
 
+    # GUARDIA INSTITUCIONAL: VENTANA MADRUGADA DESHABILITADA (Ligas asiáticas KBO/NPB vetadas)
+    if window_key == "madrugada":
+        print(f"ℹ️ La ventana 'madrugada' (00:00 - 06:00 CDMX) ha sido deshabilitada institucionalmente para proteger el bankroll.")
+        return []
+
     window_dispatch_key = f"window_{now_cdmx.strftime('%Y%m%d')}_{window_key}"
     if window_dispatch_key in history and not force_dispatch:
         print(f"ℹ️ La ventana '{window_label}' ya fue despachada hoy a las {history[window_dispatch_key].get('dispatched_at')}.")
@@ -485,156 +523,218 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
     cutoff_iso = (now_cdmx - timedelta(hours=24)).isoformat()
     history = {k: v for k, v in history.items() if v.get("evaluated_at", "") > cutoff_iso}
 
-    MAX_PICKS_PER_WINDOW = 4
+    MAX_PICKS_PER_WINDOW = 5
+    MAX_PICKS_PER_SPORT = 2
 
-    # 3. Evaluar eventos pendientes por deporte
+    # 3. Construir lista intercalada (Round-Robin) entre los deportes activos
+    # para garantizar equidad multideporte y evitar que el fútbol agote el cupo antes de evaluar NBA y NFL
+    candidates_by_sport = {}
     for sid, evs in discovered.items():
+        sorted_evs = sorted(evs, key=lambda x: x["time_cdmx"])
+        candidates_by_sport[sid] = [ev for ev in sorted_evs if ev["id"] not in history]
+
+    max_depth = max((len(ev_list) for ev_list in candidates_by_sport.values()), default=0)
+    interleaved_candidates = []
+    # Rotación balanceada de alta rentabilidad: NBA (67, +22.7% ROI), NFL (75, +15.9% ROI), Fútbol (66), Tenis (68)
+    sport_order = [67, 75, 66, 68]
+    for depth in range(max_depth):
+        for sid in sport_order:
+            if sid in candidates_by_sport and depth < len(candidates_by_sport[sid]):
+                interleaved_candidates.append((sid, candidates_by_sport[sid][depth]))
+
+    sport_pick_counts = {66: 0, 67: 0, 68: 0, 75: 0}
+
+    print(f"🔄 Candidatos intercalados para evaluación ({len(interleaved_candidates)} en total):")
+    for s_id, cand in interleaved_candidates:
+        print(f"   - {SPORT_METADATA[s_id]['icon']} {cand['name']} ({cand['champ_name']}) @ {cand['time_cdmx']}")
+
+    for sid, ev in interleaved_candidates:
         if len(dispatched_picks) >= MAX_PICKS_PER_WINDOW:
             print(f"✅ Cupo máximo de {MAX_PICKS_PER_WINDOW} picks para la ventana {window_label} alcanzado.")
             break
-        meta = SPORT_METADATA[sid]
-        sorted_evs = sorted(evs, key=lambda x: x["time_cdmx"])
-        # Filtrar los que aún no han sido evaluados en las últimas 24 horas
-        candidates = [ev for ev in sorted_evs if ev["id"] not in history][:6]
-
-        if not candidates:
-            print(f"ℹ️ {meta['icon']} {meta['name']}: Todos los partidos del bloque ({len(evs)}) ya fueron evaluados.")
+        if sport_pick_counts[sid] >= MAX_PICKS_PER_SPORT:
             continue
 
-        for ev in candidates:
-            eid = ev["id"]
+        meta = SPORT_METADATA[sid]
+        eid = ev["id"]
 
-            print(f"\n📈 Extrayendo mercados profundos para {meta['icon']} {ev['name']} ({ev['champ_name']})...")
-            detail_url = f"https://sb2frontend-altenar2.biahosted.com/api/widget/GetEventDetails?culture=es-ES&timezoneOffset=0&integration=playdoit2&deviceType=1&numFormat=en-GB&countryCode=MX&eventId={eid}&showNonBoosts=false"
-            
-            try:
-                res = session.get(detail_url, timeout=20)
-                if res.status_code != 200:
-                    print(f"⚠️ No se pudo obtener detalle de {eid}: {res.status_code}")
-                    continue
-                raw_detail = res.json()
-                enriched = extract_all_enriched_markets(raw_detail)
-            except Exception as e:
-                print(f"⚠️ Error obteniendo detalle de {eid}: {e}")
-                continue
-
-            condensed = condense_markets_for_audit(enriched)
-            if not condensed:
-                print(f"⚠️ Sin cuotas principales para {ev['name']}.")
-                continue
-
-            extra_ctx = known_contexts.get(eid, "")
-            if not extra_ctx:
-                print(f"🌐 Obteniendo contexto deportivo en vivo (Gemini + Search Grounding) para {ev['name']}...")
-                extra_ctx = fetch_live_event_context(ev)
-                if extra_ctx:
-                    print(f"   Contexto factual obtenido:\n   {extra_ctx[:180]}...")
-
-            print(f"🧠 Consultando auditoría a Groq (openai/gpt-oss-120b)...")
-            audit = audit_with_groq(ev, condensed, extra_context=extra_ctx)
-
-            if not audit or not audit.get("hay_valor"):
-                print(f"⚖️ Groq determinó que no hay valor significativo en {ev['name']}.")
-                history[eid] = {"status": "no_value", "evaluated_at": now_cdmx.isoformat()}
-                _save_history(history)
-                continue
-
-            # GUARDIA PROGRAMÁTICA: BÉISBOL ASIÁTICO (NPB y KBO)
-            c_name_lower = (ev.get("champ_name") or "").lower()
-            home_t, away_t = parse_teams(ev["name"])
-            if "npb" in c_name_lower or "japon" in c_name_lower or "nippon" in c_name_lower:
-                pick_str = norm(audit.get("pick", ""))
-                hcp_match = re.search(r"-\s*1\.5", pick_str)
-                if hcp_match and team_in_text(home_t, pick_str) >= team_in_text(away_t, pick_str):
-                    print(f"🚫 [GUARDIA NPB] Descartado para {ev['name']}: '{audit.get('pick')}' es Runline Local -1.5 en NPB (trampa de baja de la 9na).")
-                    history[eid] = {"status": "npb_home_runline_rejected", "evaluated_at": now_cdmx.isoformat()}
-                    _save_history(history)
-                    continue
-
-            # PRICE GATE: Validar selección contra el mercado real de Altenar
-            validated = validate_pick_against_market(
-                audit, raw_detail, ev["name"], home_t, away_t,
-                sport=("nba" if sid == 67 else ("mlb" if sid == 76 else ("nfl" if sid == 75 else "futbol"))))
-            if not validated:
-                print(f"🚫 [PRICE GATE] Descartado para {ev['name']}: '{audit.get('pick')}' no superó el filtro de mercado.")
-                history[eid] = {"status": "price_gate_rejected", "evaluated_at": now_cdmx.isoformat()}
-                _save_history(history)
-                continue
-
-            # Anclar cuota real y mercado certificado de Altenar
-            audit["cuota_playdoit_decimal"] = validated["price"]
-            audit["cuota_playdoit_american"] = validated["american"]
-
-            # Construir boleto interactivo
-            sport_code = meta.get("code", "RT")
-            ticket_id = f"RT-{now_cdmx.strftime('%Y%m%d')}-{sport_code}-{eid[-4:]}"
-            
-            sport_key = "nba" if sid == 67 else ("mlb" if sid == 76 else ("nfl" if sid == 75 else "futbol"))
-            hour_cdmx = int(ev["time_cdmx"].split(":")[0]) if ":" in ev["time_cdmx"] else 12
-            block_name = "tarde" if hour_cdmx >= 11 else "madrugada"
-
-            # Stake Defensivo para Madrugada / Ligas Asiáticas / Experimental Fútbol Japonés
-            c_name_lower = (ev.get("champ_name") or "").lower()
-            is_japan_soccer = any(k in c_name_lower for k in ["liga j", "j-league", "j.league", "copa del emperador"]) and sid == 66
-            is_asian_league = any(k in c_name_lower for k in ["npb", "kbo", "japon", "corea", "nippon"])
-            if is_japan_soccer:
-                assigned_stake = 0.1  # Stake Experimental de Calibración
-            elif window_key == "madrugada" or block_name == "madrugada" or is_asian_league:
-                assigned_stake = 0.5
-            else:
-                assigned_stake = min(float(audit.get("stake", 1.0)), 1.0)
-
-            pick_payload = {
-                "ticket_id": ticket_id,
-                "event_id": eid,
-                "odd_id": validated.get("odd_id"),
-                "sport": sport_key,
-                "sport_icon": meta["icon"],
-                "home_team": home_t,
-                "away_team": away_t,
-                "match": ev["name"],
-                "league": f"{meta['icon']} {ev['champ_name']}",
-                "time": f"{ev['time_cdmx']} CDMX",
-                "start_time_utc": ev.get("datetime_utc"),
-                "market_name": audit.get("mercado", "Mercado Principal"),
-                "altenar_market": validated.get("altenar_market"),
-                "altenar_selection": validated.get("altenar_selection"),
-                "market_margin": validated.get("market_margin"),
-                "pick": audit["pick"],
-                "market_odds_decimal": audit["cuota_playdoit_decimal"],
-                "market_odds_american": audit["cuota_playdoit_american"],
-                "minimum_odds_decimal": audit["cuota_minima_decimal"],
-                "minimum_odds_american": audit["cuota_minima_american"],
-                "stake_units": assigned_stake,
-                "meaning": audit.get("significado_simple", ""),
-                "playdoit_path": audit.get("ruta_playdoit", [
-                    f"Abre Playdoit > {meta['name']}",
-                    f"Liga: {ev['champ_name']}",
-                    f"Partido: {ev['name']}",
-                    f"Selección: {audit['pick']}"
-                ]),
-                "analysis_type": "situational",
-                "reasoning": audit.get("justificacion_tactica", "Ventaja matemática y situacional detectada por Groq en Playdoit."),
-                "status": "active",
-                "is_jewel": True,
-                "is_sniper": True,
-                "block": block_name
-            }
-
-            # Registrar en el tracking auditable persistente (Fase 1)
-            record_pick(pick_payload, window_key=window_key)
-
-            # REGLA ANTISPAM: NO despachar mensajes individuales con botones interactivos por cada pick
-            dispatched_picks.append(pick_payload)
-
-            history[eid] = {
-                "status": "dispatched",
-                "ticket_id": ticket_id,
-                "pick": audit["pick"],
-                "evaluated_at": now_cdmx.isoformat(),
-            }
+        # VETO PROGRAMÁTICO ABSOLUTO: NCAA / DEPORTES COLEGIALES Y TENIS DE DOBLES
+        ev_text = f"{ev.get('champ_name', '')} {ev.get('name', '')}".lower()
+        if any(kw in ev_text for kw in ["ncaa", "ncaaf", "ncaab", "college", "colegial", "fcs"]):
+            print(f"🚫 [VETO NCAA] Descartado {ev['name']}: Deporte colegial/NCAA vetado 100%.")
+            history[eid] = {"status": "ncaa_banned", "evaluated_at": now_cdmx.isoformat()}
             _save_history(history)
-            time.sleep(1)
+            continue
+        if sid == 68 and ("/" in ev.get("name", "") or "dobles" in ev_text or "doubles" in ev_text):
+            print(f"🚫 [VETO TENIS DOBLES] Descartado {ev['name']}: Solo se permite Tenis Singles ATP/WTA.")
+            history[eid] = {"status": "tennis_doubles_banned", "evaluated_at": now_cdmx.isoformat()}
+            _save_history(history)
+            continue
+
+        print(f"\n📈 Extrayendo mercados profundos para {meta['icon']} {ev['name']} ({ev['champ_name']})...")
+        detail_url = f"https://sb2frontend-altenar2.biahosted.com/api/widget/GetEventDetails?culture=es-ES&timezoneOffset=0&integration=playdoit2&deviceType=1&numFormat=en-GB&countryCode=MX&eventId={eid}&showNonBoosts=false"
+        
+        try:
+            res = session.get(detail_url, timeout=20)
+            if res.status_code != 200:
+                print(f"⚠️ No se pudo obtener detalle de {eid}: {res.status_code}")
+                continue
+            raw_detail = res.json()
+            enriched = extract_all_enriched_markets(raw_detail)
+        except Exception as e:
+            print(f"⚠️ Error obteniendo detalle de {eid}: {e}")
+            continue
+
+        condensed = condense_markets_for_audit(enriched, sport_id=sid)
+        if not condensed:
+            print(f"⚠️ Sin cuotas principales para {ev['name']}.")
+            continue
+
+        extra_ctx = known_contexts.get(eid, "")
+        if not extra_ctx:
+            print(f"🌐 Obteniendo contexto deportivo en vivo (Gemini + Search Grounding) para {ev['name']}...")
+            extra_ctx = fetch_live_event_context(ev)
+            if extra_ctx:
+                print(f"   Contexto factual obtenido:\n   {extra_ctx[:180]}...")
+
+        print(f"🧠 Consultando auditoría a Groq (openai/gpt-oss-120b)...")
+        audit = audit_with_groq(ev, condensed, extra_context=extra_ctx)
+
+        if not audit or not audit.get("hay_valor"):
+            print(f"⚖️ Groq determinó que no hay valor significativo en {ev['name']}.")
+            history[eid] = {"status": "no_value", "evaluated_at": now_cdmx.isoformat()}
+            _save_history(history)
+            continue
+
+        # GUARDIA PROGRAMÁTICA: BÉISBOL ASIÁTICO (NPB y KBO)
+        c_name_lower = (ev.get("champ_name") or "").lower()
+        home_t, away_t = parse_teams(ev["name"])
+        if "npb" in c_name_lower or "japon" in c_name_lower or "nippon" in c_name_lower:
+            pick_str = norm(audit.get("pick", ""))
+            hcp_match = re.search(r"-\s*1\.5", pick_str)
+            if hcp_match and team_in_text(home_t, pick_str) >= team_in_text(away_t, pick_str):
+                print(f"🚫 [GUARDIA NPB] Descartado para {ev['name']}: '{audit.get('pick')}' es Runline Local -1.5 en NPB (trampa de baja de la 9na).")
+                history[eid] = {"status": "npb_home_runline_rejected", "evaluated_at": now_cdmx.isoformat()}
+                _save_history(history)
+                continue
+
+        # PRICE GATE: Validar selección contra el mercado real de Altenar
+        validated = validate_pick_against_market(
+            audit, raw_detail, ev["name"], home_t, away_t,
+            sport=("nba" if sid == 67 else ("tennis" if sid == 68 else ("nfl" if sid == 75 else "futbol"))))
+        if not validated:
+            print(f"🚫 [PRICE GATE] Descartado para {ev['name']}: '{audit.get('pick')}' no superó el filtro de mercado.")
+            history[eid] = {"status": "price_gate_rejected", "evaluated_at": now_cdmx.isoformat()}
+            _save_history(history)
+            continue
+
+        # GUARDIA PROGRAMÁTICA INSTITUCIONAL: VETO A MERCADOS COMBO Y TOTALES GENERALES
+        alt_mkt_norm = norm(str(validated.get("altenar_market", "")) + " " + str(validated.get("altenar_selection", "")))
+        mkt_norm = norm(str(audit.get("mercado", "")) + " " + str(audit.get("pick", "")) + " " + alt_mkt_norm)
+        if any(k in alt_mkt_norm for k in ["y total", "& total", "y ambos", "primero gol", "primer gol"]):
+            print(f"🚫 [VETO COMBO] Descartado para {ev['name']}: Mercado compuesto '{validated.get('altenar_market')}' prohibido.")
+            history[eid] = {"status": "combo_market_banned", "evaluated_at": now_cdmx.isoformat()}
+            _save_history(history)
+            continue
+        is_corner_prop = any(k in mkt_norm for k in ["esquina", "corner"])
+        is_total_market = any(k in mkt_norm for k in ["total", "mas de", "menos de", "over", "under"])
+        if is_total_market and not is_corner_prop:
+            print(f"🚫 [VETO TOTALES] Descartado para {ev['name']}: '{audit.get('pick')}' es Totales Over/Under (acumulan 70% de pérdidas del bot).")
+            history[eid] = {"status": "totals_banned", "evaluated_at": now_cdmx.isoformat()}
+            _save_history(history)
+            continue
+
+        # GUARDIA PROGRAMÁTICA INSTITUCIONAL: CUOTA MÍNIMA SWEET SPOT (1.75 A 2.45)
+        price_val = float(validated.get("price", 0.0))
+        if price_val < 1.75 or price_val > 2.45:
+            print(f"🚫 [VETO CUOTA] Descartado para {ev['name']}: Cuota {price_val} fuera del Sweet Spot institucional (1.75 - 2.45).")
+            history[eid] = {"status": "odds_sweet_spot_rejected", "evaluated_at": now_cdmx.isoformat()}
+            _save_history(history)
+            continue
+
+        # Anclar cuota real y mercado certificado de Altenar
+        audit["cuota_playdoit_decimal"] = validated["price"]
+        audit["cuota_playdoit_american"] = validated["american"]
+
+        # Construir boleto interactivo
+        sport_code = meta.get("code", "RT")
+        ticket_id = f"RT-{now_cdmx.strftime('%Y%m%d')}-{sport_code}-{eid[-4:]}"
+        
+        sport_key = "nba" if sid == 67 else ("tennis" if sid == 68 else ("nfl" if sid == 75 else "futbol"))
+        hour_cdmx = int(ev["time_cdmx"].split(":")[0]) if ":" in ev["time_cdmx"] else 12
+        block_name = "tarde" if hour_cdmx >= 11 else "madrugada"
+
+        # Stake Defensivo para Mañana / Madrugada / Ligas Asiáticas / Experimental Fútbol Japonés
+        c_name_lower = (ev.get("champ_name") or "").lower()
+        is_japan_soccer = any(k in c_name_lower for k in ["liga j", "j-league", "j.league", "copa del emperador"]) and sid == 66
+        is_asian_league = any(k in c_name_lower for k in ["npb", "kbo", "japon", "corea", "nippon"])
+        if is_japan_soccer:
+            assigned_stake = 0.1  # Stake Experimental de Calibración
+        elif window_key in ("madrugada", "manana") or block_name == "madrugada" or is_asian_league:
+            assigned_stake = 0.5  # Stake Defensivo en mañana/madrugada; 1.0 U concentrado en Tarde y Noche (+22% ROI)
+        else:
+            assigned_stake = min(float(audit.get("stake", 1.0)), 1.0)
+
+        from backend.ladder_challenge_engine import format_explicit_pick
+        explicit_pick_val = format_explicit_pick(
+            str(audit.get("pick", "")),
+            str(validated.get("altenar_market") or audit.get("mercado") or "")
+        )
+
+        pick_payload = {
+            "ticket_id": ticket_id,
+            "event_id": eid,
+            "odd_id": validated.get("odd_id"),
+            "sport": sport_key,
+            "sport_icon": meta["icon"],
+            "home_team": home_t,
+            "away_team": away_t,
+            "match": ev["name"],
+            "league": f"{meta['icon']} {ev['champ_name']}",
+            "time": f"{ev['time_cdmx']} CDMX",
+            "date_cdmx": ev.get("date_cdmx"),
+            "stadium": ev.get("stadium", ""),
+            "start_time_utc": ev.get("datetime_utc"),
+            "market_name": validated.get("altenar_market") or audit.get("mercado", "Mercado Principal"),
+            "altenar_market": validated.get("altenar_market"),
+            "altenar_selection": validated.get("altenar_selection"),
+            "market_margin": validated.get("market_margin"),
+            "pick": explicit_pick_val,
+            "market_odds_decimal": audit["cuota_playdoit_decimal"],
+            "market_odds_american": audit["cuota_playdoit_american"],
+            "minimum_odds_decimal": audit["cuota_minima_decimal"],
+            "minimum_odds_american": audit["cuota_minima_american"],
+            "stake_units": assigned_stake,
+            "meaning": audit.get("significado_simple", ""),
+            "playdoit_path": audit.get("ruta_playdoit", [
+                f"Abre Playdoit > {meta['name']}",
+                f"Liga: {ev['champ_name']}",
+                f"Partido: {ev['name']}",
+                f"Selección: {audit['pick']}"
+            ]),
+            "analysis_type": "situational",
+            "reasoning": audit.get("justificacion_tactica", "Ventaja matemática y situacional detectada por Groq en Playdoit."),
+            "status": "active",
+            "is_jewel": True,
+            "is_sniper": True,
+            "block": block_name
+        }
+
+        # Registrar en el tracking auditable persistente (Fase 1)
+        record_pick(pick_payload, window_key=window_key)
+
+        # REGLA ANTISPAM: NO despachar mensajes individuales con botones interactivos por cada pick
+        dispatched_picks.append(pick_payload)
+        sport_pick_counts[sid] = sport_pick_counts.get(sid, 0) + 1
+
+        history[eid] = {
+            "status": "dispatched",
+            "ticket_id": ticket_id,
+            "pick": audit["pick"],
+            "evaluated_at": now_cdmx.isoformat(),
+        }
+        _save_history(history)
+        time.sleep(1)
 
     # Guardar picks activos en JSON para la Mini App fusionando con los existentes
     active_picks_file = REPO_ROOT / "data" / "active_private_picks.json"
@@ -784,6 +884,27 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
                 }
             })
 
+        # Enviar también la cartelera completa al chat privado de la novia de Carlos (8996443105)
+        try:
+            from backend.interactive_telegram_dispatcher import resolve_girlfriend_chat_id
+            gf_chat_id = resolve_girlfriend_chat_id()
+            if gf_chat_id and str(gf_chat_id) != str(ADMIN_CHAT_ID):
+                telegram_api_call("sendMessage", {
+                    "chat_id": gf_chat_id,
+                    "text": summary_text,
+                    "parse_mode": "HTML",
+                    "reply_markup": {
+                        "inline_keyboard": [
+                            [
+                                {"text": "📱 Abrir Mini App Rey Taco", "web_app": {"url": "https://reytacopicks.com/mini-app.html?v=3"}}
+                            ]
+                        ]
+                    }
+                })
+                print(f"💝 ✅ Cartelera de ventana enviada al privado de tu novia ({gf_chat_id}).")
+        except Exception as e_gf:
+            print(f"⚠️ Error enviando cartelera al privado de tu novia: {e_gf}")
+
         # Publicación a Canales Públicos (VIP y FREE) para ventanas diurnas/vespertinas (mañana, tarde, noche)
         is_daytime_window = window_key in ["manana", "tarde", "noche"]
 
@@ -800,24 +921,35 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
                 "reply_markup": {
                     "inline_keyboard": [
                         [
-                            {"text": "👑 Abrir Mini App VIP", "web_app": {"url": "https://reytacopicks.com/mini-app.html?v=13&mode=vip"}}
+                            {"text": "👑 Abrir Mini App VIP", "url": "https://reytacopicks.com/mini-app.html?v=13&mode=vip"}
                         ]
                     ]
                 }
             })
 
-        # Canal Free: Joya Gratuita Oficial + Embudo hacia Canal VIP
+        # Canal Free: Joya Gratuita Oficial + Teasers VIP Bloqueados + Embudo hacia Canal VIP
         if FREE_CHANNEL_ID and is_daytime_window and dispatched_picks:
             free_pick = dispatched_picks[0]
+            free_pick["is_free_pick"] = True
             m_title = f"{free_pick.get('home_team')} vs. {free_pick.get('away_team')}" if free_pick.get('home_team') and free_pick.get('away_team') else free_pick.get('match', '')
             c_path = " ➔ ".join(str(s) for s in free_pick.get('playdoit_path', [])[:3])
             short_analysis = ""
             if free_pick.get('reasoning'):
                 short_analysis = free_pick.get('reasoning').split('.')[0] + '.'
 
+            vip_teasers_block = ""
+            if len(dispatched_picks) > 1:
+                vip_teasers_block = "\n🔒 <b>JOYAS EXCLUSIVAS EN JUEGO (SOLO CANAL VIP):</b>\n"
+                for v_idx, vp in enumerate(dispatched_picks[1:], 2):
+                    vp["is_free_pick"] = False
+                    v_lg = html.escape(str(vp.get("league", "Deporte")))
+                    v_od = html.escape(str(vp.get("market_odds_american", "")))
+                    v_tm = html.escape(str(vp.get("time", "")))
+                    vip_teasers_block += f"   • <b>Pick VIP #{v_idx}:</b> {v_lg} | ██████████ @ <code>{v_od}</code> ({v_tm})\n"
+
             free_text = f"""🌮 <b>REY TACO PICKS — JOYA GRATUITA OFICIAL</b> 👑
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 <b>SELECCIÓN DE ORO ({window_label.upper()}):</b>
+🎯 <b>SELECCIÓN ABIERTA ({window_label.upper()}):</b>
 
 {free_pick.get('sport_icon')} <b>{html.escape(m_title)}</b> [{html.escape(free_pick.get('league', ''))}]
 👉 <b>{html.escape(free_pick.get('pick', ''))}</b> @ <code>{free_pick.get('market_odds_american', '')}</code> ({free_pick.get('time', '')})
@@ -829,10 +961,10 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
             if short_analysis:
                 free_text += f"📊 <i>Análisis: {html.escape(short_analysis)}</i>\n"
 
-            free_text += f"""
+            free_text += f"""{vip_teasers_block}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔒 <b>¿Quieres la Cartelera Completa ({len(dispatched_picks)} Joyas) y el Parlay de Oro?</b>
-👉 <i>Disponibles en el Canal VIP y en la Mini App 👇</i>"""
+📈 <b>Récord Auditado:</b> <code>20W-7L (+52.6% ROI)</code> en Moneyline | <code>21W-12L (+28.1% ROI)</code> en NBA
+👑 <b>Desbloquea los Picks VIP y el Parlay de Oro ($129/sem o $349/mes) 👇</b>"""
 
             telegram_api_call("sendMessage", {
                 "chat_id": FREE_CHANNEL_ID,
@@ -841,12 +973,22 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
                 "reply_markup": {
                     "inline_keyboard": [
                         [
-                            {"text": "📱 Ver Cartelera en Mini App", "web_app": {"url": "https://reytacopicks.com/mini-app.html?v=3"}},
-                            {"text": "👑 Entrar al Canal VIP", "url": "https://t.me/+mmqMU1Gxqy04ZGMx"}
+                            {"text": "👑 Desbloquear VIP ($129 / $349)", "url": "https://reytacopicks.com/#vip"},
+                            {"text": "📱 Abrir Mini App", "url": "https://reytacopicks.com/mini-app.html?v=3"}
+                        ],
+                        [
+                            {"text": "💬 Entrar al Canal VIP", "url": "https://t.me/+mmqMU1Gxqy04ZGMx"}
                         ]
                     ]
                 }
             })
+
+            # Iniciar solicitud de foto (individual o Parlay) con auto-publicación de Tarjeta Oficial en 5 min
+            try:
+                from backend.interactive_telegram_dispatcher import dispatch_interactive_pick
+                dispatch_interactive_pick(free_pick, timeout_seconds=300)
+            except Exception as e:
+                print(f"⚠️ Error iniciando despacho interactivo con tarjeta: {e}")
 
         # Marcar la ventana como despachada en history para nunca duplicar
         history[window_dispatch_key] = {
@@ -855,6 +997,13 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
             "picks": [p["ticket_id"] for p in dispatched_picks]
         }
         _save_history(history)
+
+        # AUTO-REEL IA: Producir y despachar automáticamente el Reel con voz IA + Google Flow para el Pick #1 DESPUÉS de enviar la cartelera de texto
+        try:
+            from backend.auto_reel_producer import produce_and_dispatch_ai_reel
+            produce_and_dispatch_ai_reel(dispatched_picks[0], mode="pick", send_telegram=True, publish_social=True)
+        except Exception as e_reel:
+            print(f"⚠️ [AUTO-REEL] No se pudo generar Reel de ventana: {e_reel}")
 
     # Aviso de ventana vacía: una sola vez, en la última hora de la ventana, para que el silencio nunca sea ambiguo
     notice_key = f"notice_empty_{now_cdmx.strftime('%Y%m%d')}_{window_key}"

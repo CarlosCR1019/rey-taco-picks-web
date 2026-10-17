@@ -156,7 +156,10 @@ initDailyVerseBanner();
 function categoryKey(value: string): string {
   const text = value.toLowerCase();
   if (text.includes('liga mx')) return 'ligamx';
-  if (text.includes('mlb')) return 'mlb';
+  if (text.includes('mlb') || text.includes('béisbol') || text.includes('beisbol')) return 'mlb';
+  if (text.includes('nba') || text.includes('básquet') || text.includes('basquet') || text.includes('basketball')) return 'nba';
+  if (text.includes('nfl') || text.includes('americano') || text.includes('football')) return 'nfl';
+  if (text.includes('tenis') || text.includes('atp') || text.includes('wta')) return 'tenis';
   return 'futbol';
 }
 
@@ -607,7 +610,7 @@ function updateStake(): void {
   if (result) {
     result.textContent = bankroll > 0
       ? `Unidad sugerida: $${unitVal.toLocaleString('es-MX')} MXN`
-      : `Introduce tu banca disponible en Playdoit para calcular el tamaño de apuesta.`;
+      : `Introduce tu banca disponible para calcular el tamaño de unidad.`;
   }
 }
 byId('bankroll')?.addEventListener('input', updateStake);
@@ -616,10 +619,15 @@ updateStake();
 byId('telegram-cta')?.addEventListener('click', () => trackConversion('telegram_clicked', currentAnalyticsProperties()));
 
 const cookie = byId('cookie-notice');
-const adConfig = getAdConfig(import.meta.env.VITE_ADSENSE_SLOT, import.meta.env.VITE_ADSENSE_CLIENT);
-const mountConfiguredAd = () => mountAd(byId('ad-slot-feed')!, adConfig);
+const adClient = import.meta.env.VITE_ADSENSE_CLIENT || 'ca-pub-2697347675028991';
+const adSlot = import.meta.env.VITE_ADSENSE_SLOT || 'auto';
+const adConfig = getAdConfig(adSlot, adClient);
+const mountConfiguredAd = () => {
+  const adContainer = byId('ad-slot-feed');
+  if (adContainer) mountAd(adContainer, adConfig);
+};
+mountConfiguredAd();
 if (!localStorage.getItem('rey-taco-cookie-notice')) cookie?.classList.remove('hidden');
-else mountConfiguredAd();
 byId('cookie-accept')?.addEventListener('click', () => {
   localStorage.setItem('rey-taco-cookie-notice', 'accepted');
   cookie?.classList.add('hidden');

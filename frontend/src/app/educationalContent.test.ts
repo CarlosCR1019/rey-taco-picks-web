@@ -114,7 +114,7 @@ describe('educational and methodology content for AdSense compliance', () => {
     });
   });
 
-  it('keeps advertising scripts disabled during human quality review', () => {
+  it('includes Google AdSense publisher verification and script across editorial pages', () => {
     const pages = [
       ...expectedGuides.map((filename) => path.join(aprendeDir, filename)),
       path.join(aprendeDir, 'index.html'),
@@ -123,8 +123,8 @@ describe('educational and methodology content for AdSense compliance', () => {
 
     pages.forEach((page) => {
       const content = fs.readFileSync(page, 'utf-8');
-      expect(content).not.toContain('adsbygoogle');
-      expect(content).not.toContain('googlesyndication');
+      expect(content).toContain('ca-pub-2697347675028991');
+      expect(content).toContain('googlesyndication');
     });
   });
 

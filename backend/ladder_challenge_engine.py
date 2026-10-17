@@ -1,0 +1,438 @@
+"""
+backend/ladder_challenge_engine.py
+==================================
+Módulo especializado para el Reto Escalera Semanal de Rey Taco Picks.
+
+REGLAS DE NEGOCIO ESTRICTAS (Autorizadas por Carlos):
+1. Frecuencia: 1 vez por semana durante el fin de semana (Viernes a Domingo).
+2. Ventana Horaria Estricta: Únicamente de 12:00 PM a 9:00 PM (12:00 - 21:00) CDMX.
+   - Horarios de máxima afluencia y atención en redes sociales.
+3. Rango de Momios Reales: 1.70 a 1.95 (Playdoit México).
+4. Estructura de 3 Pasos Independientes:
+   - Paso 1 (Viernes): Entrada $300 MXN ➔ Cobro ~$550 MXN (Abierto en Redes y Telegram).
+   - Paso 2 (Sábado): Entrada ~$550 MXN ➔ Cobro ~$1,000 MXN (Gratis en Telegram Free).
+   - Paso 3 (Domingo): Entrada ~$1,000 MXN ➔ Cobro ~$1,900 MXN (Exclusivo VIP).
+5. No Sustituye Picks del VIP: Se registra como un slot adicional para no restar
+   los 3 a 5 picks regulares diarios.
+6. Deportes Permitidos: NFL (cero colegial), MLB (F5), NBA, Tenis y Fútbol Élite.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+from backend.multisport_cadence_engine import (
+    MEXICO_TZ,
+    SPORT_METADATA,
+    BANNED_LEAGUE_KEYWORDS,
+    discover_upcoming_multisport_events,
+    get_altenar_session,
+)
+from backend.interactive_telegram_dispatcher import telegram_api_call
+
+LOGGER = logging.getLogger("reytaco.ladder")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+HISTORY_FILE = REPO_ROOT / "data" / "ladder_challenge_history.json"
+ACTIVE_PICKS_FILE = REPO_ROOT / "data" / "active_private_picks.json"
+
+TELEGRAM_FREE_LINK = "https://t.me/ReyTacoPicksFree"
+WEBSITE_VIP_LINK = "https://reytacopicks.com"
+CARLOS_ADMIN_CHAT_ID = "5912533842"
+
+# Parámetros del Reto (Paso 1 siempre gratis, Pasos 2 y 3 siempre exclusivos VIP)
+LADDER_CONFIG = {
+    4: {"step": 1, "entry": 300, "target": 555, "day_name": "Viernes", "channel": "public"},
+    5: {"step": 2, "entry": 555, "target": 1000, "day_name": "Sábado", "channel": "vip_only"},
+    6: {"step": 3, "entry": 1000, "target": 1900, "day_name": "Domingo", "channel": "vip_only"},
+}
+
+
+def is_in_ladder_window(dt: datetime) -> bool:
+    """Verifica si la hora CDMX está dentro de la ventana de alta afluencia (12:00 PM a 9:00 PM)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_cdmx = dt.astimezone(MEXICO_TZ)
+    # 12:00 PM a 9:00 PM (12 a 20 inclusive, es decir antes de las 21:00)
+    return 12 <= dt_cdmx.hour < 21
+
+
+def is_ladder_day(dt: datetime) -> bool:
+    """Verifica si el día corresponde a la escalera de fin de semana (Viernes=4, Sábado=5, Domingo=6)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_cdmx = dt.astimezone(MEXICO_TZ)
+    return dt_cdmx.weekday() in LADDER_CONFIG
+
+
+def get_current_ladder_step_config(dt: datetime) -> Optional[Dict[str, Any]]:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_cdmx = dt.astimezone(MEXICO_TZ)
+    return LADDER_CONFIG.get(dt_cdmx.weekday())
+
+
+def _load_history() -> Dict[str, Any]:
+    if HISTORY_FILE.exists():
+        try:
+            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_history(history: Dict[str, Any]) -> None:
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    HISTORY_FILE.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str, Any]]:
+    """
+    Evalúa y despacha el paso correspondiente del Reto Escalera si está en ventana activa.
+    """
+    now_cdmx = datetime.now(MEXICO_TZ)
+    
+    # 1. Guardia de día de la semana
+    if not is_ladder_day(now_cdmx) and not force:
+        LOGGER.info("Reto Escalera: Hoy no es día de escalera (activo Viernes a Domingo).")
+        return None
+
+    # 2. Guardia de ventana de alta afluencia (12:00 PM a 9:00 PM CDMX)
+    if not is_in_ladder_window(now_cdmx) and not force:
+        LOGGER.info(
+            "Reto Escalera: Fuera de la ventana autorizada de alta afluencia (12:00 PM - 9:00 PM CDMX). "
+            "Hora actual: %s", now_cdmx.strftime("%H:%M:%S")
+        )
+        return None
+
+    step_cfg = get_current_ladder_step_config(now_cdmx) or LADDER_CONFIG[4]
+    day_name = step_cfg["day_name"]
+
+    today_iso = now_cdmx.strftime("%Y-%m-%d")
+    history = _load_history()
+
+    # Verificar progresión real del fin de semana (solo avanza de paso si el paso anterior ganó)
+    from backend.pick_tracker import load_tracking, record_pick
+    tracking_data = load_tracking()
+    step = 1
+    retry_label = ""
+    if now_cdmx.weekday() in (5, 6):  # Sábado o Domingo
+        recent_steps = []
+        for d_back in (1, 2):
+            prev_iso = (now_cdmx - timedelta(days=d_back)).strftime("%Y-%m-%d")
+            for k, v in history.items():
+                if k.startswith(f"ladder_{prev_iso}_"):
+                    recent_steps.append(v)
+        if recent_steps:
+            last_entry = sorted(recent_steps, key=lambda x: x.get("dispatched_at", ""))[-1]
+            last_tid = last_entry.get("ticket_id", "")
+            last_step = int(last_entry.get("step", 1))
+            t_rec = tracking_data.get(last_tid, {})
+            t_status = t_rec.get("status", "PENDING")
+            if t_status in ("WON", "VOID", "PENDING"):
+                step = min(last_step + (1 if t_status == "WON" else 0), 3)
+            else:
+                step = 1
+                retry_label = " (Intento #2 Fin de Semana)"
+
+    step_meta = {
+        1: {"entry": 300, "target": 540, "channel": "public"},
+        2: {"entry": 540, "target": 980, "channel": "free_channel"},
+        3: {"entry": 980, "target": 1800, "channel": "vip_only"},
+    }[step]
+    entry_monto = step_meta["entry"]
+    target_monto = step_meta["target"]
+    channel_type = step_meta["channel"]
+
+    step_key = f"ladder_{today_iso}_step_{step}"
+    if step_key in history and not force:
+        LOGGER.info("Reto Escalera: El Paso %d de hoy ya fue despachado previamente.", step)
+        return None
+
+    LOGGER.info("🪜 Reto Escalera: Buscando selección de alta certeza para el Paso %d (%s)...", step, day_name)
+
+    # 3. Descubrir eventos próximos en Playdoit en la ventana de alta afluencia
+    session = get_altenar_session()
+    discovered = discover_upcoming_multisport_events(session, hours_ahead=8)
+    if not discovered:
+        LOGGER.warning("Reto Escalera: No se pudieron consultar eventos de Playdoit.")
+        return None
+
+    # 4. Priorizar deportes con mayor Win Rate auditado: NBA (67), Tenis Singles (68), NFL (75), Fútbol Hándicap (66)
+    priority_order = [67, 68, 75, 66, 70]
+    all_events = []
+    for sid in priority_order:
+        all_events.extend(discovered.get(sid, []))
+
+    candidate = None
+    for ev in all_events:
+        sid = ev.get("sport_id")
+        champ_lower = (ev.get("champ_name") or "").lower()
+        ev_name = ev.get("name") or ""
+        if any(banned in champ_lower for banned in BANNED_LEAGUE_KEYWORDS):
+            continue
+        # Vetar Tenis Dobles e ITF/Challenger
+        if sid == 68 and ("/" in ev_name or any(k in champ_lower for k in ("dobles", "doubles", "itf", "challenger"))):
+            continue
+
+        time_cdmx_str = ev.get("time_cdmx", "")
+        if ":" in time_cdmx_str:
+            try:
+                hour_part = int(time_cdmx_str.split(":")[0])
+                if hour_part < 12 or hour_part > 22:
+                    continue
+            except ValueError:
+                pass
+
+        from backend.multisport_cadence_engine import extract_deep_props_markets
+        markets = extract_deep_props_markets(ev.get("id"), session)
+        if not markets:
+            continue
+
+        for mkt in markets:
+            dec_odds = float(mkt.get("decimal_odds") or 0.0)
+            if not (1.65 <= dec_odds <= 1.92):
+                continue
+            mkt_name = (mkt.get("market_name") or "").lower()
+            sel_name = (mkt.get("selection_name") or "").lower()
+
+            # Prohibir combos y totales generales de goles/puntos (-17.2% ROI)
+            if any(b in mkt_name for b in ("y total", "& total", "primero gol", "primer gol", "ambos")):
+                continue
+            is_total = any(t in mkt_name or t in sel_name for t in ("total", "más de", "mas de", "menos de", "over", "under"))
+            is_corner = any(c in mkt_name or c in sel_name for c in ("esquina", "corner"))
+            if is_total and not is_corner:
+                continue
+            if "empate" in sel_name and "no valida" not in mkt_name and "doble" not in mkt_name:
+                continue
+
+            # Mercados de alta efectividad auditada (Moneyline 74.1% WR, Hándicap con colchón, DNB)
+            is_high_wr = (
+                (sid in (67, 68, 75) and any(k in mkt_name for k in ("ganador", "moneyline", "hándicap", "handicap", "spread")))
+                or (sid == 66 and any(k in mkt_name for k in ("no válida", "no valida", "draw no bet", "hándicap", "handicap", "esquina", "corner")))
+            )
+            if is_high_wr:
+                candidate = {
+                    "event": ev,
+                    "market": mkt,
+                    "decimal_odds": dec_odds,
+                    "american_odds": mkt.get("american_odds", "-120"),
+                }
+                break
+        if candidate:
+            break
+
+    if not candidate:
+        LOGGER.info("Reto Escalera: No se encontró una jugada de alta efectividad (1.65 - 1.92) en esta revisión.")
+        return None
+
+    ev = candidate["event"]
+    mkt = candidate["market"]
+    odds_dec = candidate["decimal_odds"]
+    odds_ame = candidate["american_odds"]
+    payout_calc = int(round(entry_monto * odds_dec))
+
+    sid = ev.get("sport_id")
+    sport_key = "nba" if sid == 67 else ("tennis" if sid == 68 else ("nfl" if sid == 75 else ("mlb" if sid == 70 else "futbol")))
+    sport_icon = SPORT_METADATA.get(sid, {}).get("icon", "🏆")
+    parts = [p.strip() for p in (ev.get("name") or "").replace(" vs. ", " vs ").split(" vs ")]
+    home_t = parts[0] if len(parts) >= 2 else ev.get("name", "")
+    away_t = parts[1] if len(parts) >= 2 else ""
+
+    ticket_id = f"RT-{now_cdmx.strftime('%Y%m%d')}-LADDER-{step:02d}"
+
+    ladder_pick = {
+        "ticket_id": ticket_id,
+        "event_id": str(ev.get("id")),
+        "home_team": home_t,
+        "away_team": away_t,
+        "match": ev.get("name"),
+        "league": f"{sport_icon} {ev.get('champ_name')}",
+        "sport": sport_key,
+        "sport_icon": sport_icon,
+        "date_cdmx": today_iso,
+        "time": f"{ev.get('time_cdmx')} CDMX",
+        "time_cdmx": ev.get("time_cdmx"),
+        "start_time_utc": ev.get("start_date_utc") or ev.get("datetime_utc"),
+        "pick": mkt.get("selection_name"),
+        "market_name": mkt.get("market_name"),
+        "altenar_market": mkt.get("market_name"),
+        "altenar_selection": mkt.get("selection_name"),
+        "market_odds_decimal": odds_dec,
+        "market_odds_american": odds_ame,
+        "minimum_odds_decimal": round(max(1.55, odds_dec - 0.06), 2),
+        "minimum_odds_american": odds_ame,
+        "stake_units": 1.0,
+        "status": "active",
+        "stadium": "",
+        "is_ladder": True,
+        "ladder_step": step,
+        "ladder_retry_label": retry_label,
+        "ladder_entry": entry_monto,
+        "ladder_target": target_monto,
+        "ladder_payout": payout_calc,
+        "dispatched_at": now_cdmx.isoformat(),
+    }
+
+    # 5. Registrar en pick_tracking.json para liquidación automática y guardar en active_private_picks.json
+    try:
+        record_pick(ladder_pick, window_key="tarde")
+    except Exception as e:
+        LOGGER.warning("No se pudo registrar ladder pick en pick_tracking: %s", e)
+
+    _inject_ladder_pick_to_active(ladder_pick)
+
+    # 6. Despachar mensaje a Telegram (Canales Free, VIP y Admin)
+    _notify_telegram_channels(ladder_pick, channel_type)
+
+    # 6.5 AUTO-REEL IA: Generar y enviar automáticamente el Reel con voz IA + Google Flow para el Reto Escalera
+    try:
+        from backend.auto_reel_producer import produce_and_dispatch_ai_reel
+        produce_and_dispatch_ai_reel(ladder_pick, mode="ladder", send_telegram=True, publish_social=True)
+    except Exception as e_reel:
+        LOGGER.warning("No se pudo generar Reel automático de Reto Escalera: %s", e_reel)
+
+    # 7. Registrar en historial
+    history[step_key] = {
+        "ticket_id": ticket_id,
+        "match": ladder_pick["match"],
+        "pick": ladder_pick["pick"],
+        "step": step,
+        "entry": entry_monto,
+        "odds": odds_dec,
+        "dispatched_at": now_cdmx.isoformat(),
+    }
+    _save_history(history)
+    LOGGER.info("✅ Reto Escalera Paso %d despachado con éxito: %s (%s)", step, ticket_id, ladder_pick["match"])
+    return ladder_pick
+
+
+def _inject_ladder_pick_to_active(pick: Dict[str, Any]) -> None:
+    """Inserta el pick del reto escalera en active_private_picks.json sin duplicar."""
+    try:
+        picks = []
+        if ACTIVE_PICKS_FILE.exists():
+            picks = json.loads(ACTIVE_PICKS_FILE.read_text(encoding="utf-8"))
+
+        picks = [p for p in picks if p.get("ticket_id") != pick.get("ticket_id")]
+        picks.insert(0, pick)
+
+        ACTIVE_PICKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ACTIVE_PICKS_FILE.write_text(json.dumps(picks, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        for target_dir in [REPO_ROOT / "dist", REPO_ROOT / "frontend" / "public"]:
+            try:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                (target_dir / "active_private_picks.json").write_text(
+                    json.dumps(picks, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        LOGGER.error("Error al inyectar reto escalera en active_private_picks: %s", e)
+
+
+def _notify_telegram_channels(pick: Dict[str, Any], channel_type: str) -> None:
+    """Envía el formato del Reto Escalera a Admin, Canal Free y Canal VIP según el paso."""
+    import html
+    from backend.interactive_telegram_dispatcher import FREE_CHANNEL_ID, VIP_CHANNEL_ID, dispatch_interactive_pick
+
+    step = pick["ladder_step"]
+    retry_lbl = pick.get("ladder_retry_label", "")
+    entry = pick["ladder_entry"]
+    payout = pick["ladder_payout"]
+    match = html.escape(str(pick["match"]))
+    league = html.escape(str(pick.get("league", "")))
+    selection = html.escape(str(pick["pick"]))
+    mkt_name = html.escape(str(pick.get("market_name", "")))
+    odds = html.escape(str(pick["market_odds_american"]))
+    odds_dec = pick.get("market_odds_decimal", 1.80)
+    time_str = html.escape(str(pick.get("time_cdmx", "")))
+
+    full_msg = f"""🪜 <b>RETO ESCALERA FIN DE SEMANA • PASO {step} DE 3{retry_lbl}</b> 🌮👑
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎯 <b>META DEL RETO:</b> <code>$300 MXN ➔ $1,800+ MXN</code>
+
+🏟️ <b>Evento:</b> {match} [{league}]
+⏰ <b>Horario:</b> {time_str} CDMX
+👉 <b>Selección ({mkt_name}):</b> <b>{selection}</b>
+📊 <b>Cuota Playdoit:</b> <code>{odds}</code> ({odds_dec})
+💵 <b>Inversión Paso {step}:</b> <code>${entry} MXN</code> ➔ <b>Retorno:</b> <code>${payout} MXN</code>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 <b>Motor de Alta Efectividad:</b> Basado en mercados Moneyline/Hándicap (<code>74.1% Win Rate auditado</code>).
+👑 <b>El Paso 3 Final ($980 ➔ $1,800 MXN) es exclusivo del Canal VIP:</b>"""
+
+    kb_public = {
+        "inline_keyboard": [
+            [
+                {"text": "👑 Asegurar Acceso al Paso 3 VIP ($129)", "url": "https://reytacopicks.com/#vip"},
+                {"text": "📱 Ver Mini App", "url": "https://reytacopicks.com/mini-app.html?v=3"}
+            ]
+        ]
+    }
+
+    # 1. Siempre enviar al Canal VIP la jugada completa
+    if VIP_CHANNEL_ID:
+        telegram_api_call("sendMessage", {
+            "chat_id": VIP_CHANNEL_ID,
+            "text": full_msg,
+            "parse_mode": "HTML",
+            "reply_markup": kb_public,
+        })
+
+    # 1b. Enviar también al chat privado de la novia de Carlos (8996443105)
+    try:
+        from backend.interactive_telegram_dispatcher import resolve_girlfriend_chat_id
+        gf_chat_id = resolve_girlfriend_chat_id()
+        if gf_chat_id:
+            telegram_api_call("sendMessage", {
+                "chat_id": gf_chat_id,
+                "text": full_msg,
+                "parse_mode": "HTML",
+                "reply_markup": kb_public,
+            })
+    except Exception:
+        pass
+
+    # 2. En el Canal Gratuito: SOLO el Paso 1 es abierto; Pasos 2 y 3 bloqueados como Teaser VIP
+    if FREE_CHANNEL_ID:
+        if step == 1:
+            telegram_api_call("sendMessage", {
+                "chat_id": FREE_CHANNEL_ID,
+                "text": full_msg,
+                "parse_mode": "HTML",
+                "reply_markup": kb_public,
+            })
+        else:
+            teaser_vip = f"""🔒 <b>RETO ESCALERA • PASO {step} DE 3 EN JUEGO (${entry} ➔ ${payout} MXN)</b> 🌮👑
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔥 Ya cobramos el Paso 1 gratis y hoy jugamos el <b>Paso {step} por ${payout} MXN</b> (Exclusivo Canal VIP).
+
+🏟️ <b>Liga:</b> {league} | ⏰ <b>Horario:</b> {time_str} CDMX
+📊 <b>Cuota Playdoit:</b> <code>{odds}</code> ({odds_dec})
+🎯 <b>Selección:</b> 🔒 <b>[EXCLUSIVO MIEMBROS VIP]</b>
+
+👉 <b>Desbloquea los Pasos 2 y 3 del Reto Escalera y toda la cartelera VIP por solo $129 MXN (Pase 7 Días):</b>"""
+            telegram_api_call("sendMessage", {
+                "chat_id": FREE_CHANNEL_ID,
+                "text": teaser_vip,
+                "parse_mode": "HTML",
+                "reply_markup": kb_public,
+            })
+
+    # 3. Enviar a Carlos con solicitud interactiva de foto (individual o Parlay) y auto-tarjeta en 5 min
+    try:
+        dispatch_interactive_pick(pick, timeout_seconds=300)
+    except Exception:
+        telegram_api_call("sendMessage", {
+            "chat_id": CARLOS_ADMIN_CHAT_ID,
+            "text": f"👑 <b>[RETO ESCALERA DISPARADO]</b>\n\n{full_msg}",
+            "parse_mode": "HTML",
+        })
+

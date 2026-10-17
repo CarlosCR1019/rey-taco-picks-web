@@ -8,7 +8,7 @@ export function getAdConfig(slot: string | undefined, client: string | undefined
 
 export function mountAd(container: HTMLElement, config: AdConfig | null): void {
   if (!config) return;
-  if (!document.querySelector('script[data-rey-taco-adsense]')) {
+  if (!document.querySelector('script[data-rey-taco-adsense]') && !document.querySelector('script[src*="adsbygoogle.js"]')) {
     const script = document.createElement('script');
     script.async = true;
     script.crossOrigin = 'anonymous';
@@ -17,12 +17,14 @@ export function mountAd(container: HTMLElement, config: AdConfig | null): void {
     document.head.append(script);
   }
   container.classList.remove('hidden');
-  container.innerHTML = '<span class="ad-label">PUBLICIDAD</span>';
+  container.innerHTML = '<span class="ad-label">PUBLICIDAD · GOOGLE ADSENSE</span>';
   const ad = document.createElement('ins');
   ad.className = 'adsbygoogle';
   ad.style.display = 'block';
   ad.dataset.adClient = config.client;
-  ad.dataset.adSlot = config.slot;
+  if (config.slot && config.slot !== 'auto') {
+    ad.dataset.adSlot = config.slot;
+  }
   ad.dataset.adFormat = 'auto';
   ad.dataset.fullWidthResponsive = 'true';
   container.append(ad);
@@ -30,6 +32,6 @@ export function mountAd(container: HTMLElement, config: AdConfig | null): void {
     const target = window as typeof window & { adsbygoogle?: unknown[] };
     (target.adsbygoogle ??= []).push({});
   } catch {
-    container.classList.add('hidden');
+    // Keep container mounted for AdSense crawler verification
   }
 }

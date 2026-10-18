@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -22,6 +23,31 @@ DEFAULT_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/128.0.0.0 Safari/537.36"
 )
+
+
+def strip_accents(text: Any) -> str:
+    """Elimina acentos y tildes para evitar '?' en TikTok Studio."""
+    if text is None:
+        return ""
+    s = str(text)
+    replacements = {
+        "ñ": "n", "Ñ": "N",
+        "á": "a", "Á": "A",
+        "é": "e", "É": "E",
+        "í": "i", "Í": "I",
+        "ó": "o", "Ó": "O",
+        "ú": "u", "Ú": "U",
+        "ü": "u", "Ü": "U",
+        "¿": "", "¡": "",
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+        "—": "-", "–": "-",
+    }
+    for k, v in replacements.items():
+        s = s.replace(k, v)
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
 
 
 def _ensure_hydrated_cookies(raw_cookies: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -123,21 +149,22 @@ def publish_tiktok_video(mp4_path: str | Path, caption: str) -> Dict[str, Any]:
 
     clean_caption = caption.replace("\n\n", " • ").replace("\n", " ").strip()[:2000]
 
-    # Filtro anti-baneo estricto para TikTok (elimina cualquier término de apuestas o casas)
+    # Filtro anti-baneo estricto para TikTok (elimina cualquier término de apuestas o casas, sin acentos)
     banned_replacements = {
         "apuestas deportivas": "predicciones deportivas",
-        "apuesta deportiva": "predicción deportiva",
-        "apuestas": "análisis deportivo",
-        "apuesta": "pronóstico",
+        "apuesta deportiva": "prediccion deportiva",
+        "apuestas": "analisis deportivo",
+        "apuesta": "pronostico",
         "playdoit": "nuestro modelo",
         "momio": "probabilidad",
-        "cuota": "línea",
+        "cuota": "linea",
         "casino": "deportes",
         "ganar dinero": "obtener valor",
     }
     sanitized_caption = clean_caption
     for bad, good in banned_replacements.items():
         sanitized_caption = re.sub(re.escape(bad), good, sanitized_caption, flags=re.IGNORECASE)
+    sanitized_caption = strip_accents(sanitized_caption)
 
     try:
         from playwright.sync_api import sync_playwright

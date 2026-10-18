@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080, height=1920, initial-scale=1.0">
+<title>Rey Taco Picks — AI Auto Reel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700;800;900&family=Outfit:wght@700;800;900&family=JetBrains+Mono:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --emerald: #10B981;
+    --emerald-glow: rgba(16, 185, 129, 0.55);
+    --gold: #F59E0B;
+    --gold-bright: #FACC15;
+    --dark-bg: #050811;
+    --card-bg: rgba(10, 16, 30, 0.78);
+    --border-glass: rgba(255, 255, 255, 0.16);
+  }
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  body, html {
+    width: 1080px;
+    height: 1920px;
+    overflow: hidden;
+    background: var(--dark-bg);
+    font-family: 'Inter', sans-serif;
+    color: #FFFFFF;
+    user-select: none;
+  }
+
+  /* 1. B-ROLL LAYER (Google Flow Image / Video with Ken Burns) */
+  #broll-container {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    z-index: 1;
+  }
+  #broll-img, #broll-video {
+    position: absolute;
+    width: 1080px;
+    height: 1920px;
+    object-fit: cover;
+    transform-origin: center center;
+    filter: saturate(1.35) contrast(1.12) brightness(1.08);
+  }
+  #vignette-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    background:
+      radial-gradient(circle at 50% 35%, rgba(16, 185, 129, 0.10) 0%, transparent 60%),
+      linear-gradient(180deg, rgba(4, 7, 15, 0.30) 0%, rgba(4, 7, 15, 0.06) 28%, rgba(4, 7, 15, 0.12) 68%, rgba(4, 7, 15, 0.52) 100%);
+  }
+
+  /* 2. PARTICLE & LIGHT CANVAS */
+  #fx-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+  }
+
+  /* 3. MAIN HUD CONTAINER */
+  #hud {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 96px 64px 90px;
+  }
+
+  /* TOP BRAND & HOOK BADGE */
+  .brand-row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 34px;
+    padding: 14px 32px;
+    border-radius: 999px;
+    background: rgba(8, 13, 25, 0.82);
+    border: 1.5px solid rgba(250, 204, 21, 0.38);
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.55), 0 0 25px rgba(245, 158, 11, 0.22);
+    backdrop-filter: blur(16px);
+  }
+  .brand-logo {
+    width: 58px;
+    height: 58px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid var(--gold-bright);
+  }
+  .brand-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 32px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    background: linear-gradient(90deg, #FFFFFF 0%, #FACC15 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .live-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--emerald);
+    box-shadow: 0 0 16px var(--emerald);
+  }
+
+  .mode-badge {
+    font-family: 'Outfit', sans-serif;
+    font-size: 34px;
+    font-weight: 900;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    padding: 18px 46px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+    color: #03150E;
+    box-shadow: 0 12px 40px rgba(16, 185, 129, 0.55), inset 0 2px 0 rgba(255, 255, 255, 0.45);
+    margin-bottom: 36px;
+    text-align: center;
+  }
+  .mode-badge.ladder {
+    background: linear-gradient(135deg, #FACC15 0%, #D97706 100%);
+    color: #170D02;
+    box-shadow: 0 12px 40px rgba(245, 158, 11, 0.55), inset 0 2px 0 rgba(255, 255, 255, 0.5);
+  }
+
+  /* GLASSMORPHISM MATCH CARD */
+  .glass-card {
+    width: 100%;
+    background: var(--card-bg);
+    border: 2px solid var(--border-glass);
+    border-radius: 40px;
+    padding: 46px 48px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.78), 0 0 50px rgba(16, 185, 129, 0.16);
+    backdrop-filter: blur(22px);
+    position: relative;
+    overflow: hidden;
+  }
+  .glass-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 5px;
+    background: linear-gradient(90deg, var(--emerald), var(--gold-bright), var(--emerald));
+  }
+
+  .league-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 25px;
+    font-weight: 800;
+    color: #94A3B8;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+  }
+  .match-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 54px;
+    font-weight: 900;
+    line-height: 1.12;
+    color: #FFFFFF;
+    margin-bottom: 34px;
+    text-shadow: 0 6px 24px rgba(0, 0, 0, 0.65);
+  }
+
+  /* SELECTION BOX */
+  .selection-box {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.22) 0%, rgba(6, 78, 59, 0.45) 100%);
+    border: 2.5px solid var(--emerald);
+    border-radius: 28px;
+    padding: 30px 36px;
+    margin-bottom: 32px;
+    box-shadow: 0 12px 35px rgba(16, 185, 129, 0.25);
+  }
+  .selection-label {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: 2.5px;
+    color: #6EE7B7;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .selection-value {
+    font-family: 'Outfit', sans-serif;
+    font-size: 50px;
+    font-weight: 900;
+    color: #FFFFFF;
+    line-height: 1.12;
+    text-shadow: 0 0 24px rgba(16, 185, 129, 0.45);
+  }
+
+  /* METRICS ROW (ODDS + STAKE / CONFIDENCE) */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 30px;
+  }
+  .metric-tile {
+    background: rgba(15, 23, 42, 0.85);
+    border: 1.5px solid rgba(255, 255, 255, 0.12);
+    border-radius: 24px;
+    padding: 22px 28px;
+    display: flex;
+    flex-direction: column;
+  }
+  .metric-key {
+    font-size: 20px;
+    font-weight: 700;
+    color: #94A3B8;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .metric-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 44px;
+    font-weight: 800;
+    color: var(--gold-bright);
+  }
+  .metric-val.green {
+    color: #34D399;
+  }
+
+  /* CONFIDENCE BAR */
+  .conf-wrap {
+    margin-top: 8px;
+  }
+  .conf-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 22px;
+    font-weight: 800;
+    color: #E2E8F0;
+    margin-bottom: 12px;
+  }
+  .conf-track {
+    width: 100%;
+    height: 20px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .conf-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #10B981 0%, #FACC15 100%);
+    border-radius: 999px;
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.8);
+  }
+
+  /* KINETIC SUBTITLES (TIKTOK / HORMOZI WORD-BY-WORD) */
+  .captions-stage {
+    margin-top: auto;
+    margin-bottom: 36px;
+    width: 100%;
+    min-height: 210px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 0 16px;
+  }
+  .caption-line {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 16px 20px;
+    line-height: 1.2;
+  }
+  .cap-word {
+    font-family: 'Outfit', sans-serif;
+    font-size: 56px;
+    font-weight: 900;
+    text-transform: uppercase;
+    color: #FFFFFF;
+    padding: 4px 14px;
+    border-radius: 14px;
+    text-shadow:
+      0 6px 0 #000000,
+      0 -3px 0 #000000,
+      4px 0 0 #000000,
+      -4px 0 0 #000000,
+      0 14px 30px rgba(0, 0, 0, 0.9);
+    transition: transform 0.05s ease;
+  }
+  .cap-word.active {
+    color: #04130C;
+    background: var(--emerald);
+    text-shadow: none;
+    transform: scale(1.16) rotate(-1.5deg);
+    box-shadow: 0 12px 32px rgba(16, 185, 129, 0.65);
+  }
+  .cap-word.active-gold {
+    color: #1A0F00;
+    background: var(--gold-bright);
+    text-shadow: none;
+    transform: scale(1.16) rotate(1.5deg);
+    box-shadow: 0 12px 32px rgba(250, 204, 21, 0.65);
+  }
+
+  /* FOOTER CTA */
+  .footer-cta {
+    width: 100%;
+    padding: 24px 36px;
+    border-radius: 26px;
+    background: rgba(9, 14, 28, 0.88);
+    border: 1.5px solid rgba(16, 185, 129, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.65);
+  }
+  .footer-left {
+    display: flex;
+    flex-direction: column;
+  }
+  .footer-handle {
+    font-family: 'Outfit', sans-serif;
+    font-size: 30px;
+    font-weight: 900;
+    color: #FFFFFF;
+  }
+  .footer-sub {
+    font-size: 22px;
+    font-weight: 700;
+    color: #6EE7B7;
+  }
+  .footer-pill {
+    font-family: 'Outfit', sans-serif;
+    font-size: 26px;
+    font-weight: 900;
+    padding: 16px 30px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, #FACC15 0%, #F59E0B 100%);
+    color: #111827;
+    box-shadow: 0 0 25px rgba(250, 204, 21, 0.5);
+  }
+</style>
+</head>
+<body>
+
+<div id="broll-container">
+  <img id="broll-img" src="" alt="bg" style="display:none;" />
+  <video id="broll-video" src="" muted playsinline style="display:none;"></video>
+</div>
+<div id="vignette-overlay"></div>
+<canvas id="fx-canvas" width="1080" height="1920"></canvas>
+
+<div id="hud">
+  <div class="brand-row" id="el-brand">
+    <img class="brand-logo" id="logo-img" src="" alt="Rey Taco" />
+    <span class="brand-title">REY TACO PICKS</span>
+    <span class="live-dot" id="live-dot"></span>
+  </div>
+
+  <div class="mode-badge" id="el-badge">🔥 PICK ESTELAR IA</div>
+
+  <div class="glass-card" id="el-card">
+    <div class="league-pill" id="el-league">🏀 NBA • HOY 17:30 CDMX</div>
+    <div class="match-title" id="el-match">TORONTO RAPTORS vs DETROIT PISTONS</div>
+
+    <div class="selection-box" id="el-selbox">
+      <div class="selection-label" id="el-sellabel">PRONÓSTICO VERIFICADO</div>
+      <div class="selection-value" id="el-selection">TORONTO RAPTORS GANADOR</div>
+    </div>
+
+    <div class="metrics-grid" id="el-metrics">
+      <div class="metric-tile">
+        <span class="metric-key" id="el-key1">MOMIO / CUOTA</span>
+        <span class="metric-val" id="el-odds">-115 (1.87)</span>
+      </div>
+      <div class="metric-tile">
+        <span class="metric-key" id="el-key2">VENTAJA / STAKE</span>
+        <span class="metric-val green" id="el-stake">1.0 UNIDAD</span>
+      </div>
+    </div>
+
+    <div class="conf-wrap" id="el-confwrap">
+      <div class="conf-header">
+        <span id="el-conflabel">CONFIANZA ALGORÍTMICA IA</span>
+        <span id="el-confpct">89%</span>
+      </div>
+      <div class="conf-track">
+        <div class="conf-fill" id="el-conffill"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="captions-stage" id="el-captions">
+    <div class="caption-line" id="caption-line"></div>
+  </div>
+
+  <div class="footer-cta" id="el-footer">
+    <div class="footer-left">
+      <span class="footer-handle">@reytaco_picks 🌮👑</span>
+      <span class="footer-sub">Canal Gratis en el Link del Perfil</span>
+    </div>
+    <div class="footer-pill">ENTRAR GRATIS 👉</div>
+  </div>
+</div>
+
+<script>
+  // Payload injected dynamically by Python before rendering
+  window.REEL_PAYLOAD = __REEL_PAYLOAD_JSON__;
+
+  const canvas = document.getElementById('fx-canvas');
+  const ctx = canvas.getContext('2d');
+
+  // Deterministic particles
+  const particles = [];
+  for (let i = 0; i < 42; i++) {
+    particles.push({
+      x: (i * 197) % 1080,
+      y: (i * 311) % 1920,
+      r: 2.5 + (i % 5) * 1.4,
+      vx: ((i % 7) - 3) * 14,
+      vy: -38 - (i % 5) * 18,
+      gold: i % 3 === 0
+    });
+  }
+
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function easeOutBack(x) {
+    const c1 = 1.70158;
+    const c3 = c1 + 1;
+    return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+  }
+  function easeOutCubic(x) { return 1 - Math.pow(1 - x, 3); }
+
+  function initPayload() {
+    const p = window.REEL_PAYLOAD;
+    if (!p) return;
+
+    if (p.logo_url) {
+      document.getElementById('logo-img').src = p.logo_url;
+    }
+    if (p.broll_frames && p.broll_frames.length > 0) {
+      const img = document.getElementById('broll-img');
+      img.src = p.broll_frames[0];
+      img.style.display = 'block';
+    } else if (p.broll_video_url) {
+      const vid = document.getElementById('broll-video');
+      vid.src = p.broll_video_url;
+      vid.style.display = 'block';
+    } else if (p.broll_img_url) {
+      const img = document.getElementById('broll-img');
+      img.src = p.broll_img_url;
+      img.style.display = 'block';
+    }
+
+    function cleanTxt(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/[áÁ]/g, 'A').replace(/[éÉ]/g, 'E').replace(/[íÍ]/g, 'I').replace(/[óÓ]/g, 'O').replace(/[úÚüÜ]/g, 'U')
+        .replace(/[ñ]/g, 'n').replace(/[Ñ]/g, 'N').replace(/[¿¡]/g, '')
+        .replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+    }
+
+    const badge = document.getElementById('el-badge');
+    badge.textContent = cleanTxt(p.badge_text || 'PICK ESTELAR IA');
+    if (p.mode === 'ladder') badge.classList.add('ladder');
+    if (p.sport_accent) {
+      document.documentElement.style.setProperty('--sport-accent', p.sport_accent);
+    }
+
+    document.getElementById('el-league').textContent = cleanTxt(p.league_text || 'NBA • HOY');
+    document.getElementById('el-match').textContent = cleanTxt(p.match_text || 'PARTIDO OFICIAL');
+    document.getElementById('el-sellabel').textContent = cleanTxt(p.selection_label || 'PRONOSTICO OFICIAL IA');
+    document.getElementById('el-selection').textContent = cleanTxt(p.selection_text || 'SELECCION');
+    document.getElementById('el-key1').textContent = cleanTxt(p.metric1_label || 'LINEA IA');
+    document.getElementById('el-odds').textContent = cleanTxt(p.metric1_val || '-110 (1.91)');
+    document.getElementById('el-key2').textContent = cleanTxt(p.metric2_label || 'STAKE OFICIAL');
+    document.getElementById('el-stake').textContent = cleanTxt(p.metric2_val || '1.0 UNIDAD');
+    document.getElementById('el-conflabel').textContent = cleanTxt(p.conf_label || 'CONFIANZA DEL MODELO IA');
+  }
+
+  initPayload();
+  let _lastBrollIdx = -1;
+
+  window.setTime = async function(t) {
+    const p = window.REEL_PAYLOAD || {};
+    const targetConf = p.confidence || 89;
+
+    // 1. Google Flow B-Roll Frame Sequence OR Ken Burns Image Camera Pan & Zoom
+    const brollImg = document.getElementById('broll-img');
+    if (p.broll_frames && p.broll_frames.length > 0 && brollImg) {
+      const idx = Math.floor(t * 8) % p.broll_frames.length;
+      if (idx !== _lastBrollIdx) {
+        _lastBrollIdx = idx;
+        brollImg.src = p.broll_frames[idx];
+      }
+      const scale = 1.03 + 0.04 * Math.sin(t * 0.4);
+      brollImg.style.transform = `scale(${scale.toFixed(4)})`;
+    } else if (brollImg) {
+      const scale = 1.04 + 0.10 * Math.sin(t * 0.22);
+      const panX = Math.sin(t * 0.35) * 18;
+      const panY = Math.cos(t * 0.28) * 14;
+      brollImg.style.transform = `translate(${panX.toFixed(1)}px, ${panY.toFixed(1)}px) scale(${scale.toFixed(4)})`;
+    }
+
+    // 2. Draw Particles & Ambient Glow
+    ctx.clearRect(0, 0, 1080, 1920);
+    for (let i = 0; i < particles.length; i++) {
+      const pt = particles[i];
+      const curX = ((pt.x + pt.vx * t) % 1080 + 1080) % 1080;
+      const curY = ((pt.y + pt.vy * t) % 1920 + 1920) % 1920;
+      const alpha = 0.28 + 0.32 * Math.sin(t * 3 + i);
+      ctx.beginPath();
+      ctx.arc(curX, curY, pt.r, 0, Math.PI * 2);
+      ctx.fillStyle = pt.gold ? `rgba(250, 204, 21, ${alpha})` : `rgba(16, 185, 129, ${alpha})`;
+      ctx.fill();
+    }
+
+    // 3. Staggered HUD Entrance Animations
+    const pBrand = easeOutBack(clamp(t / 0.45, 0, 1));
+    const elBrand = document.getElementById('el-brand');
+    elBrand.style.opacity = clamp(t / 0.25, 0, 1);
+    elBrand.style.transform = `translateY(${(1 - pBrand) * -40}px) scale(${0.85 + 0.15 * pBrand})`;
+
+    const pBadge = easeOutBack(clamp((t - 0.18) / 0.48, 0, 1));
+    const elBadge = document.getElementById('el-badge');
+    elBadge.style.opacity = clamp((t - 0.18) / 0.22, 0, 1);
+    const pulseBadge = t > 0.7 ? 1 + 0.025 * Math.sin(t * 5.5) : 0.75 + 0.25 * pBadge;
+    elBadge.style.transform = `scale(${pulseBadge.toFixed(4)})`;
+
+    const pCard = easeOutCubic(clamp(t / 0.40, 0, 1));
+    const elCard = document.getElementById('el-card');
+    elCard.style.opacity = Math.max(0.95, pCard);
+    elCard.style.transform = `translateY(${(1 - pCard) * 35}px)`;
+
+    const pSel = easeOutBack(clamp(t / 0.45, 0, 1));
+    const elSel = document.getElementById('el-selbox');
+    elSel.style.opacity = 1.0;
+    const selGlow = 25 + 15 * Math.sin(t * 4.5);
+    elSel.style.transform = `scale(${(0.95 + 0.05 * pSel).toFixed(4)})`;
+    elSel.style.boxShadow = `0 12px ${selGlow.toFixed(0)}px rgba(16, 185, 129, 0.40)`;
+
+    // Confidence bar fill
+    const pConf = easeOutCubic(clamp((t - 1.1) / 1.1, 0, 1));
+    const curConf = Math.round(targetConf * pConf);
+    document.getElementById('el-confpct').textContent = `${curConf}%`;
+    document.getElementById('el-conffill').style.width = `${(targetConf * pConf).toFixed(1)}%`;
+
+    // Footer entrance
+    const pFoot = easeOutCubic(clamp((t - 0.9) / 0.5, 0, 1));
+    const elFoot = document.getElementById('el-footer');
+    elFoot.style.opacity = pFoot;
+    elFoot.style.transform = `translateY(${(1 - pFoot) * 40}px)`;
+
+    // 4. Word-by-Word Kinetic Subtitles + Final CTA Hold
+    const words = p.words || [];
+    const capLine = document.getElementById('caption-line');
+    if (words.length > 0) {
+      const CHUNK_SIZE = 4;
+      let activeIdx = -1;
+      for (let i = 0; i < words.length; i++) {
+        if (t >= words[i].start && t <= words[i].end + 0.18) {
+          activeIdx = i;
+        }
+      }
+      if (activeIdx === -1) {
+        for (let i = 0; i < words.length; i++) {
+          if (t >= words[i].start) activeIdx = i;
+        }
+      }
+      const lastEnd = words[words.length - 1].end;
+      if (activeIdx >= 0 && t <= lastEnd + 0.45) {
+        const chunkIdx = Math.floor(activeIdx / CHUNK_SIZE);
+        const startW = chunkIdx * CHUNK_SIZE;
+        const endW = Math.min(words.length, startW + CHUNK_SIZE);
+        let html = '';
+        for (let w = startW; w < endW; w++) {
+          const isCurr = (w === activeIdx);
+          const cls = isCurr ? (w % 2 === 0 ? 'cap-word active' : 'cap-word active-gold') : 'cap-word';
+          html += `<span class="${cls}">${cleanTxt(words[w].text)}</span>`;
+        }
+        capLine.innerHTML = html;
+      } else if (t > lastEnd + 0.45) {
+        capLine.innerHTML = `<span class="cap-word active">📲 UNETE GRATIS</span><span class="cap-word active-gold">LINK EN PERFIL 👉</span>`;
+      } else {
+        capLine.innerHTML = '';
+      }
+    }
+  };
+</script>
+</body>
+</html>

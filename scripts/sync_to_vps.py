@@ -3,13 +3,28 @@ import sys
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-ssh_key = r"C:\Users\carlo\.ssh\reytaco_vps_key"
-vps = "root@204.168.247.173"
+import os
+
+ssh_key = os.environ.get("SSH_KEY", r"C:\Users\carlo\.ssh\reytaco_vps_key")
+# Contabo vmi3630799 (Producción Activa) / Hetzner (Respaldo en espera)
+CONTABO_HOST = "root@158.220.119.201"
+HETZNER_HOST = "root@204.168.247.173"
+vps = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("TARGET_VPS", CONTABO_HOST)
+print(f"Target VPS: {vps}")
 
 files_to_sync = [
     ("backend/multisport_cadence_engine.py", "/root/sports-props-collector/backend/multisport_cadence_engine.py"),
+    ("backend/ladder_challenge_engine.py", "/root/sports-props-collector/backend/ladder_challenge_engine.py"),
+    ("backend/auto_reel_producer.py", "/root/sports-props-collector/backend/auto_reel_producer.py"),
+    ("backend/tiktok_auto_uploader.py", "/root/sports-props-collector/backend/tiktok_auto_uploader.py"),
     ("backend/pick_settlement.py", "/root/sports-props-collector/backend/pick_settlement.py"),
+    ("backend/reel_cadence_bridge.py", "/root/sports-props-collector/backend/reel_cadence_bridge.py"),
+    ("scripts/run_multisport_daemon_vps.py", "/root/sports-props-collector/scripts/run_multisport_daemon_vps.py"),
+    ("scripts/publish_fabrica_meta.py", "/root/sports-props-collector/scripts/publish_fabrica_meta.py"),
+    ("scripts/generate_fabrica_media.py", "/root/sports-props-collector/scripts/generate_fabrica_media.py"),
+    ("lab/reels/template_ai_auto_reel.html", "/root/sports-props-collector/lab/reels/template_ai_auto_reel.html"),
 ]
+
 
 for local_f, remote_f in files_to_sync:
     print(f"Syncing {local_f} -> {remote_f}...")

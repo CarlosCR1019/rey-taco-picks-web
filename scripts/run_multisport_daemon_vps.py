@@ -50,6 +50,26 @@ def main():
             print(f"❌ Error inesperado en ciclo:")
             traceback.print_exc()
 
+        # Evaluación del Reto Escalera de Fin de Semana (Viernes a Domingo, 12:00 PM a 9:00 PM CDMX)
+        try:
+            from backend.ladder_challenge_engine import evaluate_and_dispatch_ladder_step
+            ladder_res = evaluate_and_dispatch_ladder_step()
+            if ladder_res:
+                print(f"🪜 [RETO ESCALERA] Paso {ladder_res.get('ladder_step')} despachado con éxito: {ladder_res.get('ticket_id')}")
+        except Exception as e_ladder:
+            print(f"⚠️ Error en evaluación del Reto Escalera: {e_ladder}")
+
+        # Auditoría continua: Actualizar precios de cierre para CLV y liquidar apuestas terminadas
+        try:
+            from backend.pick_tracker import refresh_closing_prices
+            from backend.pick_settlement import settle_pending
+            refreshed = refresh_closing_prices(max_hours_ahead=12.0)
+            settled = settle_pending(min_hours_after_start=2.5)
+            if refreshed or settled:
+                print(f"📈 [AUDITORÍA & SETTLEMENT] Precios CLV capturados: {refreshed} | Apuestas liquidadas: {settled}")
+        except Exception as e:
+            print(f"⚠️ Error en auditoría continua (CLV / Settlement): {e}")
+
         print(f"💤 Esperando {CHECK_INTERVAL_SECONDS // 60} minutos...")
         time.sleep(CHECK_INTERVAL_SECONDS)
 

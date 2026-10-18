@@ -26,6 +26,7 @@ import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import unicodedata
 from zoneinfo import ZoneInfo
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +45,35 @@ MEXICO_TZ = ZoneInfo("America/Mexico_City")
 ASSETS_FLOW_DIR = REPO_ROOT / "assets" / "flow_broll"
 TEMPLATE_PATH = REPO_ROOT / "lab" / "reels" / "template_ai_auto_reel.html"
 OUT_REELS_DIR = REPO_ROOT / "data" / "reels"
+
+
+def strip_accents(text: Any) -> str:
+    """
+    Elimina tildes, acentos y caracteres especiales en los textos visuales y copies de Reels,
+    evitando que plataformas como TikTok, Instagram o navegadores los conviertan en signos
+    de interrogación ('?').
+    """
+    if text is None:
+        return ""
+    s = str(text)
+    replacements = {
+        "ñ": "n", "Ñ": "N",
+        "á": "a", "Á": "A",
+        "é": "e", "É": "E",
+        "í": "i", "Í": "I",
+        "ó": "o", "Ó": "O",
+        "ú": "u", "Ú": "U",
+        "ü": "u", "Ü": "U",
+        "¿": "", "¡": "",
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+        "—": "-", "–": "-",
+    }
+    for k, v in replacements.items():
+        s = s.replace(k, v)
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
 
 
 def _file_to_data_uri(path: Path, mime: str = "image/webp") -> str:
@@ -103,9 +133,9 @@ def detect_sport_key(pick_or_str: Any) -> str:
 SPORT_THEME_META: Dict[str, Dict[str, str]] = {
     "nba": {"icon": "🏀", "label": "NBA BASKETBALL", "chip": "🏀 NBA • RADAR CUANTITATIVO IA", "accent": "#F59E0B"},
     "nfl": {"icon": "🏈", "label": "NFL FOOTBALL", "chip": "🏈 NFL • GRIDIRON ANALYTICS IA", "accent": "#10B981"},
-    "futbol": {"icon": "⚽", "label": "FÚTBOL SOCCER", "chip": "⚽ FÚTBOL • CÓRNERS & GOLES IA", "accent": "#10B981"},
+    "futbol": {"icon": "⚽", "label": "FUTBOL SOCCER", "chip": "⚽ FUTBOL • CORNERS & GOLES IA", "accent": "#10B981"},
     "tennis": {"icon": "🎾", "label": "TENIS ATP/WTA", "chip": "🎾 TENIS • HARDCOURT AI PRO", "accent": "#38BDF8"},
-    "mlb": {"icon": "⚾", "label": "BÉISBOL MLB", "chip": "⚾ MLB • DIAMANTE ANALYTICS IA", "accent": "#FACC15"},
+    "mlb": {"icon": "⚾", "label": "BEISBOL MLB", "chip": "⚾ MLB • DIAMANTE ANALYTICS IA", "accent": "#FACC15"},
 }
 
 
@@ -460,24 +490,24 @@ def build_reel_payload(pick: Dict[str, Any], words: List[Dict[str, Any]], mode: 
         logo_path = REPO_ROOT / "frontend" / "public" / "logo.jpg"
         logo_mime = "image/jpeg"
 
-    match_name = str(pick.get("match") or pick.get("event_name") or "Partido Oficial").upper()
-    raw_league = str(pick.get("league") or pick.get("champ_name") or theme["label"]).upper()
+    match_name = strip_accents(str(pick.get("match") or pick.get("event_name") or "Partido Oficial").upper())
+    raw_league = strip_accents(str(pick.get("league") or pick.get("champ_name") or theme["label"]).upper())
     if theme["icon"] not in raw_league:
         league_name = f"{theme['icon']} {raw_league}"
     else:
         league_name = raw_league
-    time_str = str(pick.get("time_cdmx") or "HOY")
-    selection = _explicit_selection(pick).upper()
-    mkt_label = str(pick.get("market_name") or pick.get("altenar_market") or "").strip().upper()
+    time_str = strip_accents(str(pick.get("time_cdmx") or "HOY"))
+    selection = strip_accents(_explicit_selection(pick).upper())
+    mkt_label = strip_accents(str(pick.get("market_name") or pick.get("altenar_market") or "").strip().upper())
     odds_am = str(pick.get("odds_american") or pick.get("market_odds_american") or "-110")
     odds_dec = str(pick.get("odds_decimal") or pick.get("market_odds_decimal") or "1.90")
-    stake_val = f"{pick.get('stake', 1.0)} UNIDAD"
+    stake_val = strip_accents(f"{pick.get('stake', 1.0)} UNIDAD")
 
     if mode == "victory":
         badge_text = f"✅ CAJA VERDE • {theme['label']}"
         sel_label = f"{theme['icon']} APUESTA LIQUIDADA GANADORA"
         m2_label = "RESULTADO OFICIAL"
-        m2_val = str(pick.get("score") or "COBRADO 💰").upper()
+        m2_val = strip_accents(str(pick.get("score") or "COBRADO").upper())
         conf_val = 96
     elif mode == "ladder":
         step = int(pick.get("step") or pick.get("ladder_step") or 1)
@@ -485,13 +515,13 @@ def build_reel_payload(pick: Dict[str, Any], words: List[Dict[str, Any]], mode: 
             badge_text = "🪜 RETO ESCALERA • PASO 1 GRATIS"
             sel_label = f"{theme['icon']} PASO 1 ABIERTO • {mkt_label}" if mkt_label else f"{theme['icon']} PASO 1 ABIERTO (VIERNES A DOMINGO)"
             m2_label = "META ESCALERA"
-            m2_val = "PASO 1 GRATIS 🟢"
+            m2_val = "PASO 1 GRATIS"
         else:
             badge_text = f"🪜 RETO ESCALERA • PASO {step} VIP"
             sel_label = "🔒 EXCLUSIVO MIEMBROS CANAL VIP"
             selection = "🔒 DISPONIBLE EN CANAL VIP ($129)"
             m2_label = "ACCESO ESCALERA"
-            m2_val = f"PASO {step} VIP 👑"
+            m2_val = f"PASO {step} VIP"
         conf_val = 91
     else:
         badge_text = f"🔥 PICK ESTELAR • {theme['label']}"
@@ -502,29 +532,36 @@ def build_reel_payload(pick: Dict[str, Any], words: List[Dict[str, Any]], mode: 
 
     broll_frames = _extract_broll_frames_b64(vid_path) if vid_path else []
 
+    # Sanitizar todas las palabras de subtítulos para evitar '?' en pantalla
+    clean_words = []
+    for w in (words or []):
+        cw = dict(w)
+        cw["text"] = strip_accents(str(w.get("text", "")))
+        clean_words.append(cw)
+
     return {
         "mode": mode,
         "sport_key": sport_key,
         "sport_icon": theme["icon"],
-        "sport_chip": theme["chip"],
+        "sport_chip": strip_accents(theme["chip"]),
         "sport_accent": theme["accent"],
         "logo_url": _file_to_data_uri(logo_path, logo_mime),
         "broll_img_url": _file_to_data_uri(img_path, "image/webp") if img_path else "",
         "broll_frames": broll_frames,
         "broll_video_url": "",
         "broll_video_file": str(vid_path) if vid_path else "",
-        "badge_text": badge_text,
-        "league_text": f"{league_name} • {time_str} CDMX",
-        "match_text": match_name,
-        "selection_label": sel_label,
-        "selection_text": selection,
-        "metric1_label": "LÍNEA IA",
+        "badge_text": strip_accents(badge_text),
+        "league_text": strip_accents(f"{league_name} • {time_str} CDMX"),
+        "match_text": strip_accents(match_name),
+        "selection_label": strip_accents(sel_label),
+        "selection_text": strip_accents(selection),
+        "metric1_label": "LINEA IA",
         "metric1_val": f"{odds_am} ({odds_dec})",
-        "metric2_label": m2_label,
-        "metric2_val": m2_val,
-        "conf_label": "CONFIANZA ALGORÍTMICA IA",
+        "metric2_label": strip_accents(m2_label),
+        "metric2_val": strip_accents(m2_val),
+        "conf_label": "CONFIANZA ALGORITMICA IA",
         "confidence": conf_val,
-        "words": words,
+        "words": clean_words,
     }
 
 
@@ -634,16 +671,16 @@ def produce_and_dispatch_ai_reel(
     except Exception as e:
         print(f"ℹ️ Subida R2 omitida: {e}")
 
-    match_name = pick.get("match") or pick.get("event_name") or "Partido Oficial"
-    selection = pick.get("pick") or pick.get("selection") or "Selección IA"
-    odds_am = pick.get("odds_american") or pick.get("market_odds_american") or "-110"
+    match_name = strip_accents(str(pick.get("match") or pick.get("event_name") or "Partido Oficial"))
+    selection = strip_accents(str(pick.get("pick") or pick.get("selection") or "Seleccion IA"))
+    odds_am = str(pick.get("odds_american") or pick.get("market_odds_american") or "-110")
 
     if mode == "victory":
         caption = (
-            f"✅ ¡PRONÓSTICO ACERTADO CON IA! 🌮👑\n\n"
+            f"✅ PRONOSTICO ACERTADO CON IA! 🌮👑\n\n"
             f"🏟️ {match_name}\n"
             f"🎯 {selection} ({odds_am}) 🎯\n\n"
-            f"Todos los análisis deportivos diarios en el perfil 👉 @rey.taco.picks\n\n"
+            f"Todos los analisis deportivos diarios en el perfil 👉 @rey.taco.picks\n\n"
             f"#ReyTacoPicks #PrediccionesDeportivas #AnalisisDeportivo #LigaMX #Futbol #NBA #Estadisticas"
         )
     elif mode == "ladder":
@@ -655,17 +692,18 @@ def produce_and_dispatch_ai_reel(
             f"🎯 {sel_display}\n\n"
             f"🟢 Paso 1: Abierto para toda la tribu\n"
             f"🔒 Pasos 2 y 3: Exclusivos en Telegram VIP\n\n"
-            f"Únete al análisis deportivo desde el perfil 👉 @rey.taco.picks\n\n"
+            f"Unete al analisis deportivo desde el perfil 👉 @rey.taco.picks\n\n"
             f"#RetoDeportivo #ReyTacoPicks #LigaMX #Futbol #DatosDeportivos #Predicciones #Estadisticas"
         )
     else:
         caption = (
-            f"🔥 ANÁLISIS DEPORTIVO CON INTELIGENCIA ARTIFICIAL 🌮👑\n\n"
+            f"🔥 ANALISIS DEPORTIVO CON INTELIGENCIA ARTIFICIAL 🌮👑\n\n"
             f"🏟️ {match_name}\n"
             f"🎯 {selection} ({odds_am})\n\n"
-            f"Todos los análisis y predicciones deportivas en el perfil 👉 @rey.taco.picks\n\n"
+            f"Todos los analisis y predicciones deportivas en el perfil 👉 @rey.taco.picks\n\n"
             f"#ReyTacoPicks #PrediccionesDeportivas #NBA #NFL #LigaMX #Futbol #DatosDeportivos #Analisis"
         )
+    caption = strip_accents(caption)
 
     if send_telegram:
         try:

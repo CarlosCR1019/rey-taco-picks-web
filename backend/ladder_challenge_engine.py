@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -45,10 +46,36 @@ TELEGRAM_FREE_LINK = "https://t.me/ReyTacoPicksFree"
 WEBSITE_VIP_LINK = "https://reytacopicks.com"
 CARLOS_ADMIN_CHAT_ID = "5912533842"
 
+
+def strip_accents(text: Any) -> str:
+    """Elimina acentos y tildes para evitar '?' en videos y plataformas."""
+    if text is None:
+        return ""
+    s = str(text)
+    replacements = {
+        "ñ": "n", "Ñ": "N",
+        "á": "a", "Á": "A",
+        "é": "e", "É": "E",
+        "í": "i", "Í": "I",
+        "ó": "o", "Ó": "O",
+        "ú": "u", "Ú": "U",
+        "ü": "u", "Ü": "U",
+        "¿": "", "¡": "",
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+        "—": "-", "–": "-",
+    }
+    for k, v in replacements.items():
+        s = s.replace(k, v)
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
+
+
 # Parámetros del Reto (Paso 1 siempre gratis, Pasos 2 y 3 siempre exclusivos VIP)
 LADDER_CONFIG = {
     4: {"step": 1, "entry": 300, "target": 555, "day_name": "Viernes", "channel": "public"},
-    5: {"step": 2, "entry": 555, "target": 1000, "day_name": "Sábado", "channel": "vip_only"},
+    5: {"step": 2, "entry": 555, "target": 1000, "day_name": "Sabado", "channel": "vip_only"},
     6: {"step": 3, "entry": 1000, "target": 1900, "day_name": "Domingo", "channel": "vip_only"},
 }
 
@@ -93,13 +120,13 @@ def _save_history(history: Dict[str, Any]) -> None:
 
 def format_explicit_pick(selection_name: str, market_name: str = "") -> str:
     """
-    Garantiza que la selección nunca sea ambigua (ej. convierte 'Menos de 11.5' en
-    'Menos de 11.5 Tiros de Esquina (Córners)', o agrega el tipo de mercado explícito).
+    Garantiza que la selección nunca sea ambigua y esté 100% libre de acentos
+    (ej. convierte 'Menos de 11.5' en 'Menos de 11.5 Tiros de Esquina (Corners)', o agrega el mercado).
     """
     sel = (selection_name or "").strip()
     mkt = (market_name or "").strip()
     if not sel:
-        return mkt or "Selección Oficial"
+        return strip_accents(mkt or "Seleccion Oficial")
 
     sel_low = sel.lower()
     mkt_low = mkt.lower()
@@ -116,55 +143,61 @@ def format_explicit_pick(selection_name: str, market_name: str = "") -> str:
         )
         if not has_unit:
             if any(c in mkt_low for c in ("esquina", "corner", "córner")):
-                return f"{sel} Tiros de Esquina (Córners)"
+                return strip_accents(f"{sel} Tiros de Esquina (Corners)")
             if "gol" in mkt_low:
-                return f"{sel} Goles"
+                return strip_accents(f"{sel} Goles")
             if any(p in mkt_low for p in ("punto", "point")):
-                return f"{sel} Puntos"
+                return strip_accents(f"{sel} Puntos")
             if any(r in mkt_low for r in ("carrera", "run")):
-                return f"{sel} Carreras"
+                return strip_accents(f"{sel} Carreras")
             if any(j in mkt_low for j in ("juego", "game")):
-                return f"{sel} Juegos"
+                return strip_accents(f"{sel} Juegos")
             if "set" in mkt_low:
-                return f"{sel} Sets"
+                return strip_accents(f"{sel} Sets")
             if any(t in mkt_low for t in ("tarjeta", "card")):
-                return f"{sel} Tarjetas"
+                return strip_accents(f"{sel} Tarjetas")
             if any(rm in mkt_low for rm in ("remate", "tiro a puerta")):
-                return f"{sel} Remates a Puerta"
+                return strip_accents(f"{sel} Remates a Puerta")
             if mkt:
-                return f"{sel} ({mkt})"
+                return strip_accents(f"{sel} ({mkt})")
 
     # 2. Empate No Acción / Draw No Bet
     if any(k in mkt_low for k in ("no válida", "no valida", "draw no bet", "empate no")):
         if "empate" not in sel_low and "acción" not in sel_low and "accion" not in sel_low:
-            return f"{sel} (Empate No Acción)"
+            return strip_accents(f"{sel} (Empate No Accion)")
 
     # 3. Hándicap / Spread
     if any(k in mkt_low for k in ("hándicap", "handicap", "spread")):
         if "(0)" in sel or "(+0)" in sel or "(-0)" in sel:
             if not any(e in sel_low for e in ("empate", "draw no bet", "dnb")):
-                return f"{sel} — Hándicap 0 (Empate No Acción)"
+                return strip_accents(f"{sel} - Handicap 0 (Empate No Accion)")
         elif not any(h in sel_low for h in ("hándicap", "handicap", "spread", "puntos", "goles", "draw no bet", "dnb", "empate")):
-            return f"{sel} (Hándicap)"
+            return strip_accents(f"{sel} (Handicap)")
 
     # 4. Ganador / Moneyline cuando solo viene el nombre del equipo/jugador
     if any(k in mkt_low for k in ("1x2", "ganador", "moneyline")):
         if not any(g in sel_low for g in ("gana", "ganador", "moneyline", "directo", "empate")):
-            return f"{sel} a Ganar"
+            return strip_accents(f"{sel} a Ganar")
 
-    return sel
+    return strip_accents(sel)
 
 
-
-def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str, Any]]:
+def evaluate_and_dispatch_ladder_step(force: bool = False, step_override: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
     Evalúa y despacha el paso correspondiente del Reto Escalera si está en ventana activa.
+
+    REGLA DE NEGOCIO ESTRICTA (Autorizada por Carlos):
+    - Viernes (weekday 4): Paso 1 (Entrada $300 ➔ Cobro ~$555, Abierto en Telegram Free y Redes).
+    - Sábado  (weekday 5): Paso 2 (Entrada $555 ➔ Cobro ~$1,000, Exclusivo VIP / Privado).
+    - Domingo (weekday 6): Paso 3 (Entrada $1,000 ➔ Cobro ~$1,900, Exclusivo VIP / Privado).
+    
+    Sábado y Domingo NUNCA deben repetir el Paso 1 ni publicarse abiertos en canales gratuitos.
     """
     now_cdmx = datetime.now(MEXICO_TZ)
     
     # 1. Guardia de día de la semana
-    if not is_ladder_day(now_cdmx) and not force:
-        LOGGER.info("Reto Escalera: Hoy no es día de escalera (activo Viernes a Domingo).")
+    if not is_ladder_day(now_cdmx) and not force and step_override is None:
+        LOGGER.info("Reto Escalera: Hoy no es dia de escalera (activo Viernes a Domingo).")
         return None
 
     # 2. Guardia de ventana de alta afluencia (12:00 PM a 9:00 PM CDMX)
@@ -175,51 +208,40 @@ def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str,
         )
         return None
 
-    step_cfg = get_current_ladder_step_config(now_cdmx) or LADDER_CONFIG[4]
-    day_name = step_cfg["day_name"]
+    # Asignación estricta según el día de la semana o override manual
+    weekday = now_cdmx.weekday()
+    if step_override in (1, 2, 3):
+        step = step_override
+        cfg = next((c for c in LADDER_CONFIG.values() if c["step"] == step), LADDER_CONFIG[4])
+        day_name = cfg["day_name"]
+        channel_type = cfg["channel"]
+        entry_monto = cfg["entry"]
+        target_monto = cfg["target"]
+    elif weekday in LADDER_CONFIG:
+        cfg = LADDER_CONFIG[weekday]
+        step = cfg["step"]
+        day_name = cfg["day_name"]
+        channel_type = cfg["channel"]
+        entry_monto = cfg["entry"]
+        target_monto = cfg["target"]
+    else:
+        # Fallback si se fuerza en un día fuera del fin de semana (Lunes a Jueves)
+        step = 1
+        day_name = "Viernes"
+        channel_type = "public"
+        entry_monto = 300
+        target_monto = 555
 
+    retry_label = ""
     today_iso = now_cdmx.strftime("%Y-%m-%d")
     history = _load_history()
-
-    # Verificar progresión real del fin de semana (solo avanza de paso si el paso anterior ganó)
-    from backend.pick_tracker import load_tracking, record_pick
-    tracking_data = load_tracking()
-    step = 1
-    retry_label = ""
-    if now_cdmx.weekday() in (5, 6):  # Sábado o Domingo
-        recent_steps = []
-        for d_back in (1, 2):
-            prev_iso = (now_cdmx - timedelta(days=d_back)).strftime("%Y-%m-%d")
-            for k, v in history.items():
-                if k.startswith(f"ladder_{prev_iso}_"):
-                    recent_steps.append(v)
-        if recent_steps:
-            last_entry = sorted(recent_steps, key=lambda x: x.get("dispatched_at", ""))[-1]
-            last_tid = last_entry.get("ticket_id", "")
-            last_step = int(last_entry.get("step", 1))
-            t_rec = tracking_data.get(last_tid, {})
-            t_status = t_rec.get("status", "PENDING")
-            if t_status in ("WON", "VOID", "PENDING"):
-                step = min(last_step + (1 if t_status == "WON" else 0), 3)
-            else:
-                step = 1
-                retry_label = " (Intento #2 Fin de Semana)"
-
-    step_meta = {
-        1: {"entry": 300, "target": 540, "channel": "public"},
-        2: {"entry": 540, "target": 980, "channel": "vip_only"},
-        3: {"entry": 980, "target": 1800, "channel": "vip_only"},
-    }[step]
-    entry_monto = step_meta["entry"]
-    target_monto = step_meta["target"]
-    channel_type = step_meta["channel"]
 
     step_key = f"ladder_{today_iso}_step_{step}"
     if step_key in history and not force:
         LOGGER.info("Reto Escalera: El Paso %d de hoy ya fue despachado previamente.", step)
         return None
 
-    LOGGER.info("🪜 Reto Escalera: Buscando selección de alta certeza para el Paso %d (%s)...", step, day_name)
+    LOGGER.info("🪜 Reto Escalera: Buscando seleccion de alta certeza para el Paso %d (%s)...", step, day_name)
 
     # 3. Descubrir eventos próximos en Playdoit en la ventana de alta afluencia
     session = get_altenar_session()
@@ -315,10 +337,10 @@ def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str,
     ladder_pick = {
         "ticket_id": ticket_id,
         "event_id": str(ev.get("id")),
-        "home_team": home_t,
-        "away_team": away_t,
-        "match": ev.get("name"),
-        "league": f"{sport_icon} {ev.get('champ_name')}",
+        "home_team": strip_accents(home_t),
+        "away_team": strip_accents(away_t),
+        "match": strip_accents(ev.get("name")),
+        "league": strip_accents(f"{sport_icon} {ev.get('champ_name')}"),
         "sport": sport_key,
         "sport_icon": sport_icon,
         "date_cdmx": today_iso,
@@ -326,15 +348,16 @@ def evaluate_and_dispatch_ladder_step(force: bool = False) -> Optional[Dict[str,
         "time_cdmx": ev.get("time_cdmx"),
         "start_time_utc": ev.get("start_date_utc") or ev.get("datetime_utc"),
         "pick": explicit_pick_str,
-        "market_name": mkt.get("market_name"),
-        "altenar_market": mkt.get("market_name"),
-        "altenar_selection": mkt.get("selection_name"),
+        "market_name": strip_accents(mkt.get("market_name")),
+        "altenar_market": strip_accents(mkt.get("market_name")),
+        "altenar_selection": strip_accents(mkt.get("selection_name")),
         "market_odds_decimal": odds_dec,
         "market_odds_american": odds_ame,
         "minimum_odds_decimal": round(max(1.55, odds_dec - 0.06), 2),
         "minimum_odds_american": odds_ame,
         "stake_units": 1.0,
         "status": "active",
+        "is_free_pick": (step == 1),
         "stadium": "",
         "is_ladder": True,
         "ladder_step": step,
@@ -507,4 +530,14 @@ def _notify_telegram_channels(pick: Dict[str, Any], channel_type: str) -> None:
             "text": f"👑 <b>[RETO ESCALERA DISPARADO]</b>\n\n{full_msg}",
             "parse_mode": "HTML",
         })
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Despachador del Reto Escalera Rey Taco Picks")
+    parser.add_argument("--force", action="store_true", help="Forzar evaluacion ignorando horario y duplicados")
+    parser.add_argument("--step", type=int, choices=[1, 2, 3], help="Forzar paso especifico (1, 2 o 3)")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+    evaluate_and_dispatch_ladder_step(force=args.force, step_override=args.step)
 

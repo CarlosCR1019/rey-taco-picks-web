@@ -507,6 +507,20 @@ def discover_free_experimental_pick(
                         if 2.20 <= p_dec <= 4.20:
                             s_name = sel.get("name", "")
                             if any(k in m_name.lower() or k in s_name.lower() for k in ["remate", "puerta", "portería", "tiro", "punto", "triple"]):
+                                # TRIPLE CANDADO ANTI-BANCA: Extraer nombre del jugador y validar estatus en vivo con Gemini Grounding
+                                player_cand = re.split(r"[-–—(]|(?:\b(?:más|mas|menos|over|under)\b)", s_name, flags=re.I)[0].strip()
+                                if len(player_cand) >= 3:
+                                    from backend.live_grounded_context import verify_player_starter_status
+                                    is_starter, starter_reason = verify_player_starter_status(
+                                        player_name=player_cand,
+                                        team_name=ev.get("champ_name", ""),
+                                        match_name=ev.get("name", "")
+                                    )
+                                    if not is_starter:
+                                        print(f"🚫 [CANDADO PROPS] Descartado prop de '{player_cand}': {starter_reason}. Activando fallback a Parlay Bomba.")
+                                        continue
+                                    print(f"✅ [CANDADO PROPS] Titularidad confirmada para '{player_cand}': {starter_reason}")
+
                                 return {
                                     "type": "player_prop",
                                     "icon": "⚽" if sid == 66 else "🏀",
@@ -518,7 +532,7 @@ def discover_free_experimental_pick(
                                     "odds_decimal": p_dec,
                                     "odds_american": sel.get("price_american", "+200"),
                                     "stake": 0.25,
-                                    "note": "Volumen individual proyectado por modelo IA. Búsqueda de alto multiplicador con stake mínimo."
+                                    "note": f"Titularidad verificada ({player_cand}). Búsqueda de alto multiplicador con stake mínimo. 🛡️ Si no juega ningún minuto, la casa anula la jugada (Void)."
                                 }
             except Exception:
                 continue

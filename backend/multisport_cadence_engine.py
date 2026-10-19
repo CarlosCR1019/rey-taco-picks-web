@@ -473,6 +473,81 @@ def get_current_cadence_window(dt: datetime) -> tuple[str, str, int]:
         return "noche", "NOCHE (18:00 - 24:00 CDMX)", max(1, 24 - h)
 
 
+def discover_free_experimental_pick(
+    session: Any,
+    discovered: Dict[int, List[Dict[str, Any]]],
+    dispatched_picks: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """
+    Busca o construye la selección experimental del canal Free (Opción 1 y 2):
+    1. Prioridad A: Player Prop real de Playdoit (Remates a puerta, tiros, puntos) con cuota +120 a +350 (2.20 a 4.50).
+    2. Prioridad B: Parlay Divertido de 2 patas con momio multiplicador (+250 a +380).
+    """
+    from backend.playdoit_deep_markets import extract_player_props_markets
+
+    # 1. Intentar encontrar un Player Prop real en los partidos descubiertos de Fútbol o NBA
+    for sid in (66, 67):
+        events = discovered.get(sid, [])
+        for ev in events[:4]:
+            eid = ev.get("id")
+            if not eid:
+                continue
+            detail_url = f"https://sb2frontend-altenar2.biahosted.com/api/widget/GetEventDetails?culture=es-ES&timezoneOffset=0&integration=playdoit2&deviceType=1&numFormat=en-GB&countryCode=MX&eventId={eid}&showNonBoosts=false"
+            try:
+                res = session.get(detail_url, timeout=10)
+                if res.status_code != 200:
+                    continue
+                raw_detail = res.json()
+                props_markets = extract_player_props_markets(raw_detail)
+                for pm in props_markets:
+                    m_name = pm.get("market_name", "")
+                    for sel in pm.get("selections", []):
+                        p_dec = float(sel.get("price_decimal", 0.0))
+                        # Rango bomba / prop experimental: 2.20 a 4.20 (+120 a +320)
+                        if 2.20 <= p_dec <= 4.20:
+                            s_name = sel.get("name", "")
+                            if any(k in m_name.lower() or k in s_name.lower() for k in ["remate", "puerta", "portería", "tiro", "punto", "triple"]):
+                                return {
+                                    "type": "player_prop",
+                                    "icon": "⚽" if sid == 66 else "🏀",
+                                    "label": "PLAYER PROP EXPERIMENTAL ⭐",
+                                    "match": ev["name"],
+                                    "league": ev.get("champ_name", ""),
+                                    "time": f"{ev.get('time_cdmx')} CDMX",
+                                    "pick": f"{s_name} ({m_name})",
+                                    "odds_decimal": p_dec,
+                                    "odds_american": sel.get("price_american", "+200"),
+                                    "stake": 0.25,
+                                    "note": "Volumen individual proyectado por modelo IA. Búsqueda de alto multiplicador con stake mínimo."
+                                }
+            except Exception:
+                continue
+
+    # 2. Si no hay player prop en vivo con esa cuota, armar el Parlay Bomba con los picks de la ventana
+    if len(dispatched_picks) >= 2:
+        p1, p2 = dispatched_picks[0], dispatched_picks[1]
+        try:
+            c_dec = round(float(p1.get("market_odds_decimal", 1.85)) * float(p2.get("market_odds_decimal", 1.85)), 2)
+            c_ame = decimal_to_american(c_dec)
+            return {
+                "type": "parlay_bomba",
+                "icon": "💣",
+                "label": "PARLAY BOMBA IA (2 PATAS)",
+                "match": f"{p1.get('home_team', 'P1')} & {p2.get('home_team', 'P2')}",
+                "league": "Multideporte",
+                "time": p1.get("time", ""),
+                "pick": f"1. {p1['sport_icon']} {p1['pick']} + 2. {p2['sport_icon']} {p2['pick']}",
+                "odds_decimal": c_dec,
+                "odds_american": c_ame,
+                "stake": 0.25,
+                "note": "Combinada divertida de alto rendimiento. Para buscar multiplicar x3.5+ con stake recreativo."
+            }
+        except Exception:
+            pass
+
+    return None
+
+
 def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispatch: bool = False) -> List[Dict[str, Any]]:
     """Ciclo de escaneo multideporte por ventana de 6 horas y despacho consolidado a Telegram."""
     now_cdmx = datetime.now(MEXICO_TZ)
@@ -973,9 +1048,30 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
             if free_pick.get('reasoning'):
                 short_analysis = free_pick.get('reasoning').split('.')[0] + '.'
 
+            # Descubrir o armar selección del Laboratorio Experimental (Bomba / Player Prop / Parlay Divertido)
+            experimental_pick = discover_free_experimental_pick(session, discovered, dispatched_picks)
+            experimental_block = ""
+            if experimental_pick:
+                exp_label = html.escape(str(experimental_pick.get("label", "EXPERIMENTO IA")))
+                exp_icon = experimental_pick.get("icon", "🧪")
+                exp_match = html.escape(str(experimental_pick.get("match", "")))
+                exp_pick = html.escape(str(experimental_pick.get("pick", "")))
+                exp_ame = html.escape(str(experimental_pick.get("odds_american", "+220")))
+                exp_dec = experimental_pick.get("odds_decimal", 3.20)
+                exp_tm = html.escape(str(experimental_pick.get("time", "")))
+                exp_note = html.escape(str(experimental_pick.get("note", "")))
+                experimental_block = f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+🧪 <b>LABORATORIO EXPERIMENTAL IA ({exp_label}):</b>
+{exp_icon} <b>{exp_match}</b>
+👉 <b>{exp_pick}</b> @ <code>{exp_ame}</code> ({exp_dec}) • {exp_tm}
+⚖️ <i>Stake Sugerido: 0.25 U (Recreativo de Alto Multiplicador)</i>
+💡 <i>{exp_note}</i>
+"""
+
             vip_teasers_block = ""
             if len(dispatched_picks) > 1:
-                vip_teasers_block = "\n🔒 <b>JOYAS EXCLUSIVAS EN JUEGO (SOLO CANAL VIP):</b>\n"
+                vip_teasers_block = "\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n🔒 <b>JOYAS EXCLUSIVAS EN JUEGO (SOLO CANAL VIP):</b>\n"
                 for v_idx, vp in enumerate(dispatched_picks[1:], 2):
                     vp["is_free_pick"] = False
                     v_lg = html.escape(str(vp.get("league", "Deporte")))
@@ -989,6 +1085,7 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
 
 {free_pick.get('sport_icon')} <b>{html.escape(m_title)}</b> [{html.escape(free_pick.get('league', ''))}]
 👉 <b>{html.escape(free_pick.get('pick', ''))}</b> @ <code>{free_pick.get('market_odds_american', '')}</code> ({free_pick.get('time', '')})
+⚖️ <i>Stake Oficial: {free_pick.get('stake_units', 1.0)} U</i>
 """
             if free_pick.get('meaning'):
                 free_text += f"💡 <i>{html.escape(free_pick.get('meaning'))}</i>\n"
@@ -997,7 +1094,7 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
             if short_analysis:
                 free_text += f"📊 <i>Análisis: {html.escape(short_analysis)}</i>\n"
 
-            free_text += f"""{vip_teasers_block}
+            free_text += f"""{experimental_block}{vip_teasers_block}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 📈 <b>Récord Auditado:</b> <code>20W-7L (+52.6% ROI)</code> en Moneyline | <code>21W-12L (+28.1% ROI)</code> en NBA
 👑 <b>Desbloquea los Picks VIP y el Parlay de Oro ($129/sem o $349/mes) 👇</b>"""

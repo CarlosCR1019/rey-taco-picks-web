@@ -626,8 +626,8 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
     cutoff_iso = (now_cdmx - timedelta(hours=24)).isoformat()
     history = {k: v for k, v in history.items() if v.get("evaluated_at", "") > cutoff_iso}
 
-    # MODO FRANCOTIRADOR (SNIPER MODE): Máximo 2 picks por ventana y 1 por deporte
-    # Meta cuantitativa: 0 a 1 fallo al día (2 a 3 selecciones estelares de máxima certeza)
+    # REGLA DE LOS 4 ESTELARES: Máximo 2 picks por ventana y 1 por deporte
+    # Distribuidos en Mañana (1), Tarde (1-2) y Noche (1-2) para un portafolio balanceado de 4 a 5 picks diarios
     MAX_PICKS_PER_WINDOW = 2
     MAX_PICKS_PER_SPORT = 1
 
@@ -914,8 +914,8 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
 
     existing_active = upcoming_active
 
-    # REGLA ESTRICTA MODO FRANCOTIRADOR: Mantener EXACTAMENTE máximo 3 picks activos en simultáneo
-    existing_active = existing_active[:3]
+    # REGLA DE LOS 4 ESTELARES: Mantener un portafolio balanceado de hasta 4 a 5 picks activos durante el día
+    existing_active = existing_active[:5]
     active_picks_file.write_text(json.dumps(existing_active, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # Actualizar copias locales en dist y frontend/public

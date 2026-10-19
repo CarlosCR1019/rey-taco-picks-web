@@ -92,8 +92,8 @@ def is_whitelisted_championship(champ_name: str, sport_id: int) -> bool:
     c_lower = champ_name.lower()
     if any(b in c_lower for b in BANNED_LEAGUE_KEYWORDS):
         return False
-    if sport_id == 76:
-        # Béisbol suspendido institucionalmente
+    if sport_id in (70, 76):
+        # Béisbol suspendido institucionalmente (MLB, LMB, NPB, KBO vetados)
         return False
     if sport_id == 67:
         return any(k in c_lower for k in ["nba", "euroliga", "euroleague", "wnba", "acb", "endesa", "champions"])
@@ -311,23 +311,23 @@ def condense_markets_for_audit(enriched: Dict[str, Any], sport_id: int = 0) -> s
     priorizando estrictamente los mercados ganadores comprobados por deporte:
     - NBA (67) / NFL (75): Moneyline (2 vías) y Spreads con Colchón.
     - Tenis Singles (68): Exclusivamente Moneyline (Ganador directo 2 vías, 73.3% WR).
-    - Fútbol (66): Prioridad a Hándicap Asiático (+0 Empate No Acción, +0.5, -1.0) para blindarse contra empates.
+    - Fútbol (66): Exclusivamente mercados con colchón anti-empate: Hándicap Asiático / Spreads (+0 Empate No Acción, +0.5, +1.0), Doble Oportunidad (1X, X2), y Córners. 1X2 plano prohibido.
     """
     lines = []
     cat = enriched.get("market_categories", {})
 
-    # Para Fútbol (66), extraer primero Spreads / Hándicaps Asiáticos con protección de empate
+    # Para Deportes con Spreads / Hándicaps (Fútbol, NBA, NFL)
     spread_lines = []
     if sport_id != 68:  # En Tenis se excluyen hándicaps de juegos por alta varianza
         for s in cat.get("spreads", [])[:3]:
             selections = s.get("selections", [])
-            balanced_sels = [sel for sel in selections if 1.78 <= float(sel.get('price_decimal', 0)) <= 2.35]
+            balanced_sels = [sel for sel in selections if 1.75 <= float(sel.get('price_decimal', 0)) <= 2.45]
             target_sels = balanced_sels if balanced_sels else [sel for sel in selections if 1.70 <= float(sel.get('price_decimal', 0)) <= 2.45]
             for sel in target_sels[:6]:
                 spread_lines.append(f"Spread / Hándicap con Colchón [{s.get('scope')}]: {sel['name']} @ {sel['price_decimal']} ({sel['price_american']})")
 
-    # 1. Moneyline (En deportes de 2 vías siempre; en Fútbol solo si no hay Hándicap con colchón disponible)
-    if sport_id in (67, 68, 75, 0) or not spread_lines:
+    # 1. Moneyline (EXCLUSIVAMENTE en deportes de 2 vías: NBA 67, NFL 75, Tenis 68; NUNCA en Fútbol 66)
+    if sport_id in (67, 68, 75):
         for m in cat.get("moneyline", [])[:1]:
             valid_sels = [
                 s for s in m.get("selections", [])
@@ -337,17 +337,25 @@ def condense_markets_for_audit(enriched: Dict[str, Any], sport_id: int = 0) -> s
             sels_to_show = valid_sels if valid_sels else m.get("selections", [])
             sel_str = ", ".join([f"{s['name']}: {s['price_decimal']} ({s['price_american']})" for s in sels_to_show])
             if sel_str:
-                lines.append(f"Moneyline / Ganador Directo [{m.get('market_name')}]: {sel_str}")
+                lines.append(f"Moneyline / Ganador Directo (2 vías) [{m.get('market_name')}]: {sel_str}")
 
-    # 2. Spreads / Handicaps
+    # 2. Spreads / Hándicaps con Colchón
     lines.extend(spread_lines)
 
-    # 3. Córners (fútbol élite únicamente: volumen por bandas independiente del marcador)
+    # 3. Doble Oportunidad (Fútbol 66 élite únicamente)
+    if sport_id in (66, 0):
+        for dc in cat.get("double_chance", [])[:1]:
+            valid_sels = [s for s in dc.get("selections", []) if 1.75 <= float(s.get('price_decimal', 0)) <= 2.45]
+            if valid_sels:
+                dc_str = ", ".join([f"{s['name']} ({s.get('code', 'DC')}): {s['price_decimal']} ({s['price_american']})" for s in valid_sels])
+                lines.append(f"Doble Oportunidad con Colchón [{dc.get('market_name', '1X / X2')}]: {dc_str}")
+
+    # 4. Córners (Fútbol 66 élite únicamente: volumen por bandas independiente del marcador)
     if sport_id in (66, 0):
         for c in cat.get("corners", [])[:2]:
             if c.get("over") and c.get("under"):
                 over_price = float(c['over'].get('price_decimal', 0))
-                if 1.75 <= over_price <= 2.25:
+                if 1.75 <= over_price <= 2.45:
                     lines.append(f"Córners de Fútbol [{c.get('line')}]: Más @ {c['over']['price_decimal']} ({c['over']['price_american']})")
 
     return "\n".join(lines)
@@ -386,11 +394,17 @@ Instrucciones:
      * MERCADO GANADOR (MONEYLINE DIRECTO DE 2 VÍAS): Con 81.8% de acierto en deportes sin empate y 73.3% en Tenis Singles, si identificas ventaja clara en momio 1.75 a 2.35, prioriza Moneyline Directo o Spread con Colchón (+3.5 a +8.5 / -2.5 a -6.5 en NBA/NFL).
      * EN TENIS: Selecciona EXCLUSIVAMENTE Ganador Directo (Moneyline). Prohibido seleccionar Hándicap de juegos o Totales de juegos en Tenis.
    - EN FÚTBOL (DEPORTE DE 3 VÍAS CON ALTO RIESGO DE EMPATE):
-     * BLINDAJE ANTI-EMPATE OBLIGATORIO: En fútbol, el 1X2 directo sufre pérdidas innecesarias por empates (1-1, 2-2). Prioriza SIEMPRE 'Spread con Colchón' (Hándicap Asiático +0 / +0.5 / -1.0 / +1.0) donde el empate reembolsa o gana la apuesta, o bien Córners Over (8.5 / 9.5).
+     * VETO TOTAL A 1X2 DIRECTO: Está terminantemente prohibido seleccionar ganador local o visitante simple en 1X2 tradicional en fútbol (causante del 60% de fallos por empates 1-1 / 0-0).
+     * MERCADOS PERMITIDOS EN FÚTBOL (OBLIGATORIO ELEGIR SOLO ENTRE ESTOS):
+       1) Hándicap Asiático / Spread con Colchón (+0 Empate No Acción, +0.5, +1.0, +1.5) donde un empate no pierde el dinero.
+       2) Empate No Acción (Draw No Bet) donde el empate devuelve el 100% de la apuesta.
+       3) Doble Oportunidad (1X, X2).
+       4) Tiros de Esquina (Córners Over 8.5 / 9.5).
+     * Si en fútbol no hay mercados con colchón disponibles con cuota de valor, responde "hay_valor": false.
    - PROHIBIDO ABSOLUTO E IRREVOCABLE:
      * TOTALES GENERALES (OVER/UNDER DE PARTIDO COMPLETO): Prohibido pronosticar altas/bajas de puntos, goles, juegos o carreras.
      * BÉISBOL (MLB, KBO, NPB), NCAA / DEPORTES COLEGIALES Y TENIS DE DOBLES: Prohibición total institucional. Responde "hay_valor": false inmediatamente.
-     * CUOTAS MENORES A 1.75: La cuota DEBE estar en el SWEET SPOT +EV entre 1.75 y 2.35.
+     * CUOTAS FUERA DEL SWEET SPOT: La cuota DEBE estar estrictamente en el SWEET SPOT +EV entre 1.75 y 2.45 (PROHIBIDO cuotas menores a 1.75).
      * COMBOS CRUZADOS (ej. '1x2 y total', 'Gana y Ambos Anotan'): Prohibidos 100%. Solo selecciones de 1 SOLA CONDICIÓN PURA.
 3. Si existe una selección de alto valor, define el pronóstico exacto, la cuota, la cuota mínima de valor y un stake razonable (1.0 U).
 4. Si el partido es equilibrado sin ventaja matemática evidente, responde "hay_valor": false.
@@ -523,8 +537,10 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
     cutoff_iso = (now_cdmx - timedelta(hours=24)).isoformat()
     history = {k: v for k, v in history.items() if v.get("evaluated_at", "") > cutoff_iso}
 
-    MAX_PICKS_PER_WINDOW = 5
-    MAX_PICKS_PER_SPORT = 2
+    # MODO FRANCOTIRADOR (SNIPER MODE): Máximo 2 picks por ventana y 1 por deporte
+    # Meta cuantitativa: 0 a 1 fallo al día (2 a 3 selecciones estelares de máxima certeza)
+    MAX_PICKS_PER_WINDOW = 2
+    MAX_PICKS_PER_SPORT = 1
 
     # 3. Construir lista intercalada (Round-Robin) entre los deportes activos
     # para garantizar equidad multideporte y evitar que el fútbol agote el cupo antes de evaluar NBA y NFL
@@ -643,6 +659,26 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
             history[eid] = {"status": "totals_banned", "evaluated_at": now_cdmx.isoformat()}
             _save_history(history)
             continue
+
+        # GUARDIA PROGRAMÁTICA INSTITUCIONAL: VETO A 1X2 PLANO EN FÚTBOL (BLINDAJE ANTI-VARIANZA)
+        if sid == 66:
+            alt_mkt_lower = norm(str(validated.get("altenar_market", "")))
+            alt_sel_lower = norm(str(validated.get("altenar_selection", "")))
+            is_safe_soccer_mkt = any(k in alt_mkt_lower for k in [
+                "handicap", "spread", "asiatico", "linea",
+                "empate apuesta no valida", "draw no bet", "sin empate", "apuesta no valida", "no valida",
+                "doble oportunidad", "doble", "esquina", "corner"
+            ]) or any(k in alt_sel_lower for k in [
+                "(0)", "(+0)", "(-0)", "(+", "(-", "empate no accion", "draw no bet", "1x", "x2", "12"
+            ])
+            is_plain_1x2 = any(k in alt_mkt_lower for k in [
+                "1x2", "resultado final", "ganador del partido", "resultado del partido", "ganador"
+            ]) and not is_safe_soccer_mkt
+            if is_plain_1x2:
+                print(f"🚫 [VETO FÚTBOL 1X2] Descartado para {ev['name']}: '{audit.get('pick')}' es 1X2 plano sin protección de empate.")
+                history[eid] = {"status": "football_plain_1x2_banned", "evaluated_at": now_cdmx.isoformat()}
+                _save_history(history)
+                continue
 
         # GUARDIA PROGRAMÁTICA INSTITUCIONAL: CUOTA MÍNIMA SWEET SPOT (1.75 A 2.45)
         price_val = float(validated.get("price", 0.0))
@@ -789,8 +825,8 @@ def run_multisport_cadence_cycle(hours_ahead: Optional[int] = None, force_dispat
 
     existing_active = upcoming_active
 
-    # REGLA ESTRICTA: Mantener EXACTAMENTE máximo 5 picks por ventana de 12 horas
-    existing_active = existing_active[:5]
+    # REGLA ESTRICTA MODO FRANCOTIRADOR: Mantener EXACTAMENTE máximo 3 picks activos en simultáneo
+    existing_active = existing_active[:3]
     active_picks_file.write_text(json.dumps(existing_active, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # Actualizar copias locales en dist y frontend/public

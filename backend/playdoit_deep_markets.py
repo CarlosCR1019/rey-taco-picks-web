@@ -556,8 +556,12 @@ def extract_spread_markets(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         lower_name = m_name.lower()
 
         is_spread = (
-            m_type in (2, 61, 66, 219, 223, 231, 253, 303, 614)
-            or any(kw in lower_name for kw in ("hándicap", "handicap", "spread", "run line", "runline", "línea de carreras", "línea de puntos"))
+            m_type in (2, 61, 66, 114, 219, 223, 231, 253, 303, 614)
+            or any(kw in lower_name for kw in (
+                "hándicap", "handicap", "spread", "run line", "runline", "línea de carreras",
+                "línea de puntos", "empate, apuesta no válida", "empate apuesta no valida",
+                "draw no bet", "apuesta no valida", "sin empate", "empate no accion"
+            ))
         )
         if not is_spread:
             continue

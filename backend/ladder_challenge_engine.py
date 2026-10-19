@@ -14,7 +14,7 @@ REGLAS DE NEGOCIO ESTRICTAS (Autorizadas por Carlos):
    - Paso 3 (Domingo): Entrada ~$1,000 MXN ➔ Cobro ~$1,900 MXN (Exclusivo VIP).
 5. No Sustituye Picks del VIP: Se registra como un slot adicional para no restar
    los 3 a 5 picks regulares diarios.
-6. Deportes Permitidos: NFL (cero colegial), MLB (F5), NBA, Tenis y Fútbol Élite.
+6. Deportes Permitidos: NFL (cero colegial), NBA, Tenis y Fútbol Élite (MLB suspendido institucionalmente).
 """
 
 from __future__ import annotations
@@ -78,6 +78,7 @@ LADDER_CONFIG = {
     5: {"step": 2, "entry": 555, "target": 1000, "day_name": "Sabado", "channel": "vip_only"},
     6: {"step": 3, "entry": 1000, "target": 1900, "day_name": "Domingo", "channel": "vip_only"},
 }
+LADDER_PRIORITY_SPORTS = [67, 68, 75, 66]  # NBA, Tenis, NFL, Fútbol (MLB 70 eliminado)
 
 
 def is_in_ladder_window(dt: datetime) -> bool:
@@ -251,7 +252,7 @@ def evaluate_and_dispatch_ladder_step(force: bool = False, step_override: Option
         return None
 
     # 4. Priorizar deportes con mayor Win Rate auditado: NBA (67), Tenis Singles (68), NFL (75), Fútbol Hándicap (66)
-    priority_order = [67, 68, 75, 66, 70]
+    priority_order = LADDER_PRIORITY_SPORTS
     all_events = []
     for sid in priority_order:
         all_events.extend(discovered.get(sid, []))
@@ -298,10 +299,15 @@ def evaluate_and_dispatch_ladder_step(force: bool = False, step_override: Option
             if "empate" in sel_name and "no valida" not in mkt_name and "doble" not in mkt_name:
                 continue
 
-            # Mercados de alta efectividad auditada (Moneyline 74.1% WR, Hándicap con colchón, DNB)
+            # En Fútbol (66), PROHIBIDO 1X2 plano (Ganador de partido simple sin colchón)
+            if sid == 66 and any(k in mkt_name for k in ("1x2", "ganador")):
+                if not any(k in mkt_name for k in ("no válida", "no valida", "draw no bet", "empate no", "hándicap", "handicap")):
+                    continue
+
+            # Mercados de alta efectividad auditada (Moneyline 2 vías 74.1% WR, Hándicap con colchón, DNB, Doble Oportunidad, Córners)
             is_high_wr = (
                 (sid in (67, 68, 75) and any(k in mkt_name for k in ("ganador", "moneyline", "hándicap", "handicap", "spread")))
-                or (sid == 66 and any(k in mkt_name for k in ("no válida", "no valida", "draw no bet", "hándicap", "handicap", "esquina", "corner")))
+                or (sid == 66 and any(k in mkt_name for k in ("no válida", "no valida", "draw no bet", "empate no", "hándicap", "handicap", "esquina", "corner", "doble oportunidad", "doble")))
             )
             if is_high_wr:
                 candidate = {

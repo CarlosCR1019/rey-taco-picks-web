@@ -15,6 +15,7 @@ print(f"Target VPS: {vps}")
 files_to_sync = [
     ("backend/multisport_cadence_engine.py", "/root/sports-props-collector/backend/multisport_cadence_engine.py"),
     ("backend/ladder_challenge_engine.py", "/root/sports-props-collector/backend/ladder_challenge_engine.py"),
+    ("backend/playdoit_deep_markets.py", "/root/sports-props-collector/backend/playdoit_deep_markets.py"),
     ("backend/auto_reel_producer.py", "/root/sports-props-collector/backend/auto_reel_producer.py"),
     ("backend/tiktok_auto_uploader.py", "/root/sports-props-collector/backend/tiktok_auto_uploader.py"),
     ("backend/pick_settlement.py", "/root/sports-props-collector/backend/pick_settlement.py"),

@@ -7,6 +7,7 @@ import {
   loadDailyPublicPicks,
   loadHistory,
   loadPublicPicks,
+  normalizeActivePick,
   normalizePick,
   PUBLIC_PICK_FIELDS,
 } from './data';
@@ -127,5 +128,66 @@ describe('public pick data', () => {
   it('never requests private reasoning from a public relation', () => {
     expect(PUBLIC_PICK_FIELDS.split(',')).not.toContain('razonamiento');
     expect(LEGACY_PUBLIC_PICK_FIELDS.split(',')).not.toContain('razonamiento');
+  });
+
+  it('normalizes active private picks from R2 feed into PickRow', () => {
+    const rawR2Pick = {
+      ticket_id: 'RT-20261111-NBA-0699',
+      match: 'WAS Wizards @ IND Pacers',
+      pick: 'WAS Wizards +1.5 (Handicap)',
+      market_odds_decimal: 2.05,
+      league: '🏀 NBA',
+      time: '18:00 CDMX',
+      date_cdmx: '2026-11-11',
+      reasoning: 'Valor +EV detectado',
+      status: 'active',
+      is_jewel: true,
+      is_free_pick: false,
+    };
+    const normalized = normalizeActivePick(rawR2Pick);
+    expect(normalized).toEqual(expect.objectContaining({
+      id: 'RT-20261111-NBA-0699',
+      categoria: '🏀 NBA',
+      partido: 'WAS Wizards @ IND Pacers',
+      pick: 'WAS Wizards +1.5 (Handicap)',
+      cuota: 2.05,
+      horario: '18:00',
+      fecha_evento: '2026-11-11',
+      estado: 'pendiente',
+      visibility: 'premium',
+    }));
+  });
+
+  it('falls back to R2 active picks when Supabase daily public query returns 0 rows', async () => {
+    const response = { data: [], error: null };
+    const builder = {
+      eq: () => builder,
+      in: () => builder,
+      order: () => Promise.resolve(response),
+    };
+    const client = { from: () => ({ select: () => builder }) } as unknown as SupabaseClient;
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve([
+        {
+          ticket_id: 'RT-20261111-NBA-0698',
+          match: 'BOS Celtics @ TOR Raptors',
+          pick: 'BOS Celtics -5.5 (Handicap)',
+          market_odds_decimal: 1.917,
+          league: '🏀 NBA',
+          time: '18:00 CDMX',
+          date_cdmx: '2026-11-11',
+          status: 'active',
+          is_free_pick: true,
+        },
+      ]),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const picks = await loadDailyPublicPicks(client, '2026-11-11');
+    expect(picks).toHaveLength(1);
+    expect(picks[0].partido).toBe('BOS Celtics @ TOR Raptors');
+    expect(picks[0].visibility).toBe('public');
   });
 });

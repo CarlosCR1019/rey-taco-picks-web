@@ -85,6 +85,7 @@ describe('public pick data', () => {
   });
 
   it('retries history with legacy columns while the migration is pending', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     let queries = 0;
     const client = {
       from: () => ({
@@ -107,6 +108,32 @@ describe('public pick data', () => {
     const history = await loadHistory(client);
     expect(queries).toBe(2);
     expect(history).toEqual([expect.objectContaining({ id: 7, estado: 'ganado' })]);
+  });
+
+  it('loads settled history from R2 feed when available', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        kpis: { total_settled: 1, won: 1, lost: 0 },
+        settled_picks: [
+          {
+            id: 'RT-20261111-NBA-0700',
+            categoria: '🏀 NBA',
+            partido: 'BKN Nets @ NO Pelicans',
+            pick: 'BKN Nets +3.5 (Handicap)',
+            cuota: 1.8,
+            estado: 'ganado',
+            fecha_evento: '2026-11-11',
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const history = await loadHistory(null);
+    expect(history).toHaveLength(1);
+    expect(history[0].id).toBe('RT-20261111-NBA-0700');
+    expect(history[0].estado).toBe('ganado');
   });
 
   it('does not revive a stale local pick when the public view is simply empty', async () => {

@@ -175,18 +175,61 @@ export async function loadDailyPublicPicks(
   return loadLocalPublicPicks();
 }
 
-export async function loadHistory(client: SupabaseClient): Promise<PickRow[]> {
-  const response = await client.from('public_picks')
-    .select(PUBLIC_PICK_FIELDS)
-    .in('estado', ['ganado', 'perdido', 'pendiente', 'void', 'revision_pendiente'])
-    .order('id', { ascending: false });
-  if (!response.error) return (response.data ?? []).map(normalizePick);
+export const SETTLED_HISTORY_SOURCES = [
+  'https://pub-1d89d25fcc84453db0d833d998d5a57c.r2.dev/settled_picks_history.json',
+  '/settled_picks_history.json',
+];
 
-  const legacy = await client.from('picks')
-    .select(LEGACY_PUBLIC_PICK_FIELDS)
-    .in('estado', ['ganado', 'perdido', 'void', 'revision_pendiente'])
-    .order('id', { ascending: false });
-  return legacy.error ? [] : (legacy.data ?? []).map(normalizePick);
+export async function loadSettledHistoryFromR2(): Promise<PickRow[]> {
+  const cacheBuster = `?t=${Date.now()}`;
+  for (const baseUrl of SETTLED_HISTORY_SOURCES) {
+    try {
+      const resp = await fetch(`${baseUrl}${cacheBuster}`, {
+        cache: 'no-store',
+      });
+      if (!resp.ok) continue;
+      const data = await resp.json() as Record<string, unknown> | Array<Record<string, unknown>>;
+      let rows: Array<Record<string, unknown>> = [];
+      if (Array.isArray(data)) {
+        rows = data;
+      } else if (data && Array.isArray((data as Record<string, unknown>).settled_picks)) {
+        rows = (data as Record<string, unknown>).settled_picks as Array<Record<string, unknown>>;
+      }
+      if (rows.length > 0) {
+        return rows.map(normalizePick);
+      }
+    } catch {
+      // Continue to next source
+    }
+  }
+  return [];
+}
+
+export async function loadHistory(client?: SupabaseClient | null): Promise<PickRow[]> {
+  try {
+    const liveHistory = await loadSettledHistoryFromR2();
+    if (liveHistory.length > 0) {
+      return liveHistory;
+    }
+  } catch {
+    // Continue to Supabase fallback
+  }
+
+  if (client) {
+    const response = await client.from('public_picks')
+      .select(PUBLIC_PICK_FIELDS)
+      .in('estado', ['ganado', 'perdido', 'pendiente', 'void', 'revision_pendiente'])
+      .order('id', { ascending: false });
+    if (!response.error && (response.data ?? []).length > 0) return (response.data ?? []).map(normalizePick);
+
+    const legacy = await client.from('picks')
+      .select(LEGACY_PUBLIC_PICK_FIELDS)
+      .in('estado', ['ganado', 'perdido', 'void', 'revision_pendiente'])
+      .order('id', { ascending: false });
+    if (!legacy.error && (legacy.data ?? []).length > 0) return (legacy.data ?? []).map(normalizePick);
+  }
+
+  return [];
 }
 
 export async function loadSubscriberPicks(client: SupabaseClient): Promise<PickRow[]> {

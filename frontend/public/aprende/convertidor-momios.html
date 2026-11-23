@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#070d19" />
+  <link rel="canonical" href="https://reytacopicks.com/aprende/convertidor-momios.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/editorial.css" />
+  <title>Convertidor de Momios Americanos a Decimales y Probabilidad Implícita | Rey Taco Picks</title>
+  <meta name="description" content="Calculadora gratuita para convertir momios americanos (+150, -110) a decimales, fraccionarios y probabilidad implícita exacta, con cálculo de pago neto en pesos mexicanos ($ MXN)." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Convertidor de Momios Americanos, Decimales y Probabilidad Implícita" />
+  <meta property="og:description" content="Convierte al instante cuotas americanas y decimales, calcula tu cobro neto en MXN y descubre la probabilidad implícita real." />
+  <meta property="og:url" content="https://reytacopicks.com/aprende/convertidor-momios.html" />
+  <meta property="og:image" content="https://reytacopicks.com/logo.jpg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebApplication",
+        "name": "Convertidor de Momios Americanos y Decimales",
+        "url": "https://reytacopicks.com/aprende/convertidor-momios.html",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Web",
+        "inLanguage": "es-MX",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "MXN" },
+        "publisher": { "@type": "Organization", "name": "Rey Taco Picks", "url": "https://reytacopicks.com" }
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Inicio", "item": "https://reytacopicks.com/" },
+          { "@type": "ListItem", "position": 2, "name": "Aprende", "item": "https://reytacopicks.com/aprende/" },
+          { "@type": "ListItem", "position": 3, "name": "Convertidor de Momios", "item": "https://reytacopicks.com/aprende/convertidor-momios.html" }
+        ]
+      },
+      {
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "¿Cómo se convierte un momio americano negativo como -110 a decimal?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Para momios negativos se aplica la fórmula (100 / |Momio|) + 1. En el caso de -110: (100 / 110) + 1 = 1.9091 decimal, lo que implica una probabilidad de equilibrio de 52.38%." }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Cómo se convierte un momio americano positivo como +150 a decimal?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Para momios positivos se aplica (Momio / 100) + 1. Para +150: (150 / 100) + 1 = 2.50 decimal, equivalente a 40.00% de probabilidad implícita." }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+  <style>
+    .calc-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 24px; margin: 28px 0; }
+    .calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
+    .calc-field label { display: block; font-size: 0.85rem; color: var(--muted); font-weight: 700; margin-bottom: 6px; }
+    .calc-field input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: #070d19; color: #f8fafc; font-size: 1.05rem; font-weight: 700; }
+    .calc-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-top: 22px; }
+    .metric-card { background: rgba(16, 185, 129, 0.08); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .metric-card span { display: block; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .metric-card strong { display: block; font-size: 1.45rem; color: var(--gold); margin-top: 4px; }
+    .preset-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+    .preset-btn { background: rgba(250, 204, 21, 0.12); color: var(--gold); border: 1px solid rgba(250, 204, 21, 0.35); border-radius: 999px; padding: 6px 12px; font-size: 0.82rem; font-weight: 700; cursor: pointer; }
+    .preset-btn:hover { background: rgba(250, 204, 21, 0.24); }
+  </style>
+  <meta name="google-adsense-account" content="ca-pub-2697347675028991" /><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2697347675028991" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">
+      <img src="/logo.jpg" alt="Logo Rey Taco Picks" />
+      <span>Rey Taco Picks</span>
+    </a>
+    <nav aria-label="Navegación secundaria">
+      <a href="/">Inicio</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/aprende/" class="active">Aprende</a>
+      <a href="/metodologia.html">Metodología</a>
+    </nav>
+  </header>
+
+  <main>
+    <nav class="breadcrumbs" aria-label="Ruta de navegación">
+      <a href="/">Inicio</a> &gt; <a href="/aprende/">Aprende</a> &gt; <span>Convertidor de Momios</span>
+    </nav>
+
+    <h1>Convertidor de Momios Americanos, Decimales y Probabilidad Implícita</h1>
+    <p style="font-size: 1.08rem; color: var(--muted);">
+      Convierte instantáneamente cualquier cuota americana (<code>-110</code>, <code>+150</code>) o decimal (<code>1.91</code>, <code>2.50</code>), obtén el porcentaje de acierto mínimo para quedar tablas (<em>breakeven</em>) y calcula tu cobro neto en pesos mexicanos.
+    </p>
+
+    <section class="calc-panel" aria-label="Calculadora interactiva de momios">
+      <div class="calc-grid">
+        <div class="calc-field">
+          <label for="american-input">Momio Americano (ej. -110 o +150)</label>
+          <input id="american-input" type="number" step="1" value="-110" />
+        </div>
+        <div class="calc-field">
+          <label for="decimal-input">Momio Decimal (ej. 1.91)</label>
+          <input id="decimal-input" type="number" step="0.01" min="1.01" value="1.91" />
+        </div>
+        <div class="calc-field">
+          <label for="stake-input">Monto de Apuesta ($ MXN)</label>
+          <input id="stake-input" type="number" step="50" min="1" value="500" />
+        </div>
+      </div>
+
+      <div class="preset-row" aria-label="Momios comunes en México">
+        <button class="preset-btn" type="button" data-am="-200">-200 (Favorito 1.50)</button>
+        <button class="preset-btn" type="button" data-am="-120">-120 (1.83)</button>
+        <button class="preset-btn" type="button" data-am="-110">-110 (Estándar 1.91)</button>
+        <button class="preset-btn" type="button" data-am="100">+100 (Par 2.00)</button>
+        <button class="preset-btn" type="button" data-am="150">+150 (Underdog 2.50)</button>
+        <button class="preset-btn" type="button" data-am="250">+250 (3.50)</button>
+      </div>
+
+      <div class="calc-results">
+        <div class="metric-card">
+          <span>Probabilidad Implícita</span>
+          <strong id="out-prob">52.38%</strong>
+        </div>
+        <div class="metric-card">
+          <span>Cuota Fraccionaria</span>
+          <strong id="out-frac">10/11</strong>
+        </div>
+        <div class="metric-card">
+          <span>Ganancia Neta ($ MXN)</span>
+          <strong id="out-profit">$454.55</strong>
+        </div>
+        <div class="metric-card">
+          <span>Cobro Total ($ MXN)</span>
+          <strong id="out-payout">$954.55</strong>
+        </div>
+      </div>
+    </section>
+
+    <h2>Por qué la probabilidad implícita importa más que el momio</h2>
+    <p>
+      Una cuota de <code>-110</code> (<code>1.909</code> decimal) exige acertar al menos <strong>52.38%</strong> de tus selecciones para no perder dinero a largo plazo. Si en lugar de <code>-110</code> aceptas <code>-125</code> (<code>1.80</code> decimal) por no comparar casas de apuestas, tu umbral de equilibrio sube a <strong>55.56%</strong>: esa diferencia de 3.18 puntos porcentuales separa un portafolio rentable de uno perdedor.
+    </p>
+    <p>
+      Continúa profundizando con nuestras herramientas complementarias: <a href="/aprende/calculadora-valor-esperado.html">Calculadora de Valor Esperado (+EV) y Vig</a>, <a href="/aprende/calculadora-kelly.html">Calculadora del Criterio de Kelly</a> y <a href="/aprende/calculadora-clv.html">Calculadora de CLV (Closing Line Value)</a>.
+    </p>
+
+    <div class="responsible-gaming-box">
+      <h4>Herramienta Educativa · +18 México</h4>
+      <p>Esta calculadora es estrictamente matemática e informativa. Convertir momios te ayuda a entender el costo real de la línea, pero no garantiza resultados en eventos deportivos.</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-links">
+      <a href="/">Inicio</a>
+      <a href="/aprende/">Aprende</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/privacidad.html">Privacidad</a>
+    </div>
+    <p>© 2026 Rey Taco Picks. Herramientas educativas y análisis cuantitativo deportivo.</p>
+  </footer>
+
+  <script>
+    (function () {
+      const amEl = document.getElementById('american-input');
+      const decEl = document.getElementById('decimal-input');
+      const stakeEl = document.getElementById('stake-input');
+      const probEl = document.getElementById('out-prob');
+      const fracEl = document.getElementById('out-frac');
+      const profitEl = document.getElementById('out-profit');
+      const payoutEl = document.getElementById('out-payout');
+
+      const fmtMxn = (v) => '$' + v.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+      function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+
+      function decimalToFractional(dec) {
+        const net = Math.max(0.01, dec - 1);
+        const den = 100;
+        const num = Math.round(net * den);
+        const g = gcd(num, den);
+        return (num / g) + '/' + (den / g);
+      }
+
+      function renderFromDecimal(dec) {
+        if (!Number.isFinite(dec) || dec <= 1.0) return;
+        const stake = Math.max(0, parseFloat(stakeEl.value) || 0);
+        const prob = (1 / dec) * 100;
+        const payout = stake * dec;
+        const profit = payout - stake;
+        probEl.textContent = prob.toFixed(2) + '%';
+        fracEl.textContent = decimalToFractional(dec);
+        profitEl.textContent = fmtMxn(profit);
+        payoutEl.textContent = fmtMxn(payout);
+      }
+
+      function fromAmerican() {
+        const am = parseFloat(amEl.value);
+        if (!Number.isFinite(am) || (am > -100 && am < 100)) return;
+        const dec = am >= 100 ? (am / 100) + 1 : (100 / Math.abs(am)) + 1;
+        decEl.value = dec.toFixed(3);
+        renderFromDecimal(dec);
+      }
+
+      function fromDecimal() {
+        const dec = parseFloat(decEl.value);
+        if (!Number.isFinite(dec) || dec <= 1.0) return;
+        const am = dec >= 2.0 ? Math.round((dec - 1) * 100) : Math.round(-100 / (dec - 1));
+        amEl.value = am;
+        renderFromDecimal(dec);
+      }
+
+      amEl.addEventListener('input', fromAmerican);
+      decEl.addEventListener('input', fromDecimal);
+      stakeEl.addEventListener('input', () => renderFromDecimal(parseFloat(decEl.value)));
+
+      document.querySelectorAll('.preset-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          amEl.value = btn.getAttribute('data-am');
+          fromAmerican();
+        });
+      });
+
+      fromAmerican();
+    })();
+  </script>
+</body>
+</html>

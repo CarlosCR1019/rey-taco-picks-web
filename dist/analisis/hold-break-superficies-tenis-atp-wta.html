@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#070d19" />
+  <link rel="canonical" href="https://reytacopicks.com/analisis/hold-break-superficies-tenis-atp-wta.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/editorial.css" />
+  <title>Hold %, Break % y Elo por Superficie en Tenis ATP y WTA: Análisis Cuantitativo | Rey Taco Picks</title>
+  <meta name="description" content="Metodología cuantitativa para analizar partidos de tenis ATP y WTA usando Hold/Break %, eficiencia de primer servicio, Elo específico por superficie (dura, arcilla, césped) y fatiga acumulada." />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="Hold %, Break % y Elo por Superficie en Tenis ATP y WTA" />
+  <meta property="og:description" content="Cómo evaluar probabilidades reales en tenis profesional separando rendimiento al servicio, devolución y adaptación a pista dura, arcilla o pasto." />
+  <meta property="og:url" content="https://reytacopicks.com/analisis/hold-break-superficies-tenis-atp-wta.html" />
+  <meta property="og:image" content="https://reytacopicks.com/logo.jpg" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Article",
+        "headline": "Hold %, Break % y Elo por Superficie en Tenis ATP y WTA: Análisis Cuantitativo",
+        "description": "Aplicación de cadenas de Markov basadas en puntos ganados al saque y a la devolución, ajustadas por superficie y velocidad de pista en circuitos ATP y WTA.",
+        "author": { "@type": "Organization", "name": "Equipo Cuantitativo de Rey Taco Picks" },
+        "publisher": { "@type": "Organization", "name": "Rey Taco Picks", "logo": "https://reytacopicks.com/logo.jpg" },
+        "datePublished": "2026-11-23",
+        "dateModified": "2026-11-23",
+        "mainEntityOfPage": "https://reytacopicks.com/analisis/hold-break-superficies-tenis-atp-wta.html"
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Inicio", "item": "https://reytacopicks.com/" },
+          { "@type": "ListItem", "position": 2, "name": "Análisis", "item": "https://reytacopicks.com/analisis/" },
+          { "@type": "ListItem", "position": 3, "name": "Hold/Break y Elo por Superficie en Tenis", "item": "https://reytacopicks.com/analisis/hold-break-superficies-tenis-atp-wta.html" }
+        ]
+      }
+    ]
+  }
+  </script>
+  <meta name="google-adsense-account" content="ca-pub-2697347675028991" /><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2697347675028991" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">
+      <img src="/logo.jpg" alt="Logo Rey Taco Picks" />
+      <span>Rey Taco Picks</span>
+    </a>
+    <nav aria-label="Navegación principal">
+      <a href="/">Inicio</a>
+      <a href="/analisis/" class="active">Análisis</a>
+      <a href="/aprende/">Guías</a>
+      <a href="/metodologia.html">Metodología</a>
+    </nav>
+  </header>
+
+  <main>
+    <nav class="breadcrumbs" aria-label="Ruta de navegación">
+      <a href="/">Inicio</a> &gt; <a href="/analisis/">Análisis</a> &gt; <span>Hold/Break y Elo por Superficie en Tenis</span>
+    </nav>
+
+    <h1>Hold %, Break % y Elo por Superficie en Tenis ATP y WTA</h1>
+    <div class="article-meta">
+      <span>🎾 Investigación Tenis ATP / WTA</span>
+      <span>⏱️ Lectura: 7 minutos</span>
+      <span>📊 Métricas: Hold/Break %, Elo de Superficie y Markov</span>
+    </div>
+    <p class="byline">Por el Equipo Cuantitativo de Rey Taco Picks · Publicado el <time datetime="2026-11-23">23 de noviembre de 2026</time>.</p>
+
+    <p>
+      El tenis profesional es uno de los deportes más aptos para el modelado matemático porque carece de empates y se estructura como una <strong>cadena de Markov jerárquica</strong> (puntos → juegos → sets → partido). Sin embargo, el ranking oficial ATP o WTA acumula resultados de las últimas 52 semanas en todas las superficies por igual, lo que genera distorsiones severas cuando el circuito cambia de arcilla lenta a pista dura cubierta o césped.
+    </p>
+
+    <h2>1. La suma Hold % + Break % como indicador de dominio real</h2>
+    <p>
+      En lugar de mirar únicamente victorias recientes, el indicador compuesto <code>Hold % + Break %</code> (porcentaje de juegos ganados al saque más porcentaje de juegos quebrados al resto en la misma superficie) mide de forma limpia el margen estructural de cada tenista:
+    </p>
+    <div class="formula-box">
+      <strong>Índice de Dominio de Juegos en Superficie:</strong>
+      <span class="formula-code">Índice_Juegos = Hold_%_Superficie + Break_%_Superficie</span>
+      <p style="margin-top: 8px; font-size: 0.92rem;">Un promedio neutral equivale a <strong>100%</strong>. En ATP pista dura, un perfil élite suele ubicarse por encima de <strong>108%–112%</strong>.</p>
+    </div>
+
+    <h2>2. Por qué el Elo específico por superficie supera al Ranking ATP/WTA</h2>
+    <ul>
+      <li><strong>Pista dura cubierta (Indoor Hard):</strong> Premia el porcentaje de puntos ganados con el primer servicio (<code>1st Serve Won %</code>) y la baja tasa de quiebres; los totales de juegos (<em>Over</em>) y los <em>tie-breaks</em> suben en frecuencia.</li>
+      <li><strong>Arcilla (Clay):</strong> Reduce la ventaja del saque plano y amplifica el peso de los puntos ganados con el segundo servicio (<code>2nd Serve Won %</code>) y la devolución profunda.</li>
+      <li><strong>Transición de giras y fatiga acumulada:</strong> Un tenista que llega de disputar 3 partidos a tres sets en un torneo previo o viaja entre husos horarios suele mostrar caídas medibles en su velocidad de primer saque durante las primeras rondas.</li>
+    </ul>
+
+    <h2>3. Control de márgenes en mercados de 2 vías</h2>
+    <p>
+      Al ser un mercado binario sin empate, verificar el <em>vig</em> del operador y la ventaja frente al precio de cierre resulta directo. Comprueba tus cálculos con nuestra <a href="/aprende/calculadora-valor-esperado.html">Calculadora +EV / No-Vig</a> y audita tus entradas con la <a href="/aprende/calculadora-clv.html">Calculadora de CLV</a>.
+    </p>
+
+    <div class="responsible-gaming-box">
+      <h4>Aviso Educativo · +18 México</h4>
+      <p>Estudio exclusivamente estadístico sobre tenis profesional. Retiros por lesión, condiciones climáticas y varianza de puntos de quiebre pueden alterar cualquier proyección matemática.</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-links">
+      <a href="/">Inicio</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/aprende/">Aprende</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/privacidad.html">Privacidad</a>
+    </div>
+    <p>© 2026 Rey Taco Picks. Análisis cuantitativo y estadística deportiva.</p>
+  </footer>
+</body>
+</html>

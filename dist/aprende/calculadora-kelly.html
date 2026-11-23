@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#070d19" />
+  <link rel="canonical" href="https://reytacopicks.com/aprende/calculadora-kelly.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/editorial.css" />
+  <title>Calculadora del Criterio de Kelly (Completo, Medio y 1/4 Kelly) | Rey Taco Picks</title>
+  <meta name="description" content="Calcula el tamaño óptimo de apuesta en pesos mexicanos con la fórmula del Criterio de Kelly y Kelly Fraccional (1/4 y 1/2) para proteger tu bankroll contra rachas negativas." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Calculadora del Criterio de Kelly en Pesos Mexicanos" />
+  <meta property="og:description" content="Determina tu stake óptimo con Kelly Completo, Medio Kelly y Cuarto de Kelly según tu banca, momio y probabilidad estimada." />
+  <meta property="og:url" content="https://reytacopicks.com/aprende/calculadora-kelly.html" />
+  <meta property="og:image" content="https://reytacopicks.com/logo.jpg" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebApplication",
+        "name": "Calculadora del Criterio de Kelly",
+        "url": "https://reytacopicks.com/aprende/calculadora-kelly.html",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Web",
+        "inLanguage": "es-MX",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "MXN" },
+        "publisher": { "@type": "Organization", "name": "Rey Taco Picks", "url": "https://reytacopicks.com" }
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Inicio", "item": "https://reytacopicks.com/" },
+          { "@type": "ListItem", "position": 2, "name": "Aprende", "item": "https://reytacopicks.com/aprende/" },
+          { "@type": "ListItem", "position": 3, "name": "Calculadora de Kelly", "item": "https://reytacopicks.com/aprende/calculadora-kelly.html" }
+        ]
+      }
+    ]
+  }
+  </script>
+  <style>
+    .calc-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 24px; margin: 28px 0; }
+    .calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+    .calc-field label { display: block; font-size: 0.85rem; color: var(--muted); font-weight: 700; margin-bottom: 6px; }
+    .calc-field input, .calc-field select { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: #070d19; color: #f8fafc; font-size: 1.05rem; font-weight: 700; }
+    .calc-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-top: 22px; }
+    .metric-card { background: rgba(16, 185, 129, 0.08); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .metric-card span { display: block; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .metric-card strong { display: block; font-size: 1.4rem; color: var(--gold); margin-top: 4px; }
+    .warn-banner { margin-top: 16px; padding: 12px 14px; border-radius: 10px; background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.4); color: #fecaca; font-size: 0.92rem; display: none; }
+  </style>
+  <meta name="google-adsense-account" content="ca-pub-2697347675028991" /><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2697347675028991" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">
+      <img src="/logo.jpg" alt="Logo Rey Taco Picks" />
+      <span>Rey Taco Picks</span>
+    </a>
+    <nav aria-label="Navegación secundaria">
+      <a href="/">Inicio</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/aprende/" class="active">Aprende</a>
+      <a href="/metodologia.html">Metodología</a>
+    </nav>
+  </header>
+
+  <main>
+    <nav class="breadcrumbs" aria-label="Ruta de navegación">
+      <a href="/">Inicio</a> &gt; <a href="/aprende/">Aprende</a> &gt; <span>Calculadora del Criterio de Kelly</span>
+    </nav>
+
+    <h1>Calculadora del Criterio de Kelly y Gestión de Bankroll</h1>
+    <p style="font-size: 1.08rem; color: var(--muted);">
+      Calcula exactamente qué porcentaje de tu banca asignar usando la fórmula de John L. Kelly Jr.: <code>f* = (b·p - q) / b</code>. En mercados deportivos con incertidumbre en las probabilidades, los fondos cuantitativos usan <strong>1/4 de Kelly</strong> para recortar el drawdown en más de 75%.
+    </p>
+
+    <section class="calc-panel" aria-label="Calculadora Criterio de Kelly">
+      <div class="calc-grid">
+        <div class="calc-field">
+          <label for="bankroll">Bankroll Total ($ MXN)</label>
+          <input id="bankroll" type="number" min="100" step="100" value="10000" />
+        </div>
+        <div class="calc-field">
+          <label for="odds">Cuota Decimal (ej. 1.91)</label>
+          <input id="odds" type="number" min="1.02" step="0.01" value="1.91" />
+        </div>
+        <div class="calc-field">
+          <label for="prob">Probabilidad Real Estimada (%)</label>
+          <input id="prob" type="number" min="1" max="99" step="0.5" value="57.0" />
+        </div>
+        <div class="calc-field">
+          <label for="fraction">Multiplicador Fraccional</label>
+          <select id="fraction">
+            <option value="0.25" selected>1/4 Kelly (Institucional · Recomendado)</option>
+            <option value="0.50">1/2 Kelly (Moderado)</option>
+            <option value="1.00">Kelly Completo (Alta Volatilidad)</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="no-edge-warn" class="warn-banner">
+        Sin ventaja matemática (+EV ≤ 0%). El Criterio de Kelly indica <strong>no apostar ($0.00 MXN)</strong> en esta cuota porque tu probabilidad estimada es inferior o igual al punto de equilibrio de la casa.
+      </div>
+
+      <div class="calc-results">
+        <div class="metric-card">
+          <span>Stake Sugerido (% Banca)</span>
+          <strong id="out-pct">2.44%</strong>
+        </div>
+        <div class="metric-card">
+          <span>Monto a Apostar ($ MXN)</span>
+          <strong id="out-mxn">$243.68</strong>
+        </div>
+        <div class="metric-card">
+          <span>Valor Esperado (+EV)</span>
+          <strong id="out-ev">+8.87%</strong>
+        </div>
+        <div class="metric-card">
+          <span>Edge vs Breakeven</span>
+          <strong id="out-edge">+4.64 pp</strong>
+        </div>
+      </div>
+    </section>
+
+    <h2>Por qué recomendamos 1/4 de Kelly frente a Kelly Completo</h2>
+    <p>
+      El Kelly Completo asume que conoces la probabilidad real con precisión perfecta, algo imposible en deportes donde existe riesgo de lesiones, arbitraje o fatiga de calendario. Al aplicar <strong>0.25 × Kelly</strong> conservas la mayor parte del crecimiento compuesto a largo plazo mientras blindas tu banca contra caídas severas (<em>drawdowns</em>). Lee el desarrollo matemático completo en nuestro estudio: <a href="/analisis/gestion-bankroll-criterio-kelly-adaptativo.html">Gestión de Bankroll con el Criterio de Kelly Adaptativo</a>.
+    </p>
+
+    <div class="responsible-gaming-box">
+      <h4>Gestión de Riesgo · +18 México</h4>
+      <p>Si sobreestimas tu probabilidad real, incluso Kelly puede producir pérdidas. Nunca arriesgues más del 5% de tu banca en un solo evento y considera siempre las apuestas como entretenimiento de alto riesgo.</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-links">
+      <a href="/">Inicio</a>
+      <a href="/aprende/">Aprende</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/privacidad.html">Privacidad</a>
+    </div>
+    <p>© 2026 Rey Taco Picks. Contenido educativo y cuantitativo para mayores de 18 años.</p>
+  </footer>
+
+  <script>
+    (function () {
+      const bankEl = document.getElementById('bankroll');
+      const oddsEl = document.getElementById('odds');
+      const probEl = document.getElementById('prob');
+      const fracEl = document.getElementById('fraction');
+      const warnEl = document.getElementById('no-edge-warn');
+      const outPct = document.getElementById('out-pct');
+      const outMxn = document.getElementById('out-mxn');
+      const outEv = document.getElementById('out-ev');
+      const outEdge = document.getElementById('out-edge');
+      const fmtMxn = (v) => '$' + v.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+      function recalc() {
+        const bank = Math.max(0, parseFloat(bankEl.value) || 0);
+        const dec = parseFloat(oddsEl.value);
+        const pPct = parseFloat(probEl.value);
+        const mult = parseFloat(fracEl.value);
+        if (!Number.isFinite(dec) || dec <= 1.0 || !Number.isFinite(pPct) || pPct <= 0 || pPct >= 100) return;
+
+        const p = pPct / 100;
+        const q = 1 - p;
+        const b = dec - 1;
+        const ev = (p * dec) - 1;
+        const breakeven = 1 / dec;
+        const edgePp = (p - breakeven) * 100;
+        const fullKelly = ((b * p) - q) / b;
+        const adjKelly = Math.max(0, fullKelly * mult);
+
+        warnEl.style.display = fullKelly <= 0 ? 'block' : 'none';
+        outPct.textContent = (adjKelly * 100).toFixed(2) + '%';
+        outMxn.textContent = fmtMxn(bank * adjKelly);
+        outEv.textContent = (ev >= 0 ? '+' : '') + (ev * 100).toFixed(2) + '%';
+        outEdge.textContent = (edgePp >= 0 ? '+' : '') + edgePp.toFixed(2) + ' pp';
+      }
+
+      [bankEl, oddsEl, probEl, fracEl].forEach((el) => el.addEventListener('input', recalc));
+      recalc();
+    })();
+  </script>
+</body>
+</html>

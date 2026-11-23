@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#070d19" />
+  <link rel="canonical" href="https://reytacopicks.com/analisis/pace-net-rating-nba-totales-handicap.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/editorial.css" />
+  <title>Pace, Net Rating y Back-to-Back en la NBA: Modelado Cuantitativo de Totales y Hándicap | Rey Taco Picks</title>
+  <meta name="description" content="Cómo modelar totales (Over/Under) y hándicaps en la NBA combinando posesiones ajustadas (Pace), Offensive/Defensive Rating, fatiga back-to-back y reporte de bajas." />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="Pace, Net Rating y Back-to-Back en la NBA: Modelado Cuantitativo" />
+  <meta property="og:description" content="Guía cuantitativa sobre eficiencia por cada 100 posesiones, ajuste por ritmo de juego y cierre de línea (CLV) en mercados de NBA." />
+  <meta property="og:url" content="https://reytacopicks.com/analisis/pace-net-rating-nba-totales-handicap.html" />
+  <meta property="og:image" content="https://reytacopicks.com/logo.jpg" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Article",
+        "headline": "Pace, Net Rating y Back-to-Back en la NBA: Modelado Cuantitativo de Totales y Hándicap",
+        "description": "Metodología estadística basada en posesiones por 48 minutos, eficiencia ofensiva y defensiva ajustada por rival y efectos de fatiga de calendario en NBA.",
+        "author": { "@type": "Organization", "name": "Equipo Cuantitativo de Rey Taco Picks" },
+        "publisher": { "@type": "Organization", "name": "Rey Taco Picks", "logo": "https://reytacopicks.com/logo.jpg" },
+        "datePublished": "2026-11-23",
+        "dateModified": "2026-11-23",
+        "mainEntityOfPage": "https://reytacopicks.com/analisis/pace-net-rating-nba-totales-handicap.html"
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Inicio", "item": "https://reytacopicks.com/" },
+          { "@type": "ListItem", "position": 2, "name": "Análisis", "item": "https://reytacopicks.com/analisis/" },
+          { "@type": "ListItem", "position": 3, "name": "Pace y Net Rating en la NBA", "item": "https://reytacopicks.com/analisis/pace-net-rating-nba-totales-handicap.html" }
+        ]
+      }
+    ]
+  }
+  </script>
+  <meta name="google-adsense-account" content="ca-pub-2697347675028991" /><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2697347675028991" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">
+      <img src="/logo.jpg" alt="Logo Rey Taco Picks" />
+      <span>Rey Taco Picks</span>
+    </a>
+    <nav aria-label="Navegación principal">
+      <a href="/">Inicio</a>
+      <a href="/analisis/" class="active">Análisis</a>
+      <a href="/aprende/">Guías</a>
+      <a href="/metodologia.html">Metodología</a>
+    </nav>
+  </header>
+
+  <main>
+    <nav class="breadcrumbs" aria-label="Ruta de navegación">
+      <a href="/">Inicio</a> &gt; <a href="/analisis/">Análisis</a> &gt; <span>Pace y Net Rating en la NBA</span>
+    </nav>
+
+    <h1>Pace, Net Rating y Back-to-Back en la NBA: Cómo Modelar Totales y Hándicap</h1>
+    <div class="article-meta">
+      <span>🏀 Investigación NBA</span>
+      <span>⏱️ Lectura: 8 minutos</span>
+      <span>📊 Enfoque: Posesiones, Eficiencia y CLV</span>
+    </div>
+    <p class="byline">Por el Equipo Cuantitativo de Rey Taco Picks · Publicado el <time datetime="2026-11-23">23 de noviembre de 2026</time>.</p>
+
+    <p>
+      Uno de los errores más frecuentes al analizar partidos de la <strong>NBA</strong> es comparar puntos anotados por partido (PPG) sin normalizar el volumen de posesiones. Un equipo que anota 118 puntos jugando a 103 posesiones por 48 minutos es menos eficiente que un equipo que anota 114 puntos jugando a 95 posesiones. En mercados líquidos de totales (<em>Over/Under</em>) y hándicap (<em>Spread</em>), separar <strong>ritmo (Pace)</strong> de <strong>calidad por posesión (Offensive y Defensive Rating)</strong> es el primer filtro para encontrar desfases reales antes del cierre.
+    </p>
+
+    <h2>1. Descomposición de puntos esperados por posesión</h2>
+    <p>
+      El puntaje esperado de un enfrentamiento NBA puede aproximarse proyectando primero las posesiones conjuntas esperadas del partido y multiplicándolas por la eficiencia ofensiva ajustada contra la defensa rival:
+    </p>
+    <div class="formula-box">
+      <strong>Proyección Base de Posesiones y Puntos:</strong>
+      <span class="formula-code">Pace_Partido ≈ Pace_Local + Pace_Visita - Pace_Promedio_Liga</span>
+      <p style="margin-top: 10px;">
+        <span class="formula-code">Puntos_Esperados_A = (Pace_Partido / 100) × (ORtg_A + DRtg_B - Rating_Promedio_Liga)</span>
+      </p>
+    </div>
+    <p>
+      Esta formulación evita el sesgo de sobrevalorar equipos de ritmo rápido cuando enfrentan defensas capaces de dictar media cancha (<em>half-court defense</em>) y permite recalibrar los totales cuando falta un generador principal de ritmo o un protector de aro.
+    </p>
+
+    <h2>2. Los Cuatro Factores de Dean Oliver y la regresión del triple</h2>
+    <p>
+      El <strong>Net Rating</strong> (<code>ORtg - DRtg</code>) captura la fortaleza global de una franquicia, pero en tramos cortos de 5 a 10 juegos sufre fuerte ruido por la varianza del tiro de tres puntos (<code>3P%</code>). Separar el porcentaje de tiro efectivo (<code>eFG%</code>) en <strong>calidad de tiro esperada (tiros abiertos vs contestados)</strong> y complementarlo con tasa de pérdidas (<code>TOV%</code>), rebote ofensivo (<code>ORB%</code>) y tasa de tiros libres (<code>FTr</code>) reduce drásticamente el riesgo de perseguir rachas insostenibles.
+    </p>
+
+    <h2>3. Fatiga de calendario: Back-to-Back, viajes y altitud</h2>
+    <ul>
+      <li><strong>Segundo partido en noches consecutivas (B2B) fuera de casa:</strong> Históricamente comprime tanto la eficiencia en transición como el porcentaje de tiro en el último cuarto, especialmente cuando es el tercer partido en cuatro noches (<code>3-in-4</code>).</li>
+      <li><strong>Ventaja de altitud en Denver y Utah:</strong> Cuando un visitante llega en B2B a ciudades de alta altitud, la caída en eficiencia defensiva suele amplificarse en la segunda mitad.</li>
+      <li><strong>Reportes de lesiones y movimiento de línea (CLV):</strong> En la NBA, una confirmación de descanso (<em>load management</em>) mueve la línea entre 2 y 6 puntos en minutos. Comparar siempre la cuota tomada frente al precio de cierre con nuestra <a href="/aprende/calculadora-clv.html">Calculadora de CLV</a> es indispensable para auditar si el análisis anticipó información valiosa.</li>
+    </ul>
+
+    <h2>4. Herramientas recomendadas para aplicar este marco</h2>
+    <p>
+      Antes de evaluar cualquier línea de hándicap o total NBA, valida la comisión implícita del operador con la <a href="/aprende/calculadora-valor-esperado.html">Calculadora de Valor Esperado (+EV) y No-Vig</a> y dimensiona tu riesgo con la <a href="/aprende/calculadora-kelly.html">Calculadora de Criterio de Kelly (1/4 Kelly)</a>.
+    </p>
+
+    <div class="responsible-gaming-box">
+      <h4>Aviso Metodológico · +18 México</h4>
+      <p>Este artículo tiene fines estrictamente educativos e informativos sobre estadística avanzada de baloncesto. Ningún modelo estadístico garantiza resultados en partidos individuales.</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-links">
+      <a href="/">Inicio</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/aprende/">Aprende</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/privacidad.html">Privacidad</a>
+    </div>
+    <p>© 2026 Rey Taco Picks. Investigación cuantitativa deportiva.</p>
+  </footer>
+</body>
+</html>

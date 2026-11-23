@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#070d19" />
+  <link rel="canonical" href="https://reytacopicks.com/aprende/calculadora-valor-esperado.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/editorial.css" />
+  <title>Calculadora de Valor Esperado (+EV) y Margen de la Casa (Vig / Overround) | Rey Taco Picks</title>
+  <meta name="description" content="Calcula el Valor Esperado (+EV) de cualquier apuesta deportiva y elimina el margen de la casa (vig / overround) para obtener la probabilidad justa real de un mercado de 2 vías." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Calculadora de Valor Esperado (+EV) y Desmarginado de Cuotas (No-Vig)" />
+  <meta property="og:description" content="Descubre cuánto vig cobra tu casa de apuestas y si una cuota tiene verdadero Valor Esperado positivo." />
+  <meta property="og:url" content="https://reytacopicks.com/aprende/calculadora-valor-esperado.html" />
+  <meta property="og:image" content="https://reytacopicks.com/logo.jpg" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebApplication",
+        "name": "Calculadora de Valor Esperado (+EV) y No-Vig",
+        "url": "https://reytacopicks.com/aprende/calculadora-valor-esperado.html",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Web",
+        "inLanguage": "es-MX",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "MXN" },
+        "publisher": { "@type": "Organization", "name": "Rey Taco Picks", "url": "https://reytacopicks.com" }
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Inicio", "item": "https://reytacopicks.com/" },
+          { "@type": "ListItem", "position": 2, "name": "Aprende", "item": "https://reytacopicks.com/aprende/" },
+          { "@type": "ListItem", "position": 3, "name": "Calculadora +EV y Vig", "item": "https://reytacopicks.com/aprende/calculadora-valor-esperado.html" }
+        ]
+      }
+    ]
+  }
+  </script>
+  <style>
+    .calc-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 24px; margin: 28px 0; }
+    .calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
+    .calc-field label { display: block; font-size: 0.85rem; color: var(--muted); font-weight: 700; margin-bottom: 6px; }
+    .calc-field input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: #070d19; color: #f8fafc; font-size: 1.05rem; font-weight: 700; }
+    .calc-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 14px; margin-top: 22px; }
+    .metric-card { background: rgba(16, 185, 129, 0.08); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .metric-card span { display: block; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .metric-card strong { display: block; font-size: 1.4rem; color: var(--gold); margin-top: 4px; }
+  </style>
+  <meta name="google-adsense-account" content="ca-pub-2697347675028991" /><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2697347675028991" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">
+      <img src="/logo.jpg" alt="Logo Rey Taco Picks" />
+      <span>Rey Taco Picks</span>
+    </a>
+    <nav aria-label="Navegación secundaria">
+      <a href="/">Inicio</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/aprende/" class="active">Aprende</a>
+      <a href="/metodologia.html">Metodología</a>
+    </nav>
+  </header>
+
+  <main>
+    <nav class="breadcrumbs" aria-label="Ruta de navegación">
+      <a href="/">Inicio</a> &gt; <a href="/aprende/">Aprende</a> &gt; <span>Calculadora de Valor Esperado (+EV) y Vig</span>
+    </nav>
+
+    <h1>Calculadora de Valor Esperado (+EV) y Margen de la Casa (No-Vig)</h1>
+    <p style="font-size: 1.08rem; color: var(--muted);">
+      Ingresa las cuotas de un mercado de referencia <em>sharp</em> (ej. Pinnacle) para remover el margen de la casa (<em>overround / vig</em>), obtener la probabilidad justa real y compararla contra la cuota que ofrece tu casa recreativa en México.
+    </p>
+
+    <section class="calc-panel" aria-label="Calculadora +EV y No-Vig">
+      <div class="calc-grid">
+        <div class="calc-field">
+          <label for="sharp-a">Cuota Sharp Lado A (Tu Selección)</label>
+          <input id="sharp-a" type="number" min="1.02" step="0.01" value="1.86" />
+        </div>
+        <div class="calc-field">
+          <label for="sharp-b">Cuota Sharp Lado B (Contrario)</label>
+          <input id="sharp-b" type="number" min="1.02" step="0.01" value="2.04" />
+        </div>
+        <div class="calc-field">
+          <label for="soft-a">Cuota Disponible en Casa Recreativa</label>
+          <input id="soft-a" type="number" min="1.02" step="0.01" value="2.00" />
+        </div>
+        <div class="calc-field">
+          <label for="ev-stake">Apuesta Simulada ($ MXN)</label>
+          <input id="ev-stake" type="number" min="1" step="50" value="1000" />
+        </div>
+      </div>
+
+      <div class="calc-results">
+        <div class="metric-card">
+          <span>Vig / Overround Sharp</span>
+          <strong id="out-vig">2.78%</strong>
+        </div>
+        <div class="metric-card">
+          <span>Probabilidad Justa (No-Vig)</span>
+          <strong id="out-fair-prob">52.31%</strong>
+        </div>
+        <div class="metric-card">
+          <span>Cuota Justa Mínima</span>
+          <strong id="out-fair-odds">1.912</strong>
+        </div>
+        <div class="metric-card">
+          <span>Valor Esperado (+EV %)</span>
+          <strong id="out-ev-pct">+4.62%</strong>
+        </div>
+        <div class="metric-card">
+          <span>EV Esperado ($ MXN)</span>
+          <strong id="out-ev-mxn">+$46.15</strong>
+        </div>
+      </div>
+    </section>
+
+    <h2>Cómo funciona el desmarginado proporcional</h2>
+    <p>
+      En un mercado de dos vías (como hándicap de NBA, totales de NFL o ganador en tenis ATP/WTA), la suma de las probabilidades implícitas <code>(1 / Cuota A) + (1 / Cuota B)</code> siempre supera el 100%. Ese excedente es el <strong>vig</strong> o comisión de la casa. Al dividir cada probabilidad implícita entre la suma total (<em>overround</em>), descubres la probabilidad justa limpia y la <strong>cuota mínima aceptable</strong> por debajo de la cual la apuesta pierde valor matemático.
+    </p>
+    <p>
+      Lectura recomendada: <a href="/aprende/margen-de-la-casa-overround.html">Qué significa el margen de la casa (Overround)</a> y <a href="/analisis/cuotas-sharp-vs-casas-recreativas-mexico.html">Cuotas Sharp vs. Operadores Recreativos en México</a>.
+    </p>
+
+    <div class="responsible-gaming-box">
+      <h4>Uso Educativo · +18 México</h4>
+      <p>El Valor Esperado (+EV) es una métrica estadística de largo plazo que requiere cientos de eventos independientes para converger. Un evento con +EV positivo puede perderse individualmente.</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-links">
+      <a href="/">Inicio</a>
+      <a href="/aprende/">Aprende</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/privacidad.html">Privacidad</a>
+    </div>
+    <p>© 2026 Rey Taco Picks. Análisis cuantitativo y educación deportiva.</p>
+  </footer>
+
+  <script>
+    (function () {
+      const sharpA = document.getElementById('sharp-a');
+      const sharpB = document.getElementById('sharp-b');
+      const softA = document.getElementById('soft-a');
+      const stakeEl = document.getElementById('ev-stake');
+      const outVig = document.getElementById('out-vig');
+      const outFairProb = document.getElementById('out-fair-prob');
+      const outFairOdds = document.getElementById('out-fair-odds');
+      const outEvPct = document.getElementById('out-ev-pct');
+      const outEvMxn = document.getElementById('out-ev-mxn');
+
+      function recalc() {
+        const a = parseFloat(sharpA.value);
+        const b = parseFloat(sharpB.value);
+        const s = parseFloat(softA.value);
+        const stake = Math.max(0, parseFloat(stakeEl.value) || 0);
+        if (![a, b, s].every((x) => Number.isFinite(x) && x > 1.0)) return;
+
+        const impA = 1 / a;
+        const impB = 1 / b;
+        const overround = impA + impB;
+        const vigPct = (overround - 1) * 100;
+        const fairProb = impA / overround;
+        const fairOdds = 1 / fairProb;
+        const ev = (fairProb * s) - 1;
+        const evMxn = stake * ev;
+
+        outVig.textContent = vigPct.toFixed(2) + '%';
+        outFairProb.textContent = (fairProb * 100).toFixed(2) + '%';
+        outFairOdds.textContent = fairOdds.toFixed(3);
+        outEvPct.textContent = (ev >= 0 ? '+' : '') + (ev * 100).toFixed(2) + '%';
+        outEvMxn.textContent = (evMxn >= 0 ? '+$' : '-$') + Math.abs(evMxn).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+
+      [sharpA, sharpB, softA, stakeEl].forEach((el) => el.addEventListener('input', recalc));
+      recalc();
+    })();
+  </script>
+</body>
+</html>

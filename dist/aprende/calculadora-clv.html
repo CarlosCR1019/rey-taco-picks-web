@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#070d19" />
+  <link rel="canonical" href="https://reytacopicks.com/aprende/calculadora-clv.html" />
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/editorial.css" />
+  <title>Calculadora de CLV (Closing Line Value): Mide si Superas a la Línea de Cierre | Rey Taco Picks</title>
+  <meta name="description" content="Calcula tu Closing Line Value (CLV %) comparando la cuota que tomaste frente a la cuota de cierre antes del partido. El indicador más fiable para evaluar modelos deportivos." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Calculadora de Closing Line Value (CLV %)" />
+  <meta property="og:description" content="Mide tu ventaja real frente a la línea de cierre del mercado deportivo en cuotas decimales y probabilidad implícita." />
+  <meta property="og:url" content="https://reytacopicks.com/aprende/calculadora-clv.html" />
+  <meta property="og:image" content="https://reytacopicks.com/logo.jpg" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebApplication",
+        "name": "Calculadora de Closing Line Value (CLV)",
+        "url": "https://reytacopicks.com/aprende/calculadora-clv.html",
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Web",
+        "inLanguage": "es-MX",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "MXN" },
+        "publisher": { "@type": "Organization", "name": "Rey Taco Picks", "url": "https://reytacopicks.com" }
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          { "@type": "ListItem", "position": 1, "name": "Inicio", "item": "https://reytacopicks.com/" },
+          { "@type": "ListItem", "position": 2, "name": "Aprende", "item": "https://reytacopicks.com/aprende/" },
+          { "@type": "ListItem", "position": 3, "name": "Calculadora de CLV", "item": "https://reytacopicks.com/aprende/calculadora-clv.html" }
+        ]
+      }
+    ]
+  }
+  </script>
+  <style>
+    .calc-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 24px; margin: 28px 0; }
+    .calc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+    .calc-field label { display: block; font-size: 0.85rem; color: var(--muted); font-weight: 700; margin-bottom: 6px; }
+    .calc-field input { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: #070d19; color: #f8fafc; font-size: 1.05rem; font-weight: 700; }
+    .calc-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 14px; margin-top: 22px; }
+    .metric-card { background: rgba(16, 185, 129, 0.08); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .metric-card span { display: block; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .metric-card strong { display: block; font-size: 1.4rem; color: var(--gold); margin-top: 4px; }
+  </style>
+  <meta name="google-adsense-account" content="ca-pub-2697347675028991" /><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2697347675028991" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/">
+      <img src="/logo.jpg" alt="Logo Rey Taco Picks" />
+      <span>Rey Taco Picks</span>
+    </a>
+    <nav aria-label="Navegación secundaria">
+      <a href="/">Inicio</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/aprende/" class="active">Aprende</a>
+      <a href="/metodologia.html">Metodología</a>
+    </nav>
+  </header>
+
+  <main>
+    <nav class="breadcrumbs" aria-label="Ruta de navegación">
+      <a href="/">Inicio</a> &gt; <a href="/aprende/">Aprende</a> &gt; <span>Calculadora de CLV (Closing Line Value)</span>
+    </nav>
+
+    <h1>Calculadora de CLV (Closing Line Value)</h1>
+    <p style="font-size: 1.08rem; color: var(--muted);">
+      El <strong>Closing Line Value (CLV)</strong> mide si tomaste una cuota mejor que el precio de cierre justo antes del inicio del partido. La línea de cierre incorpora la máxima liquidez e información del mercado (alineaciones, reportes de lesiones y dinero profesional).
+    </p>
+
+    <section class="calc-panel" aria-label="Calculadora CLV">
+      <div class="calc-grid">
+        <div class="calc-field">
+          <label for="odds-taken">Cuota Tomada (Decimal)</label>
+          <input id="odds-taken" type="number" min="1.02" step="0.01" value="1.96" />
+        </div>
+        <div class="calc-field">
+          <label for="odds-closing">Cuota de Cierre (Decimal)</label>
+          <input id="odds-closing" type="number" min="1.02" step="0.01" value="1.82" />
+        </div>
+      </div>
+
+      <div class="calc-results">
+        <div class="metric-card">
+          <span>CLV Porcentual (%)</span>
+          <strong id="out-clv">+7.69%</strong>
+        </div>
+        <div class="metric-card">
+          <span>Prob. Implícita Entrada</span>
+          <strong id="out-p-taken">51.02%</strong>
+        </div>
+        <div class="metric-card">
+          <span>Prob. Implícita Cierre</span>
+          <strong id="out-p-close">54.95%</strong>
+        </div>
+        <div class="metric-card">
+          <span>Diferencia en Probabilidad</span>
+          <strong id="out-diff">+3.93 pp</strong>
+        </div>
+      </div>
+    </section>
+
+    <h2>Por qué los analistas miden CLV antes que rachas cortas</h2>
+    <p>
+      En muestras de 20 o 30 partidos, la varianza puede hacer que una mala estrategia gane temporalmente o que una buena pierda. En cambio, batir consistentemente la línea de cierre (<code>CLV = (Cuota Tomada / Cuota Cierre) - 1 &gt; 0</code>) en cientos de eventos es la evidencia más sólida de que un modelo detecta valor antes de que el mercado ajuste el precio.
+    </p>
+    <p>
+      Conoce cómo auditamos nuestra propia metodología en <a href="/metodologia.html">Metodología Oficial</a> y revisa <a href="/aprende/por-que-una-racha-no-garantiza-resultados.html">Por qué una racha no garantiza resultados futuros</a>.
+    </p>
+
+    <div class="responsible-gaming-box">
+      <h4>Transparencia y Juego Responsable · +18</h4>
+      <p>Un CLV positivo mide calidad de ejecución de precio respecto al cierre, pero no elimina el riesgo de pérdida en ningún partido individual.</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-links">
+      <a href="/">Inicio</a>
+      <a href="/aprende/">Aprende</a>
+      <a href="/analisis/">Análisis</a>
+      <a href="/metodologia.html">Metodología</a>
+      <a href="/privacidad.html">Privacidad</a>
+    </div>
+    <p>© 2026 Rey Taco Picks. Contenido cuantitativo y educativo.</p>
+  </footer>
+
+  <script>
+    (function () {
+      const takenEl = document.getElementById('odds-taken');
+      const closeEl = document.getElementById('odds-closing');
+      const outClv = document.getElementById('out-clv');
+      const outPTaken = document.getElementById('out-p-taken');
+      const outPClose = document.getElementById('out-p-close');
+      const outDiff = document.getElementById('out-diff');
+
+      function recalc() {
+        const t = parseFloat(takenEl.value);
+        const c = parseFloat(closeEl.value);
+        if (!Number.isFinite(t) || !Number.isFinite(c) || t <= 1.0 || c <= 1.0) return;
+        const clv = ((t / c) - 1) * 100;
+        const pTaken = (1 / t) * 100;
+        const pClose = (1 / c) * 100;
+        const diff = pClose - pTaken;
+
+        outClv.textContent = (clv >= 0 ? '+' : '') + clv.toFixed(2) + '%';
+        outPTaken.textContent = pTaken.toFixed(2) + '%';
+        outPClose.textContent = pClose.toFixed(2) + '%';
+        outDiff.textContent = (diff >= 0 ? '+' : '') + diff.toFixed(2) + ' pp';
+      }
+
+      [takenEl, closeEl].forEach((el) => el.addEventListener('input', recalc));
+      recalc();
+    })();
+  </script>
+</body>
+</html>
